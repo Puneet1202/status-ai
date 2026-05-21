@@ -1,0 +1,18 @@
+name = "keyss-timesheet-backend"
+main = "src/index.js" # Hono application entry point
+compatibility_date = "2026-05-01" 
+
+# =========================================================================
+# GLOBAL RUNTIME ENVIRONMENT VARIABLES (Non-Sensitive Configs)
+# =========================================================================
+[vars]
+AI_PROVIDER = "cloudflare" # Shifted from local to high-speed native edge models
+PORT = 8787 # Standard Cloudflare worker port mapping
+
+# =========================================================================
+# CLOUDFLARE D1 SQL DATABASE BINDING
+# =========================================================================
+[[d1_databases]]
+binding = "DB"
+database_name = "keyss-timesheet-db"
+database_id = "6b62c00b-66b3-4483-9e2e-e5f5aa791003" 
