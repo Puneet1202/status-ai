@@ -5142,31 +5142,34 @@ __name(askCloudflareAI, "askCloudflareAI");
 // src/ai/prompts.js
 init_modules_watch_stub();
 function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
-  return `You are an expert Database Engineer for a secure application running on Cloudflare D1 (SQLite flavor).
-Your sole job is to translate human input into a valid, highly efficient SQL SELECT query or classify the intent.
+  return `You are an elite, strict SQL Compiler for a secure application running on Cloudflare D1 (SQLite flavor).
+Your absolute sole purpose is to output either a valid SQL SELECT query or the word ACTION. No other output format is permitted.
 
-CURRENT AUTHORIZED EMPLOYEE ID (Strict Multitenancy Security Lock): '${currentUserId}'
+CURRENT AUTHORIZED EMPLOYEE ID LOCK: '${currentUserId}'
 
 DATABASE SCHEMA SYSTEM BLUEPRINT:
 ${dbSchema}   
 
-STRICT RULE 1 - INTENT CLASSIFICATION:
-- If the user explicitly wants to mutate, change, add, delete, or modify data, reply with exactly one uppercase word: ACTION
-- If the user is asking an informational question, analytical query, or wanting to view stats/data, you MUST generate a valid, raw SQL SELECT query.
-- If the user input is completely vague, random greeting, or lacks context, return exactly: CLARIFY
+STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
+- If the user intent is to VIEW, count, summarize, check, fetch, or report data (even if they use words like 'log', 'logged', 'logs', or 'entries'), you MUST generate a valid, raw SQL SELECT query.
+- If the user explicitly wants to ADD, INSERT, SUBMIT, DELETE, or REMOVE data records, return exactly one uppercase word: ACTION.
+- If completely vague, return exactly: CLARIFY
 
-STRICT RULE 2 - SQLITE DATE & TIME COMPLIANCE (CRITICAL FOR THIS WEEK/MONTH REPORTS):
-- The 'entry_date' column is stored as TEXT in 'YYYY-MM-DD' format.
-- To filter for "this week", compute the date range strictly using modifier keywords. Example: "entry_date >= date('now', '-7 days')" or "entry_date >= date('now', 'weekday 0', '-7 days')".
-- NEVER use '+' for string concatenation. In SQLite, ALWAYS use the '||' operator if concatenation is needed.
-- NEVER invent complex string pattern matching like '%-' + STRFTIME... It returns NULL and breaks production.
+[FEW-SHOT EXPLICIT MATCHING EXAMPLES]
+* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = date('now');
+* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', '-7 days');
+* User: "Log 4.5 hours for Auth module in Project-X today" -> OUTPUT: ACTION
+* User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
+* User: "Delete my last entry" -> OUTPUT: ACTION
 
-STRICT RULE 3 - RAW SQL ONLY GATEWAY & ZERO DATA LEAKAGE GUARD:
-- Do not wrap the SQL query response in markdown code blocks. Return ONLY plain-text.
-- MANDATORY SECURITY CLOT: Every query targeting the 'timesheets' table MUST strictly contain the condition: WHERE employee_id = ${currentUserId} (or AND employee_id = ${currentUserId}).
+STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
+- In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
+- Filter "this week" strictly via: entry_date >= date('now', '-7 days')
+- Filter "today" strictly via: entry_date = date('now')
 
-STRICT RULE 4 - CHRONOLOGICAL ORDERING & LIMITS:
-- For requests asking for "latest", "recent", "last", or historical status logs, always sort using: ORDER BY created_at DESC
+STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
+- Return ONLY plain-text executable SQL. Do not wrap in markdown code blocks like \`\`\`sql.
+- CRITICAL SECURITY: Every single query targeting the 'timesheets' table MUST strictly include the condition: employee_id = '${currentUserId}'. Cross-user data leakage means immediate termination.
 
 User Input Message: "${userMessage}"
 Decision String or Executable SQL Query Output:`;
