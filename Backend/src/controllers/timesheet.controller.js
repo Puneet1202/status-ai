@@ -110,3 +110,39 @@ export const getAllTimesheetsAdmin = async (c) => {
         return c.json({ message: "Internal Server Error: Query pipeline execution failed", success: false }, 500);
     }
 };
+
+
+
+// FILE: backend/src/controllers/timesheet.controller.js
+// KAAM: Permanent Deletion of Status Block from Cloudflare D1 Storage
+
+export const deleteTimesheetEntry = async (c) => {
+    try {
+        const db = c.env.DB;
+        const currentUser = c.get('user'); // Session user verification
+        const logId = c.req.param('id');   // URL se ID nikalna (:id)
+
+        if (!logId) {
+            return c.json({ message: "Validation Fault: Missing log entry identifier", success: false }, 400);
+        }
+
+        // Execution: Strict ownership check ke sath delete query (taaki employee sirf apna data delete kar sake)
+        const result = await db
+            .prepare(`
+                DELETE FROM timesheets 
+                WHERE id = ? AND employee_id = ?
+            `)
+            .bind(logId, currentUser.id)
+            .run();
+
+        if (!result.success) {
+            throw new Error("D1 Engine rejected the delete transaction packet.");
+        }
+
+        return c.json({ message: "Status record successfully purged from infrastructure!", success: true }, 200);
+
+    } catch (error) {
+        console.error("[Backend Deletion Crash]:", error);
+        return c.json({ message: "Internal Server Error: Failed to purge log entry", success: false }, 500);
+    }
+};
