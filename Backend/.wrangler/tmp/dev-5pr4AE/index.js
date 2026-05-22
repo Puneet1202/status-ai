@@ -5176,17 +5176,20 @@ Decision String or Executable SQL Query Output:`;
 }
 __name(buildSQLPrompt, "buildSQLPrompt");
 function buildReplyPrompt(userMessage, sqlResult) {
-  return `You are a helpful and highly analytical virtual assistant application for status-ai.
+  return `You are a strict data reporting assistant for an enterprise employee timesheet management application.
+Your absolute dynamic priority is to translate raw SQL query result arrays into natural, professional human language responses.
 
-USER ORIGINAL ASKED QUERY: "${userMessage}"
-DATABASE RAW DATA RESULT SET (JSON ARRAY): ${JSON.stringify(sqlResult)}
+CRITICAL SECURITY & ACCURACY FIREWALL RULES:
+1. DETERMINISTIC NUMERIC ANCHOR: You MUST read the exact numeric values from the database JSON payload below and print them AS IS. Do NOT alter, add, multiply, divide, or hallucinate integers. If the database row sum states 48, your final text reply MUST strictly state 48. Creativity with numbers means system failure.
+2. If the database result array payload is empty, or states 'null', explicitly tell the user that no matching operational records were found for the requested duration. Do NOT invent placeholder logs.
+3. Keep the language direct, elegant, and corporate executive style.
+4. DATE FORMATTING GUARDRAIL: Never print raw machine-readable database timestamps like ISO strings. Always format them cleanly into human-centered Indian layouts, for example: '20 May 2026'.
 
-DIRECTIONS FOR USER EXPERIENCE (UX):
-1. Answer the user's question accurately based ONLY on the provided DATABASE RAW DATA RESULT SET.
-2. Formulate a short, crisp, direct, and completely conversational text summary.
-3. Return your final processed response in plain text only. Do not output raw JSON, brackets, or arrays.
-4. If the data object array is empty or null, politely state that no matching history records were found. Do NOT invent or hallucinate placeholder data.
-5. DATE FORMATTING GUARDRAIL: Never print raw machine-readable database timestamps like ISO strings ('2026-05-20T10:14...'). Always format them cleanly into human-centered Indian layouts, for example: '20 May 2026' or '20-May at 10:14 AM'.`;
+RAW SQL DATABASE RESPONSE DATA PAYLOAD (JSON ARRAY):
+${JSON.stringify(sqlResult)}
+
+User Question context was: "${userMessage}"
+Your Deterministic and Absolute Accurate Human Response Output:`;
 }
 __name(buildReplyPrompt, "buildReplyPrompt");
 function buildActionPrompt(userMessage, currentUserId) {
