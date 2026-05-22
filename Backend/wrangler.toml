@@ -16,3 +16,7 @@ PORT = 8787 # Standard Cloudflare worker port mapping
 binding = "DB"
 database_name = "keyss-timesheet-db"
 database_id = "6b62c00b-66b3-4483-9e2e-e5f5aa791003" 
+
+
+[ai]
+binding = "AI"

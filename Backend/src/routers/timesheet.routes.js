@@ -2,7 +2,7 @@
 // KAAM: Clean Route Mapping for Timesheet Infrastructure Pipeline
 
 import { Hono } from 'hono';
-import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry } from '../controllers/timesheet.controller.js';
+import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler } from '../controllers/timesheet.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const timesheetRouter = new Hono();
@@ -13,5 +13,9 @@ timesheetRouter.get('/admin/all-logs', authMiddleware, getAllTimesheetsAdmin);
 
 // FIX: Path ko clean karke strictly '/delete/:id' rakha hai, Hono index prefix automatic handles karega
 timesheetRouter.delete('/delete/:id', authMiddleware, deleteTimesheetEntry);
+
+// AI-INTEGRATED TIMESHEET ENDPOINT
+timesheetRouter.post('/ai/chat', authMiddleware, aiChatHandler);
+
 
 export default timesheetRouter;
