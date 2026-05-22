@@ -27,14 +27,14 @@ STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
 
 [FEW-SHOT EXPLICIT MATCHING EXAMPLES]
 * User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = date('now');
-* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', '-7 days');
+* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', 'weekday 0', '-6 days');
 * User: "Log 4.5 hours for Auth module in Project-X today" -> OUTPUT: ACTION
 * User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
 * User: "Delete my last entry" -> OUTPUT: ACTION
 
 STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
 - In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
-- Filter "this week" strictly via: entry_date >= date('now', '-7 days')
+- Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('now', 'weekday 0', '-6 days')
 - Filter "today" strictly via: entry_date = date('now')
 
 STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
@@ -44,7 +44,6 @@ STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
 User Input Message: "${userMessage}"
 Decision String or Executable SQL Query Output:`;
 }
-
 
 
 // =========================================================================

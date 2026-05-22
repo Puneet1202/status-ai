@@ -5157,14 +5157,14 @@ STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
 
 [FEW-SHOT EXPLICIT MATCHING EXAMPLES]
 * User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = date('now');
-* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', '-7 days');
+* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', 'weekday 0', '-6 days');
 * User: "Log 4.5 hours for Auth module in Project-X today" -> OUTPUT: ACTION
 * User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
 * User: "Delete my last entry" -> OUTPUT: ACTION
 
 STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
 - In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
-- Filter "this week" strictly via: entry_date >= date('now', '-7 days')
+- Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('now', 'weekday 0', '-6 days')
 - Filter "today" strictly via: entry_date = date('now')
 
 STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
@@ -5249,11 +5249,11 @@ Table: users
 
 Table: timesheets
    - id (integer, primary key)
-   - employee_id (integer) -> Must match user id strictly
+   - employee_id (integer) -> Strict Multi-tenancy Isolation Key
    - entry_date (text) -> Format: 'YYYY-MM-DD'
    - start_time (text) -> Format: 'HH:MM'
    - end_time (text) -> Format: 'HH:MM'
-   - duration_hours (real) -> Contains decimal hours worked
+   - duration_hours (real)
    - module_name (text)
    - task_description (text)
    - project_name (text)
@@ -5262,16 +5262,16 @@ async function aiChat(env, userId, message, history = []) {
   try {
     const cleanMessage = message.trim().toLowerCase();
     const safeHistory = Array.isArray(history) ? history.slice(-4) : [];
-    const actionKeywords = ["log", "submit", "inserted"];
     let forcedDecision = null;
-    if (cleanMessage.split(" ").some((word) => actionKeywords.includes(word))) {
+    const exactWriteIntent = cleanMessage.includes("log hours") || cleanMessage.includes("add entry") || cleanMessage.includes("submit status") || cleanMessage.startsWith("log ") && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessage);
+    if (exactWriteIntent) {
       forcedDecision = "ACTION";
     }
     const finalDynamicSchema = `
 ${ENGINE_DB_SCHEMA}
 CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
-1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS duration_hours' or 'SUM(duration_hours) AS total_hours'.
-2. Always select the specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs. Do NOT guess column names.
+1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
+2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
 `;
     let decision;
     if (forcedDecision) {
@@ -5287,7 +5287,7 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
       try {
         return { action: JSON.parse(actionReply) };
       } catch (jsonErr) {
-        return { reply: "Failed to map structured automation action commands." };
+        return { reply: "I understood you want to log data, but could you please specify the project name or duration hours clearly?" };
       }
     }
     let sqlQuery = decision.trim();
@@ -5296,10 +5296,11 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
     console.log("[\u{1F6A8} AI ENGINE LIVE AUDIT] Generated SQL Query:", sqlQuery);
     console.log("=========================================================\n");
     if (!sqlQuery.toUpperCase().includes("SELECT")) {
-      return { reply: "Security Guardrail Alert: Raw database data mutations blocked via chat portal." };
+      return { reply: "Security Security Guardrail Alert: Operation restricted via chat portal." };
     }
-    if (!sqlQuery.includes(String(userId))) {
-      return { reply: "Security Guardrail Alert: Data cross-leakage attempt intercepted." };
+    const userIdRegex = new RegExp(`\\bemployee_id\\s*=\\s*['"]?${userId}['"]?\\b`, "i");
+    if (!userIdRegex.test(sqlQuery)) {
+      return { reply: "Security Guardrail Alert: Multi-tenancy ownership validation failed." };
     }
     let dbResult = [];
     try {
@@ -5309,15 +5310,16 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
       console.log("[\u{1F6A8} D1 ENGINE RAW OUTPUT] First Data Row:", JSON.stringify(dbResult[0] || "EMPTY ARRAY"));
       console.log("=========================================================\n");
     } catch (dbErr) {
-      console.error("[D1 Crash Log]:", dbErr);
-      return { reply: "Server connection bottleneck encountered during live analytical execution." };
+      console.error("[D1 Query Failure Logs]:", dbErr);
+      return { reply: "I encountered a minor data processing lag. Could you please try asking the query again?" };
     }
     const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 5) : [];
     const replyPrompt = buildReplyPrompt(message, safeDbResult);
     const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env);
     return { reply: finalHumanReply };
   } catch (globalErr) {
-    return { reply: "An unhandled internal failure code popped inside the AI pipeline framework." };
+    console.error("[Fatal Pipeline Log]:", globalErr);
+    return { reply: "Internal pipeline exception triggered. Please contact system admin." };
   }
 }
 __name(aiChat, "aiChat");
