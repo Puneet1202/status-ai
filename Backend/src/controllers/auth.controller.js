@@ -1,29 +1,20 @@
 // FILE: backend/src/controllers/auth.controller.js
-// KAAM: Secure User registration, login, and user fetch
-// STACK: Hono + Cloudflare D1 + Native Edge Crypto JWT
+// V3 - COOKIE MAX-AGE MATCHING & STRICT CORS SECURED
 
 import bcrypt from 'bcryptjs';
 import { sign, verify } from 'hono/jwt';
 import { setCookie, getCookie } from 'hono/cookie';
 
-// ─── Cookie config helper ───────────────────────────────────────────────────
-// BUG FIX: secure:true + sameSite:None = browser BLOCKS cookies on HTTP localhost
-// Fix: secure:false for localhost dev so cookies actually get sent & received
-function getCookieConfig(isLocal) {
-    if (isLocal) {
-        return {
-            httpOnly: true,
-            secure: false,      // HTTP localhost pe secure:false zaroori hai
-            sameSite: 'Lax',    // Lax works fine for same-origin dev
-            maxAge: 7 * 24 * 60 * 60,
-            path: '/',
-        };
-    }
+// Dynamic expiry pass-through configuration
+function getCookieConfig(c, maxAgeSeconds) {
+    const url = c.req.url;
+    const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+
     return {
         httpOnly: true,
-        secure: true,
-        sameSite: 'None',
-        maxAge: 7 * 24 * 60 * 60,
+        secure: isLocal ? false : true,
+        sameSite: isLocal ? 'Lax' : 'None',
+        maxAge: maxAgeSeconds,
         path: '/',
     };
 }
@@ -49,21 +40,18 @@ export const registerController = async (c) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
-        // Auto-detect admin role: email domain "admin" se start kare toh admin
-        const emailDomain = email.split('@')[1]?.toLowerCase() || '';
-        const assignedRole = emailDomain.startsWith('admin') ? 'admin' : 'employee';
+        const assignedRole = 'employee';
 
         const result = await db
             .prepare("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)")
             .bind(name.trim(), email.toLowerCase().trim(), hashedPassword, assignedRole)
             .run();
 
-        if (!result.success) {
+        if (result.meta.changes === 0) {
             throw new Error("Database insertion failed");
         }
 
-        return c.json({ message: "User registered successfully", status: 200 }, 200);
+        return c.json({ message: "User registered successfully", success: true }, 201);
 
     } catch (error) {
         console.error("[Register Error]:", error);
@@ -74,27 +62,19 @@ export const registerController = async (c) => {
 // ─── LOGIN ───────────────────────────────────────────────────────────────────
 export const loginController = async (c) => {
     try {
-        const { email, name, username, password } = await c.req.json();
+        const { email, password } = await c.req.json();
         const db = c.env.DB;
 
-        const identifier = (email || name || username || '').toLowerCase().trim();
+        const identifier = (email || '').toLowerCase().trim();
 
         if (!identifier || !password) {
-            return c.json({ message: "Email/username and password required", status: 400 }, 400);
+            return c.json({ message: "Email and password required", status: 400 }, 400);
         }
 
-        // Try email first, then name
-        let user = await db
+        const user = await db
             .prepare("SELECT * FROM users WHERE LOWER(email) = ?")
             .bind(identifier)
             .first();
-
-        if (!user) {
-            user = await db
-                .prepare("SELECT * FROM users WHERE LOWER(name) = ?")
-                .bind(identifier)
-                .first();
-        }
 
         if (!user) {
             return c.json({ message: "Invalid credentials", status: 401 }, 401);
@@ -105,31 +85,31 @@ export const loginController = async (c) => {
             return c.json({ message: "Invalid credentials", status: 401 }, 401);
         }
 
+        if (!c.env.ACCESS_TOKEN_SECRET || !c.env.REFRESH_TOKEN_SECRET) {
+            console.error("[CRITICAL] JWT secrets missing!");
+            return c.json({ message: "Server configuration error", status: 500 }, 500);
+        }
+
         const now = Math.floor(Date.now() / 1000);
-        const accessPayload = {
+        const ACCESS_EXPIRY = 15 * 60;          // 15 Min
+        const REFRESH_EXPIRY = 7 * 24 * 60 * 60; // 7 Days
+
+        const accessToken = await sign({
             id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
-            exp: now + (7 * 24 * 60 * 60)  // 7 days
-        };
+            exp: now + ACCESS_EXPIRY
+        }, c.env.ACCESS_TOKEN_SECRET);
 
-        // BUG FIX: ACCESS_TOKEN_SECRET check — agar undefined hai toh clear error
-        if (!c.env.ACCESS_TOKEN_SECRET || !c.env.REFRESH_TOKEN_SECRET) {
-            console.error("[CRITICAL] JWT secrets missing from environment!");
-            return c.json({ message: "Server configuration error", status: 500 }, 500);
-        }
+        const refreshToken = await sign({
+            id: user.id,
+            exp: now + REFRESH_EXPIRY
+        }, c.env.REFRESH_TOKEN_SECRET);
 
-        const accessToken = await sign(accessPayload, c.env.ACCESS_TOKEN_SECRET);
-        const refreshToken = await sign({ id: user.id, exp: now + (30 * 24 * 60 * 60) }, c.env.REFRESH_TOKEN_SECRET);
-
-        // Detect local vs production
-        const requestUrl = c.req.url;
-        const isLocal = requestUrl.includes('localhost') || requestUrl.includes('127.0.0.1');
-        const cookieConfig = getCookieConfig(isLocal);
-
-        setCookie(c, 'access_token', accessToken, cookieConfig);
-        setCookie(c, 'refresh_token', refreshToken, cookieConfig);
+        // Bind cookies strictly to their real token lifetime values
+        setCookie(c, 'access_token', accessToken, getCookieConfig(c, ACCESS_EXPIRY));
+        setCookie(c, 'refresh_token', refreshToken, getCookieConfig(c, REFRESH_EXPIRY));
 
         return c.json({
             message: "Login successful",
@@ -148,7 +128,6 @@ export const loginController = async (c) => {
 // ─── GET ALL USERS (Admin only) ───────────────────────────────────────────────
 export const getAllUsers = async (c) => {
     try {
-        // BUG FIX: Role check — sirf admin hi all users dekh sakta hai
         const currentUser = c.get('user');
         if (currentUser.role !== 'admin') {
             return c.json({ message: "Access denied: Admin only", status: 403 }, 403);
@@ -159,7 +138,7 @@ export const getAllUsers = async (c) => {
             .prepare("SELECT id, email, name, role, created_at FROM users")
             .all();
 
-        return c.json({ total_users: results.length, users: results, status: 200 }, 200);
+        return c.json({ total_users: results.length, users: results, success: true }, 200);
 
     } catch (error) {
         console.error("[GetAllUsers Error]:", error);
@@ -185,7 +164,7 @@ export const getProfileHandler = async (c) => {
         return c.json({
             success: true,
             user: {
-                name: user.name || currentUser.name || currentUser.email || "User",
+                name: user.name || currentUser.name || "User",
                 email: user.email || currentUser.email,
                 role: user.role || currentUser.role
             }
@@ -201,16 +180,13 @@ export const refreshTokenController = async (c) => {
     try {
         let refreshToken = getCookie(c, 'refresh_token');
 
-        // Fallback: Check request body for JSON-based refresh token
         if (!refreshToken) {
             try {
                 const body = await c.req.json();
-                if (body && body.refresh_token) {
+                if (body?.refresh_token) {
                     refreshToken = body.refresh_token;
                 }
-            } catch (e) {
-                // No body or not JSON, ignore
-            }
+            } catch (e) {}
         }
 
         if (!refreshToken) {
@@ -230,22 +206,24 @@ export const refreshTokenController = async (c) => {
         }
 
         const now = Math.floor(Date.now() / 1000);
+        const ACCESS_EXPIRY = 15 * 60;
+        const REFRESH_EXPIRY = 7 * 24 * 60 * 60;
+
         const newAccessToken = await sign({
             id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
-            exp: now + (7 * 24 * 60 * 60)
+            exp: now + ACCESS_EXPIRY
         }, c.env.ACCESS_TOKEN_SECRET);
 
-        // Sign a new refresh token as well to rotate it
-        const newRefreshToken = await sign({ id: user.id, exp: now + (30 * 24 * 60 * 60) }, c.env.REFRESH_TOKEN_SECRET);
+        const newRefreshToken = await sign({
+            id: user.id,
+            exp: now + REFRESH_EXPIRY
+        }, c.env.REFRESH_TOKEN_SECRET);
 
-        const requestUrl = c.req.url;
-        const isLocal = requestUrl.includes('localhost') || requestUrl.includes('127.0.0.1');
-        const cookieConfig = getCookieConfig(isLocal);
-        setCookie(c, 'access_token', newAccessToken, cookieConfig);
-        setCookie(c, 'refresh_token', newRefreshToken, cookieConfig);
+        setCookie(c, 'access_token', newAccessToken, getCookieConfig(c, ACCESS_EXPIRY));
+        setCookie(c, 'refresh_token', newRefreshToken, getCookieConfig(c, REFRESH_EXPIRY));
 
         return c.json({
             message: 'Token refreshed',

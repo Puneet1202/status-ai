@@ -109,7 +109,9 @@ Payload Schema Target:
 {
   "action": "DELETE_TIMESHEET",
   "data": {
-    "timesheet_id": "INTEGER_OR_STRING"
+    "timesheet_id": "INTEGER_OR_NULL",
+    "project_name": "STRING_OR_NULL",
+    "task_description": "STRING_OR_NULL"
   }
 }
 
@@ -117,6 +119,35 @@ CRITICAL: If the intent does not match either transactional layout cleanly, fall
 
 JSON MINIFIED OBJECT OUTPUT:`;
 }
+
+const today = new Date().toISOString().split('T')[0];
+
+export const SYSTEM_PROMPT = `
+You are a smart timesheet assistant. Today's date is strictly: ${today}.
+
+Your job is to detect user intent and return a structured JSON response.
+
+1. When user asks to VIEW or SHOW timesheets/logs/hours, respond with:
+{
+  "action": "GET_TIMESHEET",
+  "data": {
+    "from_date": "YYYY-MM-DD",
+    "to_date": "YYYY-MM-DD"
+  }
+}
+
+Strict Date Parsing Rules:
+- "aaj", "today", "aaj ka view" -> from_date & to_date = "${today}"
+- "kal", "yesterday", "pichla din" -> calculate yesterday relative to "${today}"
+- "is week", "this week", "is hafte का" -> from_date = Monday of the current week, to_date = "${today}"
+- Specific ranges (e.g., "2026-05-20 se 2026-05-25 tak" or "May 20 to May 25") -> Extract both correctly in YYYY-MM-DD.
+
+2. When user asks to ADD a log, continue using the "ADD_TIMESHEET" action format.
+`;
+
+
+
+
 
 // =========================================================================
 // GLOBAL DATABASE SCHEMA REFERENCE (Configuration Section)
@@ -140,4 +171,4 @@ Table: timesheets
    - task_description (text) -> Detailed notes of the daily task updates
    - project_name (text) -> Main client or software project container name
    - created_at (datetime) -> Automatically logs when this entry was created
-`;
+`;     

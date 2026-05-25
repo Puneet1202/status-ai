@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-P4Gj1K/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-JYa0AH/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-P4Gj1K/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-JYa0AH/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -4847,23 +4847,14 @@ var decode2 = Jwt.decode;
 var sign2 = Jwt.sign;
 
 // src/controllers/auth.controller.js
-function getCookieConfig(isLocal) {
-  if (isLocal) {
-    return {
-      httpOnly: true,
-      secure: false,
-      // HTTP localhost pe secure:false zaroori hai
-      sameSite: "Lax",
-      // Lax works fine for same-origin dev
-      maxAge: 7 * 24 * 60 * 60,
-      path: "/"
-    };
-  }
+function getCookieConfig(c, maxAgeSeconds) {
+  const url = c.req.url;
+  const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
   return {
     httpOnly: true,
-    secure: true,
-    sameSite: "None",
-    maxAge: 7 * 24 * 60 * 60,
+    secure: isLocal ? false : true,
+    sameSite: isLocal ? "Lax" : "None",
+    maxAge: maxAgeSeconds,
     path: "/"
   };
 }
@@ -4881,13 +4872,12 @@ var registerController = /* @__PURE__ */ __name(async (c) => {
     }
     const salt = await bcryptjs_default.genSalt(10);
     const hashedPassword = await bcryptjs_default.hash(password, salt);
-    const emailDomain = email.split("@")[1]?.toLowerCase() || "";
-    const assignedRole = emailDomain.startsWith("admin") ? "admin" : "employee";
+    const assignedRole = "employee";
     const result = await db.prepare("INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)").bind(name.trim(), email.toLowerCase().trim(), hashedPassword, assignedRole).run();
-    if (!result.success) {
+    if (result.meta.changes === 0) {
       throw new Error("Database insertion failed");
     }
-    return c.json({ message: "User registered successfully", status: 200 }, 200);
+    return c.json({ message: "User registered successfully", success: true }, 201);
   } catch (error) {
     console.error("[Register Error]:", error);
     return c.json({ message: error.message || "Internal Server Error", status: 500 }, 500);
@@ -4895,16 +4885,13 @@ var registerController = /* @__PURE__ */ __name(async (c) => {
 }, "registerController");
 var loginController = /* @__PURE__ */ __name(async (c) => {
   try {
-    const { email, name, username, password } = await c.req.json();
+    const { email, password } = await c.req.json();
     const db = c.env.DB;
-    const identifier = (email || name || username || "").toLowerCase().trim();
+    const identifier = (email || "").toLowerCase().trim();
     if (!identifier || !password) {
-      return c.json({ message: "Email/username and password required", status: 400 }, 400);
+      return c.json({ message: "Email and password required", status: 400 }, 400);
     }
-    let user = await db.prepare("SELECT * FROM users WHERE LOWER(email) = ?").bind(identifier).first();
-    if (!user) {
-      user = await db.prepare("SELECT * FROM users WHERE LOWER(name) = ?").bind(identifier).first();
-    }
+    const user = await db.prepare("SELECT * FROM users WHERE LOWER(email) = ?").bind(identifier).first();
     if (!user) {
       return c.json({ message: "Invalid credentials", status: 401 }, 401);
     }
@@ -4912,26 +4899,26 @@ var loginController = /* @__PURE__ */ __name(async (c) => {
     if (!isPasswordValid) {
       return c.json({ message: "Invalid credentials", status: 401 }, 401);
     }
+    if (!c.env.ACCESS_TOKEN_SECRET || !c.env.REFRESH_TOKEN_SECRET) {
+      console.error("[CRITICAL] JWT secrets missing!");
+      return c.json({ message: "Server configuration error", status: 500 }, 500);
+    }
     const now = Math.floor(Date.now() / 1e3);
-    const accessPayload = {
+    const ACCESS_EXPIRY = 15 * 60;
+    const REFRESH_EXPIRY = 7 * 24 * 60 * 60;
+    const accessToken = await sign2({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
-      exp: now + 7 * 24 * 60 * 60
-      // 7 days
-    };
-    if (!c.env.ACCESS_TOKEN_SECRET || !c.env.REFRESH_TOKEN_SECRET) {
-      console.error("[CRITICAL] JWT secrets missing from environment!");
-      return c.json({ message: "Server configuration error", status: 500 }, 500);
-    }
-    const accessToken = await sign2(accessPayload, c.env.ACCESS_TOKEN_SECRET);
-    const refreshToken = await sign2({ id: user.id, exp: now + 30 * 24 * 60 * 60 }, c.env.REFRESH_TOKEN_SECRET);
-    const requestUrl = c.req.url;
-    const isLocal = requestUrl.includes("localhost") || requestUrl.includes("127.0.0.1");
-    const cookieConfig = getCookieConfig(isLocal);
-    setCookie(c, "access_token", accessToken, cookieConfig);
-    setCookie(c, "refresh_token", refreshToken, cookieConfig);
+      exp: now + ACCESS_EXPIRY
+    }, c.env.ACCESS_TOKEN_SECRET);
+    const refreshToken = await sign2({
+      id: user.id,
+      exp: now + REFRESH_EXPIRY
+    }, c.env.REFRESH_TOKEN_SECRET);
+    setCookie(c, "access_token", accessToken, getCookieConfig(c, ACCESS_EXPIRY));
+    setCookie(c, "refresh_token", refreshToken, getCookieConfig(c, REFRESH_EXPIRY));
     return c.json({
       message: "Login successful",
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
@@ -4952,7 +4939,7 @@ var getAllUsers = /* @__PURE__ */ __name(async (c) => {
     }
     const db = c.env.DB;
     const { results } = await db.prepare("SELECT id, email, name, role, created_at FROM users").all();
-    return c.json({ total_users: results.length, users: results, status: 200 }, 200);
+    return c.json({ total_users: results.length, users: results, success: true }, 200);
   } catch (error) {
     console.error("[GetAllUsers Error]:", error);
     return c.json({ message: "Internal Server Error", status: 500 }, 500);
@@ -4969,7 +4956,7 @@ var getProfileHandler = /* @__PURE__ */ __name(async (c) => {
     return c.json({
       success: true,
       user: {
-        name: user.name || currentUser.name || currentUser.email || "User",
+        name: user.name || currentUser.name || "User",
         email: user.email || currentUser.email,
         role: user.role || currentUser.role
       }
@@ -4984,7 +4971,7 @@ var refreshTokenController = /* @__PURE__ */ __name(async (c) => {
     if (!refreshToken) {
       try {
         const body = await c.req.json();
-        if (body && body.refresh_token) {
+        if (body?.refresh_token) {
           refreshToken = body.refresh_token;
         }
       } catch (e) {
@@ -5000,19 +4987,21 @@ var refreshTokenController = /* @__PURE__ */ __name(async (c) => {
       return c.json({ message: "User not found.", status: 401 }, 401);
     }
     const now = Math.floor(Date.now() / 1e3);
+    const ACCESS_EXPIRY = 15 * 60;
+    const REFRESH_EXPIRY = 7 * 24 * 60 * 60;
     const newAccessToken = await sign2({
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
-      exp: now + 7 * 24 * 60 * 60
+      exp: now + ACCESS_EXPIRY
     }, c.env.ACCESS_TOKEN_SECRET);
-    const newRefreshToken = await sign2({ id: user.id, exp: now + 30 * 24 * 60 * 60 }, c.env.REFRESH_TOKEN_SECRET);
-    const requestUrl = c.req.url;
-    const isLocal = requestUrl.includes("localhost") || requestUrl.includes("127.0.0.1");
-    const cookieConfig = getCookieConfig(isLocal);
-    setCookie(c, "access_token", newAccessToken, cookieConfig);
-    setCookie(c, "refresh_token", newRefreshToken, cookieConfig);
+    const newRefreshToken = await sign2({
+      id: user.id,
+      exp: now + REFRESH_EXPIRY
+    }, c.env.REFRESH_TOKEN_SECRET);
+    setCookie(c, "access_token", newAccessToken, getCookieConfig(c, ACCESS_EXPIRY));
+    setCookie(c, "refresh_token", newRefreshToken, getCookieConfig(c, REFRESH_EXPIRY));
     return c.json({
       message: "Token refreshed",
       token: newAccessToken,
@@ -5232,7 +5221,9 @@ Payload Schema Target:
 {
   "action": "DELETE_TIMESHEET",
   "data": {
-    "timesheet_id": "INTEGER_OR_STRING"
+    "timesheet_id": "INTEGER_OR_NULL",
+    "project_name": "STRING_OR_NULL",
+    "task_description": "STRING_OR_NULL"
   }
 }
 
@@ -5241,37 +5232,77 @@ CRITICAL: If the intent does not match either transactional layout cleanly, fall
 JSON MINIFIED OBJECT OUTPUT:`;
 }
 __name(buildActionPrompt, "buildActionPrompt");
+var today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+var SYSTEM_PROMPT = `
+You are a smart timesheet assistant. Today's date is strictly: ${today}.
 
-// src/ai/chat.js
-var ENGINE_DB_SCHEMA = `
+Your job is to detect user intent and return a structured JSON response.
+
+1. When user asks to VIEW or SHOW timesheets/logs/hours, respond with:
+{
+  "action": "GET_TIMESHEET",
+  "data": {
+    "from_date": "YYYY-MM-DD",
+    "to_date": "YYYY-MM-DD"
+  }
+}
+
+Strict Date Parsing Rules:
+- "aaj", "today", "aaj ka view" -> from_date & to_date = "${today}"
+- "kal", "yesterday", "pichla din" -> calculate yesterday relative to "${today}"
+- "is week", "this week", "is hafte \u0915\u093E" -> from_date = Monday of the current week, to_date = "${today}"
+- Specific ranges (e.g., "2026-05-20 se 2026-05-25 tak" or "May 20 to May 25") -> Extract both correctly in YYYY-MM-DD.
+
+2. When user asks to ADD a log, continue using the "ADD_TIMESHEET" action format.
+`;
+var DB_SCHEMA = `
 Table: users
-   - id (integer, primary key)
-   - name (text)
-   - email (text)
-   - role (text)
+   - id (integer, primary key) -> Unique identifier for each employee or admin
+   - name (text) -> Full name of the user
+   - email (text) -> Unique company email address
+   - role (text) -> Access role, defaults to 'employee', can be 'admin'
+   - created_at (datetime) -> Account creation timestamp
 
 Table: timesheets
-   - id (integer, primary key)
-   - employee_id (integer) -> Strict Multi-tenancy Isolation Key
-   - entry_date (text) -> Format: 'YYYY-MM-DD'
-   - start_time (text) -> Format: 'HH:MM'
-   - end_time (text) -> Format: 'HH:MM'
-   - duration_hours (real)
-   - module_name (text)
-   - task_description (text)
-   - project_name (text)
+   - id (integer, primary key) -> Unique status entry identifier
+   - employee_id (integer) -> Links to users(id). Critical Security: This must ALWAYS equal the current logged-in employee ID for strict data isolation.
+   - entry_date (text) -> The date of work done (Format: 'YYYY-MM-DD')
+   - start_time (text) -> Shift start time (Format: 'HH:MM')
+   - end_time (text) -> Shift end time (Format: 'HH:MM')
+   - duration_hours (real) -> Calculated decimal value of total worked hours
+   - module_name (text) -> Name of the sub-module or ticket being worked on
+   - task_description (text) -> Detailed notes of the daily task updates
+   - project_name (text) -> Main client or software project container name
+   - created_at (datetime) -> Automatically logs when this entry was created
 `;
-async function aiChat(env, userId, message, history = []) {
+
+// src/ai/chat.js
+async function aiChat(env, userId, message, history = [], pendingAction = null) {
   try {
-    const cleanMessage = message.trim().toLowerCase();
-    const safeHistory = Array.isArray(history) ? history.slice(-4) : [];
+    const cleanMessage = message.trim();
+    if (cleanMessage.length > MAX_MESSAGE_CHARS) {
+      return { reply: "Message too long. Please keep your request under 4000 characters." };
+    }
+    let safeHistory = Array.isArray(history) ? history : [];
+    const totalHistoryChars = safeHistory.reduce((sum, h) => sum + (h?.length || 0), 0);
+    if (totalHistoryChars > MAX_TOTAL_CHARS) {
+      console.log(`[\u26A0\uFE0F CONTEXT LIMIT BREACH] History total chars: ${totalHistoryChars}. Truncating array state.`);
+      safeHistory = safeHistory.slice(-2);
+    } else {
+      safeHistory = safeHistory.slice(-4);
+    }
+    const cleanMessageLower = cleanMessage.toLowerCase();
+    const isConfirming = /^(confirm|yes|haan|ha|ok|okay|confirm delete)\b/i.test(cleanMessageLower);
+    if (pendingAction && isConfirming) {
+      return { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED" };
+    }
     let forcedDecision = null;
-    const exactWriteIntent = cleanMessage.includes("log hours") || cleanMessage.includes("add entry") || cleanMessage.includes("submit status") || cleanMessage.startsWith("log ") && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessage);
+    const exactWriteIntent = cleanMessageLower.includes("log hours") || cleanMessageLower.includes("add entry") || cleanMessageLower.includes("submit status") || cleanMessageLower.includes("delete my") || cleanMessageLower.startsWith("log ") && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessageLower);
     if (exactWriteIntent) {
       forcedDecision = "ACTION";
     }
     const finalDynamicSchema = `
-${ENGINE_DB_SCHEMA}
+${DB_SCHEMA}
 CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
@@ -5281,12 +5312,17 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
       decision = forcedDecision;
     } else {
       const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-      const firstReply = await askCloudflareAI(sqlPrompt, message, [], env);
+      const firstReply = await askCloudflareAI(sqlPrompt, message, [], env, CHAT_MODEL);
       decision = firstReply.trim();
     }
-    if (decision === "ACTION") {
+    if (decision.toUpperCase() === "CLARIFY") {
+      return {
+        reply: "Could you please clarify your request? For example: 'Show my hours this week' or 'Log 4 hours for Project-X today'"
+      };
+    }
+    if (decision.toUpperCase() === "ACTION") {
       const actionPrompt = buildActionPrompt(message, userId);
-      const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env);
+      const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env, CHAT_MODEL);
       try {
         return { action: JSON.parse(actionReply) };
       } catch (jsonErr) {
@@ -5296,38 +5332,48 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
     let sqlQuery = decision.trim();
     if (sqlQuery.endsWith(";")) sqlQuery = sqlQuery.slice(0, -1).trim();
     console.log("\n=========================================================");
-    console.log("[\u{1F6A8} AI ENGINE LIVE AUDIT] Generated SQL Query:", sqlQuery);
+    console.log("[AI ENGINE] Generated SQL:", sqlQuery);
     console.log("=========================================================\n");
     if (!sqlQuery.toUpperCase().includes("SELECT")) {
-      return { reply: "Security Security Guardrail Alert: Operation restricted via chat portal." };
+      return { reply: "I could not generate a valid query for that. Could you rephrase your request?" };
     }
-    const userIdRegex = new RegExp(`\\bemployee_id\\s*=\\s*['"]?${userId}['"]?\\b`, "i");
+    const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, "i");
     if (!userIdRegex.test(sqlQuery)) {
-      return { reply: "Security Guardrail Alert: Multi-tenancy ownership validation failed." };
+      return { reply: "Security guardrail: Query must be scoped to your own data." };
     }
     let dbResult = [];
     try {
       const { results } = await env.DB.prepare(sqlQuery).all();
       dbResult = results || [];
       console.log("=========================================================");
-      console.log("[\u{1F6A8} D1 ENGINE RAW OUTPUT] First Data Row:", JSON.stringify(dbResult[0] || "EMPTY ARRAY"));
+      console.log("[D1 OUTPUT] First row:", JSON.stringify(dbResult[0] || "EMPTY"));
       console.log("=========================================================\n");
     } catch (dbErr) {
-      console.error("[D1 Query Failure Logs]:", dbErr);
-      return { reply: "I encountered a minor data processing lag. Could you please try asking the query again?" };
+      console.error("[D1 Query Failed]:", dbErr);
+      return { reply: "I encountered an error fetching your data. Please try rephrasing your query." };
     }
-    const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 5) : [];
+    const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
     const replyPrompt = buildReplyPrompt(message, safeDbResult);
-    const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env);
+    const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env, CHAT_MODEL);
     return { reply: finalHumanReply };
   } catch (globalErr) {
-    console.error("[Fatal Pipeline Log]:", globalErr);
-    return { reply: "Internal pipeline exception triggered. Please contact system admin." };
+    console.error("[Fatal Pipeline Error]:", globalErr);
+    return { reply: "Internal error occurred. Please try again." };
   }
 }
 __name(aiChat, "aiChat");
 
 // src/controllers/timesheet.controller.js
+function calcEndTime(startTime, durationHours) {
+  const hours = parseInt(durationHours, 10);
+  const [startHH, startMM] = startTime.split(":").map(Number);
+  const totalMinutes = startHH * 60 + startMM + hours * 60;
+  const endHH = Math.floor(totalMinutes / 60) % 24;
+  const endMM = totalMinutes % 60;
+  const pad = /* @__PURE__ */ __name((n) => String(n).padStart(2, "0"), "pad");
+  return `${pad(endHH)}:${pad(endMM)}`;
+}
+__name(calcEndTime, "calcEndTime");
 var addTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
   try {
     const db = c.env.DB;
@@ -5344,20 +5390,20 @@ var addTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
       project_name
     } = body;
     if (!entry_date || !start_time || !end_time || !duration_hours || !task_description || !project_name) {
-      return c.json({ message: "Validation Fault: Missing required fields for status entry", success: false }, 400);
+      return c.json({ message: "Validation Fault: Missing required fields", success: false }, 400);
     }
     const result = await db.prepare(`
                 INSERT INTO timesheets 
                 (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `).bind(employeeId, entry_date, start_time, end_time, parseFloat(duration_hours), module_name || "General", task_description, project_name).run();
-    if (!result.success) {
-      throw new Error("D1 Engine rejected operational status insert execution transaction packet.");
+    if (result.meta.changes === 0) {
+      throw new Error("D1 insert failed \u2014 no rows affected.");
     }
-    return c.json({ message: "Status committed successfully to KEYSS D1 infrastructure database!", success: true }, 201);
+    return c.json({ message: "Status committed successfully!", success: true }, 201);
   } catch (error) {
-    console.error("[Backend Timesheet Insertion Crash]:", error);
-    return c.json({ message: "Internal Server Error: Failed to write entry log to DB", success: false }, 500);
+    console.error("[Timesheet Insert Error]:", error);
+    return c.json({ message: "Internal Server Error: Failed to write entry", success: false }, 500);
   }
 }, "addTimesheetEntry");
 var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
@@ -5399,8 +5445,8 @@ var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
     const { results } = binds.length > 0 ? await stmt.bind(...binds).all() : await stmt.all();
     return c.json({ total_records: results.length, telemetry_logs: results, success: true }, 200);
   } catch (error) {
-    console.error("[Backend Core Filter Engine Execution Drop]:", error);
-    return c.json({ message: "Internal Server Error: Query pipeline execution failed", success: false }, 500);
+    console.error("[Filter Engine Error]:", error);
+    return c.json({ message: "Internal Server Error: Query failed", success: false }, 500);
   }
 }, "getAllTimesheetsAdmin");
 var deleteTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
@@ -5409,91 +5455,170 @@ var deleteTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
     const currentUser = c.get("user");
     const logId = c.req.param("id");
     if (!logId) {
-      return c.json({ message: "Validation Fault: Missing log entry identifier", success: false }, 400);
+      return c.json({ message: "Validation Fault: Missing entry ID", success: false }, 400);
     }
-    const result = await db.prepare(`
-                DELETE FROM timesheets 
-                WHERE id = ? AND employee_id = ?
-            `).bind(logId, currentUser.id).run();
-    if (!result.success) {
-      throw new Error("D1 Engine rejected the delete transaction packet.");
+    const result = await db.prepare(`DELETE FROM timesheets WHERE id = ? AND employee_id = ?`).bind(logId, currentUser.id).run();
+    if (result.meta.changes === 0) {
+      return c.json({ message: "Entry not found or already deleted.", success: false }, 404);
     }
-    return c.json({ message: "Status record successfully purged from infrastructure!", success: true }, 200);
+    return c.json({ message: "Entry deleted successfully!", success: true }, 200);
   } catch (error) {
-    console.error("[Backend Deletion Crash]:", error);
-    return c.json({ message: "Internal Server Error: Failed to purge log entry", success: false }, 500);
+    console.error("[Delete Error]:", error);
+    return c.json({ message: "Internal Server Error: Delete failed", success: false }, 500);
   }
 }, "deleteTimesheetEntry");
 var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
   try {
     const user = c.get("user");
     const db = c.env.DB;
-    const { message, history = [] } = await c.req.json();
+    const { message, history = [], pendingAction = null } = await c.req.json();
     if (!message) {
-      return c.json({ success: false, message: "Message text input parameter required" }, 400);
+      return c.json({ success: false, message: "Message required" }, 400);
+    }
+    const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
+    if (pendingAction && pendingAction.action === "DELETE_TIMESHEET" && isConfirming) {
+      const deleteResult = await db.prepare("DELETE FROM timesheets WHERE id = ? AND employee_id = ?").bind(pendingAction.matchId, user.id).run();
+      if (deleteResult.meta.changes === 0) {
+        return c.json({ reply: "Entry not found or already deleted." }, 200);
+      }
+      return c.json({
+        success: true,
+        action: "DELETE_TIMESHEET",
+        reply: `Entry from project "${pendingAction.projectName}" deleted successfully.`
+      }, 200);
     }
     const result = await aiChat(c.env, user.id, message, history);
     if (result.action) {
       const { action, data } = result.action;
-      const destructiveConfirmed = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim()) && /(delete|remove|undo|hata|clear)/i.test(message);
       if (action === "ADD_TIMESHEET") {
         if (!data.project_name || !data.duration_hours || !data.task_description) {
-          return c.json({ reply: "Action aborted. Payload timesheet parameters are incomplete." }, 200);
+          return c.json({ reply: "Please specify project name, hours, and task description clearly." }, 200);
         }
-        const entryDate = data.entry_date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-        const startTime = data.start_time || "09:00";
-        const endTime = data.end_time || "18:00";
-        const moduleName = data.module_name || "GENERAL";
-        const insertResult = await db.prepare(`
-                        INSERT INTO timesheets 
-                        (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    `).bind(
-          user.id,
-          entryDate,
-          startTime,
-          endTime,
-          Number(data.duration_hours),
-          moduleName.toUpperCase().trim(),
-          data.task_description.trim(),
-          data.project_name.trim()
-        ).run();
-        if (!insertResult.success) {
-          throw new Error("D1 execution engine dropped the insertion transaction packet.");
+        const totalHours = parseInt(data.duration_hours, 10);
+        if (isNaN(totalHours) || totalHours <= 0) {
+          return c.json({ reply: "Invalid duration. Please provide valid working hours." }, 200);
         }
+        const entryDate = data.entry_date || data.date || (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+        const moduleName = (data.module_name || "GENERAL").toUpperCase().trim();
+        const DAILY_SLOTS = [
+          { start: "09:00", end: "11:00" },
+          { start: "11:00", end: "13:00" },
+          { start: "14:00", end: "16:00" },
+          // Auto lunch break jump
+          { start: "16:00", end: "18:00" }
+        ];
+        if (totalHours === 8) {
+          const results = [];
+          for (let index = 0; index < DAILY_SLOTS.length; index++) {
+            const slot = DAILY_SLOTS[index];
+            const splitResult = await db.prepare(`
+                                INSERT INTO timesheets 
+                                (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            `).bind(
+              user.id,
+              entryDate,
+              slot.start,
+              slot.end,
+              2,
+              moduleName,
+              `${data.task_description.trim()} (Part ${index + 1} of 4)`,
+              data.project_name.trim()
+            ).run();
+            if (splitResult.meta.changes === 0) {
+              throw new Error(`Database Error: Matrix partition slot ${index + 1} failed.`);
+            }
+            results.push(splitResult);
+          }
+          return c.json({
+            success: true,
+            action: "ADD_TIMESHEET",
+            reply: `Logged 8 hours split across 4 ordered enterprise slots (09-11, 11-01, 02-04, 04-06) under "${data.project_name}" [${moduleName}] for ${entryDate}.`
+          }, 200);
+        } else {
+          const startTime = data.start_time || "09:00";
+          const endTime = data.end_time || calcEndTime(startTime, totalHours);
+          const insertResult = await db.prepare(`
+                            INSERT INTO timesheets 
+                            (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        `).bind(user.id, entryDate, startTime, endTime, totalHours, moduleName, data.task_description.trim(), data.project_name.trim()).run();
+          if (insertResult.meta.changes === 0) {
+            throw new Error("Database Error: Inline write transaction failed on Cloudflare D1.");
+          }
+          return c.json({
+            success: true,
+            action: "ADD_TIMESHEET",
+            reply: `Logged ${totalHours} hours under "${data.project_name}" [${moduleName}] from ${startTime} to ${endTime} for ${entryDate}. Saved!`
+          }, 200);
+        }
+      }
+      if (action === "GET_TIMESHEET") {
+        const from = data.from_date;
+        const to = data.to_date || from;
+        if (!from) {
+          return c.json({ reply: "Please specify a valid start date to view timesheets." }, 200);
+        }
+        const rows = await db.prepare(`
+                        SELECT id, entry_date, start_time, end_time, 
+                               duration_hours, module_name, task_description, project_name
+                        FROM timesheets
+                        WHERE employee_id = ?
+                          AND entry_date BETWEEN ? AND ?
+                        ORDER BY entry_date ASC, start_time ASC
+                    `).bind(user.id, from, to).all();
+        const total = rows.results ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0) : 0;
         return c.json({
           success: true,
-          action: "ADD_TIMESHEET",
-          reply: `Successfully logged ${data.duration_hours} hours under project "${data.project_name}" for module [${moduleName}]. Daily status entry saved!`
+          action: "GET_TIMESHEET",
+          reply: `Showing logs from ${from} to ${to} \u2014 Total logged: ${total} hours.`,
+          data: rows.results || []
         }, 200);
       }
       if (action === "DELETE_TIMESHEET") {
-        const matchLog = await db.prepare("SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE employee_id = ? AND (project_name LIKE ? OR task_description LIKE ?) ORDER BY created_at DESC LIMIT 1").bind(user.id, `%${data.project_name || ""}%`, `%${data.task_description || ""}%`).first();
+        let matchLog = null;
+        if (data.timesheet_id) {
+          matchLog = await db.prepare("SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE id = ? AND employee_id = ?").bind(data.timesheet_id, user.id).first();
+        }
+        if (!matchLog && (data.project_name?.trim() || data.task_description?.trim())) {
+          let caseQuery = `SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE employee_id = ?`;
+          const caseBinds = [user.id];
+          if (data.project_name?.trim()) {
+            caseQuery += ` AND project_name LIKE ?`;
+            caseBinds.push(`%${data.project_name.trim()}%`);
+          }
+          if (data.task_description?.trim()) {
+            caseQuery += ` AND task_description LIKE ?`;
+            caseBinds.push(`%${data.task_description.trim()}%`);
+          }
+          caseQuery += ` ORDER BY created_at DESC LIMIT 1`;
+          matchLog = await db.prepare(caseQuery).bind(...caseBinds).first();
+        }
         if (!matchLog) {
-          return c.json({ reply: "Could not identify any recent timesheet entry matching your description query parameters." }, 200);
+          const userWasSpecific = data.timesheet_id || data.project_name?.trim() || data.task_description?.trim();
+          if (userWasSpecific) {
+            return c.json({ reply: "Could not find any entry matching your description. Please check details." }, 200);
+          }
+          matchLog = await db.prepare("SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE employee_id = ? ORDER BY created_at DESC LIMIT 1").bind(user.id).first();
         }
-        if (!destructiveConfirmed) {
-          return c.json({
-            requiresConfirmation: true,
-            pendingAction: "DELETE_TIMESHEET",
-            reply: `I found a recent entry for project "${matchLog.project_name}" (${matchLog.duration_hours} hrs: ${matchLog.task_description}). Please type "confirm delete" if you wish to remove it permanently.`
-          }, 200);
-        }
-        const deleteResult = await db.prepare("DELETE FROM timesheets WHERE id = ? AND employee_id = ?").bind(matchLog.id, user.id).run();
-        if (!deleteResult.success) {
-          throw new Error("D1 execution engine dropped the deletion transaction packet.");
+        if (!matchLog) {
+          return c.json({ reply: "No timesheet entries found to delete." }, 200);
         }
         return c.json({
-          success: true,
-          action: "DELETE_TIMESHEET",
-          reply: `Permanently cleared the requested status log entry from project "${matchLog.project_name}" successfully.`
+          requiresConfirmation: true,
+          pendingAction: {
+            action: "DELETE_TIMESHEET",
+            matchId: matchLog.id,
+            projectName: matchLog.project_name
+          },
+          reply: `Found entry: "${matchLog.project_name}" (${matchLog.duration_hours} hrs \u2014 ${matchLog.task_description}). Type "confirm" to delete permanently.`
         }, 200);
       }
     }
     return c.json({ ...result, status: 200 }, 200);
   } catch (error) {
-    console.error("[Gateway Routing Exception Logs]:", error);
-    return c.json({ message: "Internal server gateway exception encountered inside the AI handler loop.", status: 500 }, 500);
+    console.error("[AI Handler Error]:", error);
+    return c.json({ message: "Internal server error in AI handler.", status: 500 }, 500);
   }
 }, "aiChatHandler");
 
@@ -5546,34 +5671,9 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// node_modules/wrangler/templates/middleware/middleware-miniflare3-json-error.ts
-init_modules_watch_stub();
-function reduceError(e) {
-  return {
-    name: e?.name,
-    message: e?.message ?? String(e),
-    stack: e?.stack,
-    cause: e?.cause === void 0 ? void 0 : reduceError(e.cause)
-  };
-}
-__name(reduceError, "reduceError");
-var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx) => {
-  try {
-    return await middlewareCtx.next(request, env);
-  } catch (e) {
-    const error = reduceError(e);
-    return Response.json(error, {
-      status: 500,
-      headers: { "MF-Experimental-Error-Stack": "true" }
-    });
-  }
-}, "jsonError");
-var middleware_miniflare3_json_error_default = jsonError;
-
-// .wrangler/tmp/bundle-P4Gj1K/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-JYa0AH/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
-  middleware_ensure_req_body_drained_default,
-  middleware_miniflare3_json_error_default
+  middleware_ensure_req_body_drained_default
 ];
 var middleware_insertion_facade_default = src_default;
 
@@ -5603,7 +5703,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-P4Gj1K/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-JYa0AH/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

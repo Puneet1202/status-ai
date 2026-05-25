@@ -1,47 +1,55 @@
 // backend/src/ai/chat.js
-// V7 ENTERPRISE ROBUST PRODUCTION COMPLIANT ENGINE - ARCHITECT LOCKED
+// V10 PRODUCTION READY - ALL INTERNAL PIPELINES EXTENDED & FIXED
 
 import { askCloudflareAI } from './providers/cloudflare.js';
-import { buildSQLPrompt, buildReplyPrompt, buildActionPrompt } from './prompts.js';
+import { buildSQLPrompt, buildReplyPrompt, buildActionPrompt, DB_SCHEMA } from './prompts.js';
+import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config Imported Cleanly
 
-const ENGINE_DB_SCHEMA = `
-Table: users
-   - id (integer, primary key)
-   - name (text)
-   - email (text)
-   - role (text)
-
-Table: timesheets
-   - id (integer, primary key)
-   - employee_id (integer) -> Strict Multi-tenancy Isolation Key
-   - entry_date (text) -> Format: 'YYYY-MM-DD'
-   - start_time (text) -> Format: 'HH:MM'
-   - end_time (text) -> Format: 'HH:MM'
-   - duration_hours (real)
-   - module_name (text)
-   - task_description (text)
-   - project_name (text)
-`;
-
-export async function aiChat(env, userId, message, history = []){
+export async function aiChat(env, userId, message, history = [], pendingAction = null) {
     try {
-        const cleanMessage = message.trim().toLowerCase();
-        const safeHistory = Array.isArray(history) ? history.slice(-4) : [];
+        const cleanMessage = message.trim();
 
-        // 🏛️ ENTERPRISE INTENT BYPASS: Fast-track only when it's 100% a structural insertion command
+        // 🚨 CONFIG SHIELD 1: Single Message Length Guardrail
+        if (cleanMessage.length > MAX_MESSAGE_CHARS) {
+            return { reply: "Message too long. Please keep your request under 4000 characters." };
+        }
+
+        // 🚨 CONFIG SHIELD 2: Rolling History Character Volatility Protection
+        let safeHistory = Array.isArray(history) ? history : [];
+        const totalHistoryChars = safeHistory.reduce((sum, h) => sum + (h?.length || 0), 0);
+        
+        if (totalHistoryChars > MAX_TOTAL_CHARS) {
+            console.log(`[⚠️ CONTEXT LIMIT BREACH] History total chars: ${totalHistoryChars}. Truncating array state.`);
+            safeHistory = safeHistory.slice(-2);
+        } else {
+            safeHistory = safeHistory.slice(-4);
+        }
+
+        const cleanMessageLower = cleanMessage.toLowerCase();
+        const isConfirming = /^(confirm|yes|haan|ha|ok|okay|confirm delete)\b/i.test(cleanMessageLower);
+
+        // ================================================================
+        // 🛡️ STATLESS CONFIRMATION INTERCEPTION (Bypass AI entirely if true)
+        // ================================================================
+        if (pendingAction && isConfirming) {
+            return { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED" };
+        }
+
+        // Fast-track exact write intent
         let forcedDecision = null;
-        const exactWriteIntent = 
-            cleanMessage.includes('log hours') || 
-            cleanMessage.includes('add entry') || 
-            cleanMessage.includes('submit status') || 
-            (cleanMessage.startsWith('log ') && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessage));
+        const exactWriteIntent =
+            cleanMessageLower.includes('log hours') ||
+            cleanMessageLower.includes('add entry') ||
+            cleanMessageLower.includes('submit status') ||
+            cleanMessageLower.includes('delete my') ||
+            (cleanMessageLower.startsWith('log ') && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessageLower));
 
         if (exactWriteIntent) {
             forcedDecision = "ACTION";
         }
 
         const finalDynamicSchema = `
-${ENGINE_DB_SCHEMA}
+${DB_SCHEMA}
 CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
@@ -51,71 +59,75 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
         if (forcedDecision) {
             decision = forcedDecision;
         } else {
-            // Let the V6 prompt do the intelligent semantic classification!
             const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-            const firstReply = await askCloudflareAI(sqlPrompt, message, [], env);
+            // Passed CHAT_MODEL variable configuration explicitly
+            const firstReply = await askCloudflareAI(sqlPrompt, message, [], env, CHAT_MODEL);
             decision = firstReply.trim();
         }
 
-        // =========================================================================
-        // 🛠️ PATH A: MUTATION ACTION PIPELINE (Data Logging/Automation Form)
-        // =========================================================================
-        if (decision === "ACTION") {
+        if (decision.toUpperCase() === "CLARIFY") {
+            return {
+                reply: "Could you please clarify your request? For example: 'Show my hours this week' or 'Log 4 hours for Project-X today'"
+            };
+        }
+
+        // ================================================================
+        // 🛠️ PATH A: ACTION
+        // ================================================================
+        if (decision.toUpperCase() === "ACTION") {
             const actionPrompt = buildActionPrompt(message, userId);
-            const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env);
+            const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env, CHAT_MODEL);
             try {
-                return { action: JSON.parse(actionReply) }; 
+                return { action: JSON.parse(actionReply) };
             } catch (jsonErr) {
                 return { reply: "I understood you want to log data, but could you please specify the project name or duration hours clearly?" };
             }
         }
 
-        // =========================================================================
-        // 📊 PATH B: ANALYTICAL READ PIPELINE (Secure Text-to-SQL Dynamic Layer)
-        // =========================================================================
+        // ================================================================
+        // 🔍 PATH B: SQL READ
+        // ================================================================
         let sqlQuery = decision.trim();
         if (sqlQuery.endsWith(';')) sqlQuery = sqlQuery.slice(0, -1).trim();
 
         console.log("\n=========================================================");
-        console.log("[🚨 AI ENGINE LIVE AUDIT] Generated SQL Query:", sqlQuery);
+        console.log("[AI ENGINE] Generated SQL:", sqlQuery);
         console.log("=========================================================\n");
 
-        // 🛡️ SECURITY AUDIT GATEWAY: Hardcoded RegEx Isolation Rule
         if (!sqlQuery.toUpperCase().includes("SELECT")) {
-            return { reply: "Security Security Guardrail Alert: Operation restricted via chat portal." };
-        }
-        
-        // 💥 MNC COMPLIANCE REGEX: SQL ke andar employee_id sahi format mein lock hai ya nahi
-        const userIdRegex = new RegExp(`\\bemployee_id\\s*=\\s*['"]?${userId}['"]?\\b`, 'i');
-        if (!userIdRegex.test(sqlQuery)) {
-            return { reply: "Security Guardrail Alert: Multi-tenancy ownership validation failed." };
+            return { reply: "I could not generate a valid query for that. Could you rephrase your request?" };
         }
 
-        // Live D1 Database Driver Execution Loop
+        const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, 'i');
+        if (!userIdRegex.test(sqlQuery)) {
+            return { reply: "Security guardrail: Query must be scoped to your own data." };
+        }
+
+        // DB execute
         let dbResult = [];
         try {
             const { results } = await env.DB.prepare(sqlQuery).all();
             dbResult = results || [];
-            
+
             console.log("=========================================================");
-            console.log("[🚨 D1 ENGINE RAW OUTPUT] First Data Row:", JSON.stringify(dbResult[0] || "EMPTY ARRAY"));
+            console.log("[D1 OUTPUT] First row:", JSON.stringify(dbResult[0] || "EMPTY"));
             console.log("=========================================================\n");
         } catch (dbErr) {
-            console.error("[D1 Query Failure Logs]:", dbErr);
-            return { reply: "I encountered a minor data processing lag. Could you please try asking the query again?" };
+            console.error("[D1 Query Failed]:", dbErr);
+            return { reply: "I encountered an error fetching your data. Please try rephrasing your query." };
         }
 
-        // Strict UI Layer Payload Slicing
-        const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 5) : [];
+        // Safety Net Slice mapping
+        const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
 
-        // 🤖 TURN 2: CONVERSATIONAL NATURAL LANGUAGE PROCESSOR (No hardcoded if blocks!)
+        // Natural language reply
         const replyPrompt = buildReplyPrompt(message, safeDbResult);
-        const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env);
+        const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env, CHAT_MODEL);
 
         return { reply: finalHumanReply };
 
     } catch (globalErr) {
-        console.error("[Fatal Pipeline Log]:", globalErr);
-        return { reply: "Internal pipeline exception triggered. Please contact system admin." };
+        console.error("[Fatal Pipeline Error]:", globalErr);
+        return { reply: "Internal error occurred. Please try again." };
     }
 }
