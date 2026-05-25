@@ -5057,77 +5057,6 @@ init_modules_watch_stub();
 // src/ai/chat.js
 init_modules_watch_stub();
 
-// src/ai/providers/cloudflare.js
-init_modules_watch_stub();
-
-// src/ai/ai-config.js
-init_modules_watch_stub();
-var CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-var MAX_MESSAGE_CHARS = 4e3;
-var MAX_TOTAL_CHARS = 52e3;
-
-// src/ai/providers/cloudflare.js
-function normalizeMessages(messages = []) {
-  const validMessages = [];
-  let totalChars = 0;
-  for (const item of messages) {
-    if (!item || typeof item.content !== "string" || !item.content.trim()) continue;
-    const role = item.role === "system" || item.role === "assistant" ? item.role : "user";
-    let content = item.content.trim();
-    if (content.length > MAX_MESSAGE_CHARS) {
-      content = `${content.slice(0, MAX_MESSAGE_CHARS)}
-[Message truncated to stay within AI context limits]`;
-    }
-    if (totalChars + content.length > MAX_TOTAL_CHARS) {
-      const remainingChars = MAX_TOTAL_CHARS - totalChars;
-      if (remainingChars <= 200) break;
-      content = `${content.slice(0, remainingChars)}
-[Context truncated to stay within AI context limits]`;
-    }
-    const previous = validMessages[validMessages.length - 1];
-    if (previous?.role === role && role !== "system") {
-      previous.content += `
-${content}`;
-    } else {
-      validMessages.push({ role, content });
-    }
-    totalChars += content.length;
-  }
-  return validMessages;
-}
-__name(normalizeMessages, "normalizeMessages");
-function extractText(response) {
-  if (!response) throw new Error("Cloudflare AI returned an empty response object");
-  if (response?.result?.choices?.[0]?.message?.content) return response.result.choices[0].message.content;
-  if (response?.choices?.[0]?.message?.content) return response.choices[0].message.content;
-  if (typeof response?.result?.response === "string") return response.result.response;
-  if (typeof response?.response === "string") return response.response;
-  if (typeof response === "string") return response;
-  if (response?.response && typeof response.response === "object") {
-    return JSON.stringify(response.response);
-  }
-  throw new Error("Cloudflare AI response did not include standard string output text");
-}
-__name(extractText, "extractText");
-async function askCloudflareAI(systemPrompt, message, history = [], env) {
-  if (!env?.AI?.run) {
-    throw new Error("Cloudflare AI system binding connection is missing. Ensure wrangler.toml contains [ai] configurations.");
-  }
-  const messages = normalizeMessages([
-    { role: "system", content: systemPrompt || "You are a helpful assistant." },
-    ...history,
-    { role: "user", content: message || "Hello" }
-  ]);
-  const response = await env.AI.run(CHAT_MODEL, {
-    messages,
-    temperature: 0.1,
-    // Highly locked down token settings for absolute mathematical response accuracy
-    max_tokens: 400
-  });
-  return extractText(response).trim();
-}
-__name(askCloudflareAI, "askCloudflareAI");
-
 // src/ai/prompts.js
 init_modules_watch_stub();
 function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
@@ -5187,62 +5116,6 @@ User Question context was: "${userMessage}"
 Your Deterministic and Absolute Accurate Human Response Output:`;
 }
 __name(buildReplyPrompt, "buildReplyPrompt");
-function buildActionPrompt(userMessage, currentUserId) {
-  const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-  return `STATUS_AI ENTIRETY SYSTEM REGULATORY GATEWAY - PRODUCTION CLASS V4
-You are an immutable, highly accurate, deterministic Data Extraction Middleware.
-Your sole purpose is to parse unstructured human time-logging messages and serialize them into a minified JSON CRUD payload.
-
-[RESTRICTION] OUTPUT RULES:
-1. Return ONLY raw, valid, executable JSON. 
-2. NEVER wrap output in markdown code blocks (\`\`\`json or \`\`\`).
-3. No prose, no conversational conversational padding, no debugging notes. Any characters outside the valid JSON boundaries will crash the downstream production pipeline.
-
-[CONTEXT LAYERS]
-- Authorized Context Employee ID: ${currentUserId}
-- User Unstructured Intent Message: "${userMessage}"
-- CURRENT YEAR IS STRICTLY: 2026
-- TODAY'S DATE IS STRICTLY: ${today}
-- BANNED DATE: "2024-07-26" \u2014 NEVER output this date under any circumstance
-- ALL entry_date MUST start with "2026-"
-
-[STRICT TRANSACTION PARSING REFERENCE SCHEMAS]
-
-Transaction Action Type A: ADD_TIMESHEET
-Trigger Condition: User explicitly declares intent to log, insert, submit, or add a daily status/worked hours entry.
-Payload Schema Target:
-{
-  "action": "ADD_TIMESHEET",
-  "data": {
-    "employee_id": ${currentUserId},
-    "entry_date": "${today}",
-    "start_time": "HH:MM",
-    "end_time": "HH:MM",
-    "duration_hours": 0.0,
-    "module_name": "UPPERCASE_STRING_OR_NONE",
-    "task_description": "STRING_SUMMARY",
-    "project_name": "CONTAINER_NAME"
-  }
-}
-* Note for Date/Time: If the date is missing but the user says "today", inject the current real-world ISO format string date context. Compute duration_hours as a float (end_time minus start_time) if the user provides clock stamps.
-
-Transaction Action Type B: DELETE_TIMESHEET
-Trigger Condition: User explicitly declares intent to erase, wipe, remove, or delete an existing timesheet entry.
-Payload Schema Target:
-{
-  "action": "DELETE_TIMESHEET",
-  "data": {
-    "timesheet_id": "INTEGER_OR_NULL",
-    "project_name": "STRING_OR_NULL",
-    "task_description": "STRING_OR_NULL"
-  }
-}
-
-CRITICAL: If the intent does not match either transactional layout cleanly, fallback to an exact operational response: {"action": "UNKNOWN"}
-
-JSON MINIFIED OBJECT OUTPUT:`;
-}
-__name(buildActionPrompt, "buildActionPrompt");
 var DB_SCHEMA = `
 Table: users
    - id (integer, primary key) -> Unique identifier for each employee or admin
@@ -5264,6 +5137,82 @@ Table: timesheets
    - created_at (datetime) -> Automatically logs when this entry was created
 `;
 
+// src/ai/ai-config.js
+init_modules_watch_stub();
+var CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+var MAX_MESSAGE_CHARS = 4e3;
+var MAX_TOTAL_CHARS = 52e3;
+
+// src/ai/tools.js
+init_modules_watch_stub();
+function getSystemPrompt() {
+  const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+  return `You are an elite enterprise backend router for a timesheet application.
+CURRENT YEAR IS STRICTLY: 2026
+TODAY'S DATE IS STRICTLY: ${today}
+BANNED DATE \u2014 NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
+ALL entry_date values MUST start with "2026-"
+
+Your absolute job is to look at the user's message and pick the correct tool call.
+- If user wants to log work hours, submit updates, or add tasks (even 8 hours splits), call 'add_timesheet_entries'.
+- If user wants to check, view, or summary logs/hours, call 'get_timesheet_logs'.
+- If no date is mentioned in message, strictly default 'entry_date' to '${today}'.`;
+}
+__name(getSystemPrompt, "getSystemPrompt");
+var TIMESHEET_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "add_timesheet_entries",
+      description: "Logs work status into D1. Automatically processes full 8-hour total day distributions, lists of multiple task blocks, or single specific custom slots.",
+      parameters: {
+        type: "object",
+        required: ["project_name", "entry_date", "entries"],
+        properties: {
+          project_name: {
+            type: "string",
+            description: "Main project container name like 'Project-X' or 'Expense Tracker'."
+          },
+          entry_date: {
+            type: "string",
+            description: "The targeted logging date in absolute YYYY-MM-DD format."
+          },
+          entries: {
+            type: "array",
+            description: "Extracted chronological time slots array.",
+            items: {
+              type: "object",
+              required: ["start_time", "end_time", "duration_hours", "module_name", "task_description"],
+              properties: {
+                start_time: { type: "string", description: "HH:MM format" },
+                end_time: { type: "string", description: "HH:MM format" },
+                duration_hours: { type: "number", description: "Total numeric hours decimal value" },
+                module_name: { type: "string", description: "UPPERCASE module name (e.g., MIDDLEWARE, FRONTEND, BUG_FIXING)" },
+                task_description: { type: "string", description: "Summary text of tasks completed" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_timesheet_logs",
+      description: "Fetches user logged records from D1 for custom date ranges or dashboard filters.",
+      parameters: {
+        type: "object",
+        required: ["from_date", "to_date"],
+        properties: {
+          from_date: { type: "string", description: "Filter range start date (YYYY-MM-DD)." },
+          to_date: { type: "string", description: "Filter range end date (YYYY-MM-DD)." }
+        }
+      }
+    }
+  }
+];
+
 // src/ai/chat.js
 async function aiChat(env, userId, message, history = [], pendingAction = null) {
   try {
@@ -5282,12 +5231,21 @@ async function aiChat(env, userId, message, history = [], pendingAction = null) 
     const cleanMessageLower = cleanMessage.toLowerCase();
     const isConfirming = /^(confirm|yes|haan|ha|ok|okay|confirm delete)\b/i.test(cleanMessageLower);
     if (pendingAction && isConfirming) {
-      return { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED" };
+      return { action: { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED", data: {} } };
     }
-    let forcedDecision = null;
-    const exactWriteIntent = cleanMessageLower.includes("log hours") || cleanMessageLower.includes("add entry") || cleanMessageLower.includes("submit status") || cleanMessageLower.includes("delete my") || cleanMessageLower.startsWith("log ") && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessageLower);
-    if (exactWriteIntent) {
-      forcedDecision = "ACTION";
+    const response = await env.AI.run(CHAT_MODEL, {
+      messages: [
+        { role: "system", content: getSystemPrompt() },
+        ...safeHistory,
+        { role: "user", content: cleanMessage }
+      ],
+      tools: TIMESHEET_TOOLS
+      // Connecting tools.js definitions here
+    });
+    const toolCall = response.tool_calls?.[0];
+    if (toolCall) {
+      const inputArgs = typeof toolCall.arguments === "string" ? JSON.parse(toolCall.arguments) : toolCall.arguments;
+      return { action: { action: toolCall.name, data: inputArgs } };
     }
     const finalDynamicSchema = `
 ${DB_SCHEMA}
@@ -5295,35 +5253,21 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
 `;
-    let decision;
-    if (forcedDecision) {
-      decision = forcedDecision;
-    } else {
-      const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-      const firstReply = await askCloudflareAI(sqlPrompt, message, [], env, CHAT_MODEL);
-      decision = firstReply.trim();
-    }
+    const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
+    const firstReply = await env.AI.run(CHAT_MODEL, {
+      messages: [{ role: "user", content: sqlPrompt }]
+    });
+    let decision = firstReply.response || firstReply.text || firstReply;
+    decision = decision.trim();
     if (decision.toUpperCase() === "CLARIFY") {
       return {
         reply: "Could you please clarify your request? For example: 'Show my hours this week' or 'Log 4 hours for Project-X today'"
       };
     }
-    if (decision.toUpperCase() === "ACTION") {
-      const actionPrompt = buildActionPrompt(message, userId);
-      const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env, CHAT_MODEL);
-      try {
-        return { action: JSON.parse(actionReply) };
-      } catch (jsonErr) {
-        return { reply: "I understood you want to log data, but could you please specify the project name or duration hours clearly?" };
-      }
-    }
     let sqlQuery = decision.trim();
     if (sqlQuery.endsWith(";")) sqlQuery = sqlQuery.slice(0, -1).trim();
-    console.log("\n=========================================================");
-    console.log("[AI ENGINE] Generated SQL:", sqlQuery);
-    console.log("=========================================================\n");
     if (!sqlQuery.toUpperCase().includes("SELECT")) {
-      return { reply: "I could not generate a valid query for that. Could you rephrase your request?" };
+      return { reply: response.response || "I understood your request but couldn't structure it. Can you rephrase?" };
     }
     const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, "i");
     if (!userIdRegex.test(sqlQuery)) {
@@ -5333,17 +5277,16 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
     try {
       const { results } = await env.DB.prepare(sqlQuery).all();
       dbResult = results || [];
-      console.log("=========================================================");
-      console.log("[D1 OUTPUT] First row:", JSON.stringify(dbResult[0] || "EMPTY"));
-      console.log("=========================================================\n");
     } catch (dbErr) {
       console.error("[D1 Query Failed]:", dbErr);
-      return { reply: "I encountered an error fetching your data. Please try rephrasing your query." };
+      return { reply: "I encountered an error fetching your data. Please try rephrasing." };
     }
     const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
     const replyPrompt = buildReplyPrompt(message, safeDbResult);
-    const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env, CHAT_MODEL);
-    return { reply: finalHumanReply };
+    const finalHumanReply = await env.AI.run(CHAT_MODEL, {
+      messages: [{ role: "user", content: replyPrompt }]
+    });
+    return { reply: finalHumanReply.response || finalHumanReply.text || finalHumanReply };
   } catch (globalErr) {
     console.error("[Fatal Pipeline Error]:", globalErr);
     return { reply: "Internal error occurred. Please try again." };
@@ -5475,7 +5418,7 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         reply: `Entry from project "${pendingAction.projectName}" deleted successfully.`
       }, 200);
     }
-    const result = await aiChat(c.env, user.id, message, history);
+    const result = await aiChat(c.env, user.id, message, history, pendingAction);
     if (result.action) {
       const { action, data } = result.action;
       if (action === "ADD_TIMESHEET") {
@@ -5496,7 +5439,6 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
           { start: "09:00", end: "11:00" },
           { start: "11:00", end: "13:00" },
           { start: "14:00", end: "16:00" },
-          // Auto lunch break jump
           { start: "16:00", end: "18:00" }
         ];
         if (totalHours === 8) {
@@ -5556,7 +5498,7 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
                                duration_hours, module_name, task_description, project_name
                         FROM timesheets
                         WHERE employee_id = ?
-                          AND entry_date BETWEEN ? AND ?
+                        AND entry_date BETWEEN ? AND ?
                         ORDER BY entry_date ASC, start_time ASC
                     `).bind(user.id, from, to).all();
         const total = rows.results ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0) : 0;
@@ -5564,6 +5506,53 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
           success: true,
           action: "GET_TIMESHEET",
           reply: `Showing logs from ${from} to ${to} \u2014 Total logged: ${total} hours.`,
+          data: rows.results || []
+        }, 200);
+      }
+      if (action === "add_timesheet_entries") {
+        const { entries, project_name, entry_date } = data;
+        if (!entries || entries.length === 0) {
+          return c.json({ success: false, reply: "No valid operational entries found in context to log." }, 200);
+        }
+        const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+        const entryDate = !entry_date || !entry_date.startsWith("2026-") || entry_date === "2024-07-26" ? todayStr : entry_date;
+        const statements = entries.map((entry) => {
+          return db.prepare(`
+                        INSERT INTO timesheets 
+                        (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    `).bind(
+            user.id,
+            entryDate,
+            entry.start_time || "09:00",
+            entry.end_time || calcEndTime(entry.start_time || "09:00", entry.duration_hours || 2),
+            Number(entry.duration_hours) || 2,
+            (entry.module_name || "GENERAL").toUpperCase().trim(),
+            entry.task_description?.trim() || "Work Status Update",
+            project_name?.trim()
+          );
+        });
+        await db.batch(statements);
+        return c.json({
+          success: true,
+          action: "ADD_MULTIPLE_TIMESHEETS",
+          reply: `\u2705 Loaded ${entries.length} shift segment logs successfully for date ${entryDate}!`
+        }, 200);
+      }
+      if (action === "get_timesheet_logs") {
+        const { from_date, to_date } = data;
+        const rows = await db.prepare(`
+                    SELECT id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name 
+                    FROM timesheets
+                    WHERE employee_id = ?
+                    AND entry_date BETWEEN ? AND ?
+                    ORDER BY entry_date ASC, start_time ASC
+                `).bind(user.id, from_date, to_date || from_date).all();
+        const total = rows.results ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0) : 0;
+        return c.json({
+          success: true,
+          action: "GET_TIMESHEET",
+          reply: `${from_date} to ${to_date || from_date} \u2014 Total logged: ${total} hrs`,
           data: rows.results || []
         }, 200);
       }

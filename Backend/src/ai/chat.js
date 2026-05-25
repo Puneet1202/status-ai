@@ -1,20 +1,20 @@
 // backend/src/ai/chat.js
-// V10 PRODUCTION READY - ALL INTERNAL PIPELINES EXTENDED & FIXED
+// V11 PRODUCTION READY - NATIVE LLAMA-3.3 TOOL INJECTION LAYER
 
-import { askCloudflareAI } from './providers/cloudflare.js';
-import { buildSQLPrompt, buildReplyPrompt, buildActionPrompt, DB_SCHEMA } from './prompts.js';
-import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config Imported Cleanly
+import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
+import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config used smoothly
+import { getSystemPrompt, TIMESHEET_TOOLS } from './tools.js';
 
 export async function aiChat(env, userId, message, history = [], pendingAction = null) {
     try {
         const cleanMessage = message.trim();
 
-        // 🚨 CONFIG SHIELD 1: Single Message Length Guardrail
+        // 🚨 CONFIG SHIELD 1: Single Message Length Guardrail (100% Intact)
         if (cleanMessage.length > MAX_MESSAGE_CHARS) {
             return { reply: "Message too long. Please keep your request under 4000 characters." };
         }
 
-        // 🚨 CONFIG SHIELD 2: Rolling History Character Volatility Protection
+        // 🚨 CONFIG SHIELD 2: Rolling History Character Volatility Protection (100% Intact)
         let safeHistory = Array.isArray(history) ? history : [];
         const totalHistoryChars = safeHistory.reduce((sum, h) => sum + (h?.length || 0), 0);
         
@@ -29,25 +29,42 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay|confirm delete)\b/i.test(cleanMessageLower);
 
         // ================================================================
-        // 🛡️ STATLESS CONFIRMATION INTERCEPTION (Bypass AI entirely if true)
+        // 🛡️ STATELESS CONFIRMATION INTERCEPTION (Bypass AI entirely if true)
         // ================================================================
         if (pendingAction && isConfirming) {
-            return { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED" };
+            return { action: { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED", data: {} } };
         }
 
-        // Fast-track exact write intent
-        let forcedDecision = null;
-        const exactWriteIntent =
-            cleanMessageLower.includes('log hours') ||
-            cleanMessageLower.includes('add entry') ||
-            cleanMessageLower.includes('submit status') ||
-            cleanMessageLower.includes('delete my') ||
-            (cleanMessageLower.startsWith('log ') && /\b(hours|hrs|minutes|min)\b/i.test(cleanMessageLower));
+        // ================================================================
+        // 🚀 NEW PIPELINE: CLOUDFLARE NATIVE LLAMA TOOL RUNNER
+        // ================================================================
+        // Yahan humne hardcoded string hata kar direct config waala CHAT_MODEL inject kar diya!
+        const response = await env.AI.run(CHAT_MODEL, {
+            messages: [
+                { role: "system", content: getSystemPrompt() },
+                ...safeHistory,
+                { role: "user", content: cleanMessage }
+            ],
+            tools: TIMESHEET_TOOLS // Connecting tools.js definitions here
+        });
 
-        if (exactWriteIntent) {
-            forcedDecision = "ACTION";
+        // Llama Specific Tool Calling Extractor
+        const toolCall = response.tool_calls?.[0];
+
+        if (toolCall) {
+            // Safe parameter string parsing defense
+            const inputArgs = typeof toolCall.arguments === "string"
+                ? JSON.parse(toolCall.arguments)
+                : toolCall.arguments;
+
+            // Direct structured payload output to match the dispatch controller array keys
+            return { action: { action: toolCall.name, data: inputArgs } };
         }
 
+        // ================================================================
+        // 🔍 FALLBACK PATH: CONVERSATIONAL OR MANUAL VIEWING LAYER
+        // ================================================================
+        // Agar Llama koi tool use nahi karta toh normal decision tree par jump karega
         const finalDynamicSchema = `
 ${DB_SCHEMA}
 CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
@@ -55,15 +72,13 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
 `;
 
-        let decision;
-        if (forcedDecision) {
-            decision = forcedDecision;
-        } else {
-            const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-            // Passed CHAT_MODEL variable configuration explicitly
-            const firstReply = await askCloudflareAI(sqlPrompt, message, [], env, CHAT_MODEL);
-            decision = firstReply.trim();
-        }
+        const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
+        const firstReply = await env.AI.run(CHAT_MODEL, {
+            messages: [{ role: "user", content: sqlPrompt }]
+        });
+        
+        let decision = firstReply.response || firstReply.text || firstReply;
+        decision = decision.trim();
 
         if (decision.toUpperCase() === "CLARIFY") {
             return {
@@ -71,60 +86,37 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
             };
         }
 
-        // ================================================================
-        // 🛠️ PATH A: ACTION
-        // ================================================================
-        if (decision.toUpperCase() === "ACTION") {
-            const actionPrompt = buildActionPrompt(message, userId);
-            const actionReply = await askCloudflareAI(actionPrompt, message, safeHistory, env, CHAT_MODEL);
-            try {
-                return { action: JSON.parse(actionReply) };
-            } catch (jsonErr) {
-                return { reply: "I understood you want to log data, but could you please specify the project name or duration hours clearly?" };
-            }
-        }
-
-        // ================================================================
-        // 🔍 PATH B: SQL READ
-        // ================================================================
         let sqlQuery = decision.trim();
         if (sqlQuery.endsWith(';')) sqlQuery = sqlQuery.slice(0, -1).trim();
 
-        console.log("\n=========================================================");
-        console.log("[AI ENGINE] Generated SQL:", sqlQuery);
-        console.log("=========================================================\n");
-
         if (!sqlQuery.toUpperCase().includes("SELECT")) {
-            return { reply: "I could not generate a valid query for that. Could you rephrase your request?" };
+            return { reply: response.response || "I understood your request but couldn't structure it. Can you rephrase?" };
         }
 
+        // Security scope check
         const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, 'i');
         if (!userIdRegex.test(sqlQuery)) {
             return { reply: "Security guardrail: Query must be scoped to your own data." };
         }
 
-        // DB execute
+        // DB Fetch Execution Loop
         let dbResult = [];
         try {
             const { results } = await env.DB.prepare(sqlQuery).all();
             dbResult = results || [];
-
-            console.log("=========================================================");
-            console.log("[D1 OUTPUT] First row:", JSON.stringify(dbResult[0] || "EMPTY"));
-            console.log("=========================================================\n");
         } catch (dbErr) {
             console.error("[D1 Query Failed]:", dbErr);
-            return { reply: "I encountered an error fetching your data. Please try rephrasing your query." };
+            return { reply: "I encountered an error fetching your data. Please try rephrasing." };
         }
 
-        // Safety Net Slice mapping
         const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
-
-        // Natural language reply
         const replyPrompt = buildReplyPrompt(message, safeDbResult);
-        const finalHumanReply = await askCloudflareAI(replyPrompt, message, safeHistory, env, CHAT_MODEL);
+        
+        const finalHumanReply = await env.AI.run(CHAT_MODEL, {
+            messages: [{ role: "user", content: replyPrompt }]
+        });
 
-        return { reply: finalHumanReply };
+        return { reply: finalHumanReply.response || finalHumanReply.text || finalHumanReply };
 
     } catch (globalErr) {
         console.error("[Fatal Pipeline Error]:", globalErr);
