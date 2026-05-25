@@ -2,6 +2,8 @@
 // V2.1 - ALL BUGS FIXED & ENGINES INTEGRATED (SEQUENTIAL ADD & METADATA RANGE GET)
 
 import { aiChat } from '../ai/chat.js';
+// backend/src/controllers/timesheet.controller.js
+
 
 // =========================================================================
 // ✅ UTILITY HELPER: Safe Time Calculation, Overflow Wrap & Zero Padding
@@ -212,7 +214,13 @@ export const aiChatHandler = async (c) => {
                     return c.json({ reply: "Invalid duration. Please provide valid working hours." }, 200);
                 }
 
-                const entryDate = data.entry_date || data.date || new Date().toISOString().split('T')[0];
+               const todayStr = new Date().toISOString().split('T')[0];
+let entryDate = data.entry_date || data.date || todayStr;
+
+// Controller-level guardrail — AI galat date bheje to bhi safe
+if (!entryDate || entryDate === "2024-07-26" || !entryDate.startsWith("2026-")) {
+    entryDate = todayStr;
+}
                 const moduleName = (data.module_name || "GENERAL").toUpperCase().trim();
 
                 const DAILY_SLOTS = [

@@ -1,23 +1,19 @@
 // backend/src/ai/prompts.js
-// PRODUCTION CLASS ARCHITECTURE V4 - STATUS_AI CORE PROMPT MATRIX
-
-// ✅ Change 1: today variable ko file ke sabse TOP par move kar diya hai
-const today = new Date().toISOString().split('T')[0];
+// PRODUCTION CLASS ARCHITECTURE V7 - RUNTIME DYNAMIC MATRIX
 
 // =========================================================================
 // PROMPT 1: Strict Text-to-SQL & Intent Classification Prompt Layer
 // =========================================================================
 
-// PRODUCTION CLASS ARCHITECTURE V5 - COMPLIANT SQL GENERATOR
-// V6 FINAL PRODUCTION MATRIX - ZERO-HALLUCINATION LOCK
+export function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
+    // ✅ Har function call par fresh live date generate hogi (No memory freezing bug)
+    const today = new Date().toISOString().split('T')[0];
 
-export function buildSQLPrompt(userMessage, dbSchema, currentUserId){
     return `You are an elite, strict SQL Compiler for a secure application running on Cloudflare D1 (SQLite flavor).
 Your absolute sole purpose is to output either a valid SQL SELECT query or the word ACTION. No other output format is permitted.
 
 CURRENT AUTHORIZED EMPLOYEE ID LOCK: '${currentUserId}'
 
-// ✅ Change 2: Injecting Strict 2026 Guardrails & Banned Date Matrix here
 CURRENT YEAR IS STRICTLY: 2026
 TODAY'S DATE IS STRICTLY: ${today}
 BANNED DATE — NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
@@ -32,16 +28,16 @@ STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
 - If completely vague, return exactly: CLARIFY
 
 [FEW-SHOT EXPLICIT MATCHING EXAMPLES]
-* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = date('now');
-* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('now', 'weekday 0', '-6 days');
+* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = '${today}';
+* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}';
 * User: "Log 4.5 hours for Auth module in Project-X today" -> OUTPUT: ACTION
 * User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
 * User: "Delete my last entry" -> OUTPUT: ACTION
 
 STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
 - In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
-- Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('now', 'weekday 0', '-6 days')
-- Filter "today" strictly via: entry_date = date('now')
+- Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}'
+- Filter "today" strictly via: entry_date = '${today}'
 
 STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
 - Return ONLY plain-text executable SQL. Do not wrap in markdown code blocks like \`\`\`sql.
@@ -55,6 +51,7 @@ Decision String or Executable SQL Query Output:`;
 // =========================================================================
 // PROMPT 2: DB Raw Result Set Transformation Tool
 // =========================================================================
+
 export function buildReplyPrompt(userMessage, sqlResult) {
     return `You are a strict data reporting assistant for an enterprise employee timesheet management application.
 Your absolute dynamic priority is to translate raw SQL query result arrays into natural, professional human language responses.
@@ -72,10 +69,15 @@ User Question context was: "${userMessage}"
 Your Deterministic and Absolute Accurate Human Response Output:`;
 }
 
+
 // =========================================================================
 // PROMPT 3: Action Extraction Layer (When Intent Classification returns ACTION)
 // =========================================================================
+
 export function buildActionPrompt(userMessage, currentUserId) {
+    // ✅ Har execution par fresh live date generate hogi (Wrangler/Serverless safe)
+    const today = new Date().toISOString().split('T')[0];
+
     return `STATUS_AI ENTIRETY SYSTEM REGULATORY GATEWAY - PRODUCTION CLASS V4
 You are an immutable, highly accurate, deterministic Data Extraction Middleware.
 Your sole purpose is to parse unstructured human time-logging messages and serialize them into a minified JSON CRUD payload.
@@ -88,7 +90,6 @@ Your sole purpose is to parse unstructured human time-logging messages and seria
 [CONTEXT LAYERS]
 - Authorized Context Employee ID: ${currentUserId}
 - User Unstructured Intent Message: "${userMessage}"
-// ✅ Change 3: Injecting Strict JSON Generation Guardrails for Dates here
 - CURRENT YEAR IS STRICTLY: 2026
 - TODAY'S DATE IS STRICTLY: ${today}
 - BANNED DATE: "2024-07-26" — NEVER output this date under any circumstance
@@ -103,7 +104,7 @@ Payload Schema Target:
   "action": "ADD_TIMESHEET",
   "data": {
     "employee_id": ${currentUserId},
-    "entry_date": "YYYY-MM-DD", 
+    "entry_date": "${today}",
     "start_time": "HH:MM",
     "end_time": "HH:MM",
     "duration_hours": 0.0,
@@ -131,30 +132,6 @@ CRITICAL: If the intent does not match either transactional layout cleanly, fall
 JSON MINIFIED OBJECT OUTPUT:`;
 }
 
-export const SYSTEM_PROMPT = `
-You are a smart timesheet assistant. Today's date is strictly: ${today}.
-
-Your job is to detect user intent and return a structured JSON response.
-
-1. When user asks to VIEW or SHOW timesheets/logs/hours, respond with:
-{
-  "action": "GET_TIMESHEET",
-  "data": {
-    "from_date": "YYYY-MM-DD",
-    "to_date": "YYYY-MM-DD"
-  }
-}
-
-Strict Date Parsing Rules (Handle Common Spelling Mistakes/Typos):
-- "aaj", "today", "aaj ka view", "aj ka" -> from_date & to_date = "${today}"
-- "kal", "yesterday", "pichla din" -> calculate yesterday relative to "${today}"
-- "is week", "this week", "is hafte का", "for weak", "this weak", "weak logs" -> from_date = Monday of the current week, to_date = "${today}" (CRITICAL: Handle "weak" as a typo for "week")
-- Specific ranges (e.g., "2026-05-20 se 2026-05-25 tak" or "May 20 to May 25") -> Extract both correctly in YYYY-MM-DD.
-
-2. When user asks to ADD a log, continue using the "ADD_TIMESHEET" action format.
-
-CRITICAL RULE: You MUST ALWAYS respond with a JSON object containing the "action" and "data" structures specified above when a user asks to view or add timesheets. Do NOT return regular prose or conversational summaries. If you cannot process the date, fallback to "${today}".
-`;
 
 // =========================================================================
 // GLOBAL DATABASE SCHEMA REFERENCE (Configuration Section)
