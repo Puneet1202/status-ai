@@ -1,14 +1,14 @@
 // backend/src/ai/prompts.js
 // PRODUCTION CLASS ARCHITECTURE V4 - STATUS_AI CORE PROMPT MATRIX
 
+// ✅ Change 1: today variable ko file ke sabse TOP par move kar diya hai
+const today = new Date().toISOString().split('T')[0];
+
 // =========================================================================
 // PROMPT 1: Strict Text-to-SQL & Intent Classification Prompt Layer
 // =========================================================================
 
-
 // PRODUCTION CLASS ARCHITECTURE V5 - COMPLIANT SQL GENERATOR
-
-// backend/src/ai/prompts.js
 // V6 FINAL PRODUCTION MATRIX - ZERO-HALLUCINATION LOCK
 
 export function buildSQLPrompt(userMessage, dbSchema, currentUserId){
@@ -16,6 +16,12 @@ export function buildSQLPrompt(userMessage, dbSchema, currentUserId){
 Your absolute sole purpose is to output either a valid SQL SELECT query or the word ACTION. No other output format is permitted.
 
 CURRENT AUTHORIZED EMPLOYEE ID LOCK: '${currentUserId}'
+
+// ✅ Change 2: Injecting Strict 2026 Guardrails & Banned Date Matrix here
+CURRENT YEAR IS STRICTLY: 2026
+TODAY'S DATE IS STRICTLY: ${today}
+BANNED DATE — NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
+ALL entry_date values MUST start with "2026-"
 
 DATABASE SCHEMA SYSTEM BLUEPRINT:
 ${dbSchema}   
@@ -49,7 +55,7 @@ Decision String or Executable SQL Query Output:`;
 // =========================================================================
 // PROMPT 2: DB Raw Result Set Transformation Tool
 // =========================================================================
-   export function buildReplyPrompt(userMessage, sqlResult) {
+export function buildReplyPrompt(userMessage, sqlResult) {
     return `You are a strict data reporting assistant for an enterprise employee timesheet management application.
 Your absolute dynamic priority is to translate raw SQL query result arrays into natural, professional human language responses.
 
@@ -82,6 +88,11 @@ Your sole purpose is to parse unstructured human time-logging messages and seria
 [CONTEXT LAYERS]
 - Authorized Context Employee ID: ${currentUserId}
 - User Unstructured Intent Message: "${userMessage}"
+// ✅ Change 3: Injecting Strict JSON Generation Guardrails for Dates here
+- CURRENT YEAR IS STRICTLY: 2026
+- TODAY'S DATE IS STRICTLY: ${today}
+- BANNED DATE: "2024-07-26" — NEVER output this date under any circumstance
+- ALL entry_date MUST start with "2026-"
 
 [STRICT TRANSACTION PARSING REFERENCE SCHEMAS]
 
@@ -120,8 +131,6 @@ CRITICAL: If the intent does not match either transactional layout cleanly, fall
 JSON MINIFIED OBJECT OUTPUT:`;
 }
 
-const today = new Date().toISOString().split('T')[0];
-
 export const SYSTEM_PROMPT = `
 You are a smart timesheet assistant. Today's date is strictly: ${today}.
 
@@ -136,18 +145,16 @@ Your job is to detect user intent and return a structured JSON response.
   }
 }
 
-Strict Date Parsing Rules:
-- "aaj", "today", "aaj ka view" -> from_date & to_date = "${today}"
+Strict Date Parsing Rules (Handle Common Spelling Mistakes/Typos):
+- "aaj", "today", "aaj ka view", "aj ka" -> from_date & to_date = "${today}"
 - "kal", "yesterday", "pichla din" -> calculate yesterday relative to "${today}"
-- "is week", "this week", "is hafte का" -> from_date = Monday of the current week, to_date = "${today}"
+- "is week", "this week", "is hafte का", "for weak", "this weak", "weak logs" -> from_date = Monday of the current week, to_date = "${today}" (CRITICAL: Handle "weak" as a typo for "week")
 - Specific ranges (e.g., "2026-05-20 se 2026-05-25 tak" or "May 20 to May 25") -> Extract both correctly in YYYY-MM-DD.
 
 2. When user asks to ADD a log, continue using the "ADD_TIMESHEET" action format.
+
+CRITICAL RULE: You MUST ALWAYS respond with a JSON object containing the "action" and "data" structures specified above when a user asks to view or add timesheets. Do NOT return regular prose or conversational summaries. If you cannot process the date, fallback to "${today}".
 `;
-
-
-
-
 
 // =========================================================================
 // GLOBAL DATABASE SCHEMA REFERENCE (Configuration Section)
@@ -171,4 +178,4 @@ Table: timesheets
    - task_description (text) -> Detailed notes of the daily task updates
    - project_name (text) -> Main client or software project container name
    - created_at (datetime) -> Automatically logs when this entry was created
-`;     
+`;

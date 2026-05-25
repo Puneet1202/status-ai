@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-JYa0AH/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-R4tWxe/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-JYa0AH/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-R4tWxe/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5130,11 +5130,18 @@ __name(askCloudflareAI, "askCloudflareAI");
 
 // src/ai/prompts.js
 init_modules_watch_stub();
+var today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
 function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
   return `You are an elite, strict SQL Compiler for a secure application running on Cloudflare D1 (SQLite flavor).
 Your absolute sole purpose is to output either a valid SQL SELECT query or the word ACTION. No other output format is permitted.
 
 CURRENT AUTHORIZED EMPLOYEE ID LOCK: '${currentUserId}'
+
+// \u2705 Change 2: Injecting Strict 2026 Guardrails & Banned Date Matrix here
+CURRENT YEAR IS STRICTLY: 2026
+TODAY'S DATE IS STRICTLY: ${today}
+BANNED DATE \u2014 NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
+ALL entry_date values MUST start with "2026-"
 
 DATABASE SCHEMA SYSTEM BLUEPRINT:
 ${dbSchema}   
@@ -5194,6 +5201,11 @@ Your sole purpose is to parse unstructured human time-logging messages and seria
 [CONTEXT LAYERS]
 - Authorized Context Employee ID: ${currentUserId}
 - User Unstructured Intent Message: "${userMessage}"
+// \u2705 Change 3: Injecting Strict JSON Generation Guardrails for Dates here
+- CURRENT YEAR IS STRICTLY: 2026
+- TODAY'S DATE IS STRICTLY: ${today}
+- BANNED DATE: "2024-07-26" \u2014 NEVER output this date under any circumstance
+- ALL entry_date MUST start with "2026-"
 
 [STRICT TRANSACTION PARSING REFERENCE SCHEMAS]
 
@@ -5232,7 +5244,6 @@ CRITICAL: If the intent does not match either transactional layout cleanly, fall
 JSON MINIFIED OBJECT OUTPUT:`;
 }
 __name(buildActionPrompt, "buildActionPrompt");
-var today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
 var SYSTEM_PROMPT = `
 You are a smart timesheet assistant. Today's date is strictly: ${today}.
 
@@ -5247,13 +5258,15 @@ Your job is to detect user intent and return a structured JSON response.
   }
 }
 
-Strict Date Parsing Rules:
-- "aaj", "today", "aaj ka view" -> from_date & to_date = "${today}"
+Strict Date Parsing Rules (Handle Common Spelling Mistakes/Typos):
+- "aaj", "today", "aaj ka view", "aj ka" -> from_date & to_date = "${today}"
 - "kal", "yesterday", "pichla din" -> calculate yesterday relative to "${today}"
-- "is week", "this week", "is hafte \u0915\u093E" -> from_date = Monday of the current week, to_date = "${today}"
+- "is week", "this week", "is hafte \u0915\u093E", "for weak", "this weak", "weak logs" -> from_date = Monday of the current week, to_date = "${today}" (CRITICAL: Handle "weak" as a typo for "week")
 - Specific ranges (e.g., "2026-05-20 se 2026-05-25 tak" or "May 20 to May 25") -> Extract both correctly in YYYY-MM-DD.
 
 2. When user asks to ADD a log, continue using the "ADD_TIMESHEET" action format.
+
+CRITICAL RULE: You MUST ALWAYS respond with a JSON object containing the "action" and "data" structures specified above when a user asks to view or add timesheets. Do NOT return regular prose or conversational summaries. If you cannot process the date, fallback to "${today}".
 `;
 var DB_SCHEMA = `
 Table: users
@@ -5671,7 +5684,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-JYa0AH/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-R4tWxe/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5703,7 +5716,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-JYa0AH/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-R4tWxe/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;
