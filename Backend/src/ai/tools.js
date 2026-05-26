@@ -1,21 +1,33 @@
-// backend/src/ai/tools.js
+// FILE: backend/src/ai/tools.js
+// V12.1 - CODE VALIDATION 10021 RESOLVED VIA GLOBAL SCOPE HYDRATION
 
-// ✅ Live Date Generator with Strict Banned Date Shield
+// 🔥 FIX: Declaring the dynamic date variables globally so both the prompt function AND the tools array can use it safely
+const todayDateStr = new Date().toISOString().split('T')[0];
+const currentSystemYear = new Date().getFullYear();
+
 export function getSystemPrompt() {
-  const today = new Date().toISOString().split('T')[0];
   return `You are an elite enterprise backend router for a timesheet application.
-CURRENT YEAR IS STRICTLY: 2026
-TODAY'S DATE IS STRICTLY: ${today}
-BANNED DATE — NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
-ALL entry_date values MUST start with "2026-"
 
-Your absolute job is to look at the user's message and pick the correct tool call.
-- If user wants to log work hours, submit updates, or add tasks (even 8 hours splits), call 'add_timesheet_entries'.
-- If user wants to check, view, or summary logs/hours, call 'get_timesheet_logs'.
-- If no date is mentioned in message, strictly default 'entry_date' to '${today}'.`;
+TODAY'S DATE IS STRICTLY: ${todayDateStr}
+CURRENT YEAR: ${currentSystemYear}
+
+DATE VALIDATION RULES:
+- Every date MUST be between "2026-01-01" and "${todayDateStr}"
+- Future dates are NOT allowed
+- Any date before 2026 is STRICTLY INVALID
+- If no date mentioned → use "${todayDateStr}"
+
+TOOL SELECTION RULES:
+- Log/add/submit/worked → call 'add_timesheet_entries', entry_date: "${todayDateStr}"
+- Show/view/check/summary → call 'get_timesheet_logs', from_date: "${todayDateStr}", to_date: "${todayDateStr}"
+
+EXAMPLES:
+"8 hours Project-X today"        → add_timesheet_entries, entry_date: "${todayDateStr}"
+"Show today's timesheet"         → get_timesheet_logs, from_date: "${todayDateStr}", to_date: "${todayDateStr}"
+"9-11 frontend, 11-1 backend"    → add_timesheet_entries, entry_date: "${todayDateStr}"
+"Show this week logs"            → get_timesheet_logs, from_date: [monday], to_date: "${todayDateStr}"`;
 }
 
-// 🛠️ CLOUDFLARE WORKERS AI / OPENAI COMPLIANT TOOL DEFINITIONS
 export const TIMESHEET_TOOLS = [
   {
     type: "function",
@@ -26,13 +38,13 @@ export const TIMESHEET_TOOLS = [
         type: "object",
         required: ["project_name", "entry_date", "entries"],
         properties: {
-          project_name: { 
-            type: "string", 
-            description: "Main project container name like 'Project-X' or 'Expense Tracker'." 
+          project_name: {
+            type: "string",
+            description: "Main project container name like 'Project-X' or 'Expense Tracker'."
           },
-          entry_date: { 
-            type: "string", 
-            description: "The targeted logging date in absolute YYYY-MM-DD format." 
+          entry_date: {
+            type: "string",
+            description: `Work date in YYYY-MM-DD format. MUST be between 2026-01-01 and ${todayDateStr}. If not mentioned, use ${todayDateStr}.`
           },
           entries: {
             type: "array",
@@ -62,8 +74,14 @@ export const TIMESHEET_TOOLS = [
         type: "object",
         required: ["from_date", "to_date"],
         properties: {
-          from_date: { type: "string", description: "Filter range start date (YYYY-MM-DD)." },
-          to_date: { type: "string", description: "Filter range end date (YYYY-MM-DD)." }
+          from_date: {
+            type: "string",
+            description: `Start date YYYY-MM-DD. MUST be 2026 or later. Default: ${todayDateStr}`
+          },
+          to_date: {
+            type: "string",
+            description: `End date YYYY-MM-DD. MUST be 2026 or later. Default: ${todayDateStr}`
+          }
         }
       }
     }

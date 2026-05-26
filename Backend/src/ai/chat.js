@@ -1,8 +1,9 @@
-// backend/src/ai/chat.js
-// V11 PRODUCTION READY - NATIVE LLAMA-3.3 TOOL INJECTION LAYER
+// FILE: backend/src/ai/chat.js
+// V13 PRODUCTION READY - FULL PROVIDER DECOUPLING + SQL FALLBACK MATRIX
 
+import { askCloudflareAI } from './providers/cloudflare.js'; // Single source of truth provider
 import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
-import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config used smoothly
+import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config imported cleanly
 import { getSystemPrompt, TIMESHEET_TOOLS } from './tools.js';
 
 export async function aiChat(env, userId, message, history = [], pendingAction = null) {
@@ -36,20 +37,19 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         }
 
         // ================================================================
-        // 🚀 NEW PIPELINE: CLOUDFLARE NATIVE LLAMA TOOL RUNNER
+        // 🚀 PATH 1: STRUCTURED ACTION DETECTION VIA PROVIDER (With Tools)
         // ================================================================
-        // Yahan humne hardcoded string hata kar direct config waala CHAT_MODEL inject kar diya!
-        const response = await env.AI.run(CHAT_MODEL, {
-            messages: [
-                { role: "system", content: getSystemPrompt() },
-                ...safeHistory,
-                { role: "user", content: cleanMessage }
-            ],
-            tools: TIMESHEET_TOOLS // Connecting tools.js definitions here
-        });
+        // ✅ Fixed: Calling the polymorphic provider wrapper instead of env.AI.run direct bypass
+        const toolResponse = await askCloudflareAI(
+            getSystemPrompt(), 
+            cleanMessage, 
+            safeHistory, 
+            env, 
+            TIMESHEET_TOOLS
+        );
 
         // Llama Specific Tool Calling Extractor
-        const toolCall = response.tool_calls?.[0];
+        const toolCall = toolResponse?.tool_calls?.[0];
 
         if (toolCall) {
             // Safe parameter string parsing defense
@@ -62,7 +62,7 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         }
 
         // ================================================================
-        // 🔍 FALLBACK PATH: CONVERSATIONAL OR MANUAL VIEWING LAYER
+        // 🔍 PATH 2: FALLBACK PATH - CONVERSATIONAL OR MANUAL VIEWING LAYER
         // ================================================================
         // Agar Llama koi tool use nahi karta toh normal decision tree par jump karega
         const finalDynamicSchema = `
@@ -72,13 +72,12 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
 `;
 
-        const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-        const firstReply = await env.AI.run(CHAT_MODEL, {
-            messages: [{ role: "user", content: sqlPrompt }]
-        });
+        const sqlPrompt = buildSQLPrompt(cleanMessage, finalDynamicSchema, userId);
         
-        let decision = firstReply.response || firstReply.text || firstReply;
-        decision = decision.trim();
+        // ✅ Fixed: Normal chat conversion block routed via provider wrapper (Passing null to systemPrompt)
+        const firstReply = await askCloudflareAI(null, sqlPrompt, [], env);
+        
+        let decision = typeof firstReply === 'string' ? firstReply.trim() : (firstReply.response || "").trim();
 
         if (decision.toUpperCase() === "CLARIFY") {
             return {
@@ -90,7 +89,8 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
         if (sqlQuery.endsWith(';')) sqlQuery = sqlQuery.slice(0, -1).trim();
 
         if (!sqlQuery.toUpperCase().includes("SELECT")) {
-            return { reply: response.response || "I understood your request but couldn't structure it. Can you rephrase?" };
+            const rawFallbackText = typeof toolResponse === 'string' ? toolResponse : (toolResponse.response || "I understood your request but couldn't structure it. Can you rephrase?");
+            return { reply: rawFallbackText };
         }
 
         // Security scope check
@@ -110,13 +110,13 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
         }
 
         const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
-        const replyPrompt = buildReplyPrompt(message, safeDbResult);
+        const replyPrompt = buildReplyPrompt(cleanMessage, safeDbResult);
         
-        const finalHumanReply = await env.AI.run(CHAT_MODEL, {
-            messages: [{ role: "user", content: replyPrompt }]
-        });
+        // ✅ Fixed: Human response generation node cleanly decoupled via provider
+        const finalHumanReply = await askCloudflareAI(null, replyPrompt, safeHistory, env);
 
-        return { reply: finalHumanReply.response || finalHumanReply.text || finalHumanReply };
+        const textReply = typeof finalHumanReply === 'string' ? finalHumanReply : (finalHumanReply.response || finalHumanReply.text || "");
+        return { reply: textReply };
 
     } catch (globalErr) {
         console.error("[Fatal Pipeline Error]:", globalErr);

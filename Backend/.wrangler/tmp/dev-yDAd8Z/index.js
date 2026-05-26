@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-vZT4Cv/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-SZmLph/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-vZT4Cv/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-SZmLph/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5057,6 +5057,85 @@ init_modules_watch_stub();
 // src/ai/chat.js
 init_modules_watch_stub();
 
+// src/ai/providers/cloudflare.js
+init_modules_watch_stub();
+
+// src/ai/ai-config.js
+init_modules_watch_stub();
+var CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+var MAX_MESSAGE_CHARS = 4e3;
+var MAX_TOTAL_CHARS = 52e3;
+
+// src/ai/providers/cloudflare.js
+function normalizeMessages(messages = []) {
+  const validMessages = [];
+  let totalChars = 0;
+  for (const item of messages) {
+    if (!item || typeof item.content !== "string" || !item.content.trim()) continue;
+    const role = item.role === "system" || item.role === "assistant" ? item.role : "user";
+    let content = item.content.trim();
+    if (content.length > MAX_MESSAGE_CHARS) {
+      content = `${content.slice(0, MAX_MESSAGE_CHARS)}
+[Message truncated to stay within AI context limits]`;
+    }
+    if (totalChars + content.length > MAX_TOTAL_CHARS) {
+      const remainingChars = MAX_TOTAL_CHARS - totalChars;
+      if (remainingChars <= 200) break;
+      content = `${content.slice(0, remainingChars)}
+[Context truncated to stay within AI context limits]`;
+    }
+    const previous = validMessages[validMessages.length - 1];
+    if (previous?.role === role && role !== "system") {
+      previous.content += `
+${content}`;
+    } else {
+      validMessages.push({ role, content });
+    }
+    totalChars += content.length;
+  }
+  return validMessages;
+}
+__name(normalizeMessages, "normalizeMessages");
+function extractText(response) {
+  if (!response) throw new Error("Cloudflare AI returned an empty response object");
+  if (response?.result?.choices?.[0]?.message?.content) return response.result.choices[0].message.content;
+  if (response?.choices?.[0]?.message?.content) return response.choices[0].message.content;
+  if (typeof response?.result?.response === "string") return response.result.response;
+  if (typeof response?.response === "string") return response.response;
+  if (typeof response === "string") return response;
+  if (response?.response && typeof response.response === "object") {
+    return JSON.stringify(response.response);
+  }
+  throw new Error("Cloudflare AI response did not include standard string output text");
+}
+__name(extractText, "extractText");
+async function askCloudflareAI(systemPrompt, message, history = [], env, tools = null) {
+  if (!env?.AI?.run) {
+    throw new Error("Cloudflare AI system binding connection is missing. Ensure wrangler.toml contains [ai] configurations.");
+  }
+  const messages = normalizeMessages([
+    { role: "system", content: systemPrompt || "You are a helpful assistant." },
+    ...history,
+    { role: "user", content: message || "Hello" }
+  ]);
+  const payload = {
+    messages,
+    temperature: 0.1,
+    // Highly locked down token settings for absolute mathematical response accuracy
+    max_tokens: 1e3
+    // Increased budget slightly to prevent tool extraction cutoff tokens
+  };
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    payload.tools = tools;
+  }
+  const response = await env.AI.run(CHAT_MODEL, payload);
+  if (response.tool_calls && response.tool_calls.length > 0) {
+    return response;
+  }
+  return extractText(response).trim();
+}
+__name(askCloudflareAI, "askCloudflareAI");
+
 // src/ai/prompts.js
 init_modules_watch_stub();
 function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
@@ -5137,26 +5216,31 @@ Table: timesheets
    - created_at (datetime) -> Automatically logs when this entry was created
 `;
 
-// src/ai/ai-config.js
-init_modules_watch_stub();
-var CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-var MAX_MESSAGE_CHARS = 4e3;
-var MAX_TOTAL_CHARS = 52e3;
-
 // src/ai/tools.js
 init_modules_watch_stub();
+var todayDateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+var currentSystemYear = (/* @__PURE__ */ new Date()).getFullYear();
 function getSystemPrompt() {
-  const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
   return `You are an elite enterprise backend router for a timesheet application.
-CURRENT YEAR IS STRICTLY: 2026
-TODAY'S DATE IS STRICTLY: ${today}
-BANNED DATE \u2014 NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
-ALL entry_date values MUST start with "2026-"
 
-Your absolute job is to look at the user's message and pick the correct tool call.
-- If user wants to log work hours, submit updates, or add tasks (even 8 hours splits), call 'add_timesheet_entries'.
-- If user wants to check, view, or summary logs/hours, call 'get_timesheet_logs'.
-- If no date is mentioned in message, strictly default 'entry_date' to '${today}'.`;
+TODAY'S DATE IS STRICTLY: ${todayDateStr}
+CURRENT YEAR: ${currentSystemYear}
+
+DATE VALIDATION RULES:
+- Every date MUST be between "2026-01-01" and "${todayDateStr}"
+- Future dates are NOT allowed
+- Any date before 2026 is STRICTLY INVALID
+- If no date mentioned \u2192 use "${todayDateStr}"
+
+TOOL SELECTION RULES:
+- Log/add/submit/worked \u2192 call 'add_timesheet_entries', entry_date: "${todayDateStr}"
+- Show/view/check/summary \u2192 call 'get_timesheet_logs', from_date: "${todayDateStr}", to_date: "${todayDateStr}"
+
+EXAMPLES:
+"8 hours Project-X today"        \u2192 add_timesheet_entries, entry_date: "${todayDateStr}"
+"Show today's timesheet"         \u2192 get_timesheet_logs, from_date: "${todayDateStr}", to_date: "${todayDateStr}"
+"9-11 frontend, 11-1 backend"    \u2192 add_timesheet_entries, entry_date: "${todayDateStr}"
+"Show this week logs"            \u2192 get_timesheet_logs, from_date: [monday], to_date: "${todayDateStr}"`;
 }
 __name(getSystemPrompt, "getSystemPrompt");
 var TIMESHEET_TOOLS = [
@@ -5175,7 +5259,7 @@ var TIMESHEET_TOOLS = [
           },
           entry_date: {
             type: "string",
-            description: "The targeted logging date in absolute YYYY-MM-DD format."
+            description: `Work date in YYYY-MM-DD format. MUST be between 2026-01-01 and ${todayDateStr}. If not mentioned, use ${todayDateStr}.`
           },
           entries: {
             type: "array",
@@ -5205,8 +5289,14 @@ var TIMESHEET_TOOLS = [
         type: "object",
         required: ["from_date", "to_date"],
         properties: {
-          from_date: { type: "string", description: "Filter range start date (YYYY-MM-DD)." },
-          to_date: { type: "string", description: "Filter range end date (YYYY-MM-DD)." }
+          from_date: {
+            type: "string",
+            description: `Start date YYYY-MM-DD. MUST be 2026 or later. Default: ${todayDateStr}`
+          },
+          to_date: {
+            type: "string",
+            description: `End date YYYY-MM-DD. MUST be 2026 or later. Default: ${todayDateStr}`
+          }
         }
       }
     }
@@ -5233,16 +5323,14 @@ async function aiChat(env, userId, message, history = [], pendingAction = null) 
     if (pendingAction && isConfirming) {
       return { action: { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED", data: {} } };
     }
-    const response = await env.AI.run(CHAT_MODEL, {
-      messages: [
-        { role: "system", content: getSystemPrompt() },
-        ...safeHistory,
-        { role: "user", content: cleanMessage }
-      ],
-      tools: TIMESHEET_TOOLS
-      // Connecting tools.js definitions here
-    });
-    const toolCall = response.tool_calls?.[0];
+    const toolResponse = await askCloudflareAI(
+      getSystemPrompt(),
+      cleanMessage,
+      safeHistory,
+      env,
+      TIMESHEET_TOOLS
+    );
+    const toolCall = toolResponse?.tool_calls?.[0];
     if (toolCall) {
       const inputArgs = typeof toolCall.arguments === "string" ? JSON.parse(toolCall.arguments) : toolCall.arguments;
       return { action: { action: toolCall.name, data: inputArgs } };
@@ -5253,12 +5341,9 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
 1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
 2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
 `;
-    const sqlPrompt = buildSQLPrompt(message, finalDynamicSchema, userId);
-    const firstReply = await env.AI.run(CHAT_MODEL, {
-      messages: [{ role: "user", content: sqlPrompt }]
-    });
-    let decision = firstReply.response || firstReply.text || firstReply;
-    decision = decision.trim();
+    const sqlPrompt = buildSQLPrompt(cleanMessage, finalDynamicSchema, userId);
+    const firstReply = await askCloudflareAI(null, sqlPrompt, [], env);
+    let decision = typeof firstReply === "string" ? firstReply.trim() : (firstReply.response || "").trim();
     if (decision.toUpperCase() === "CLARIFY") {
       return {
         reply: "Could you please clarify your request? For example: 'Show my hours this week' or 'Log 4 hours for Project-X today'"
@@ -5267,7 +5352,8 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
     let sqlQuery = decision.trim();
     if (sqlQuery.endsWith(";")) sqlQuery = sqlQuery.slice(0, -1).trim();
     if (!sqlQuery.toUpperCase().includes("SELECT")) {
-      return { reply: response.response || "I understood your request but couldn't structure it. Can you rephrase?" };
+      const rawFallbackText = typeof toolResponse === "string" ? toolResponse : toolResponse.response || "I understood your request but couldn't structure it. Can you rephrase?";
+      return { reply: rawFallbackText };
     }
     const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, "i");
     if (!userIdRegex.test(sqlQuery)) {
@@ -5282,11 +5368,10 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
       return { reply: "I encountered an error fetching your data. Please try rephrasing." };
     }
     const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
-    const replyPrompt = buildReplyPrompt(message, safeDbResult);
-    const finalHumanReply = await env.AI.run(CHAT_MODEL, {
-      messages: [{ role: "user", content: replyPrompt }]
-    });
-    return { reply: finalHumanReply.response || finalHumanReply.text || finalHumanReply };
+    const replyPrompt = buildReplyPrompt(cleanMessage, safeDbResult);
+    const finalHumanReply = await askCloudflareAI(null, replyPrompt, safeHistory, env);
+    const textReply = typeof finalHumanReply === "string" ? finalHumanReply : finalHumanReply.response || finalHumanReply.text || "";
+    return { reply: textReply };
   } catch (globalErr) {
     console.error("[Fatal Pipeline Error]:", globalErr);
     return { reply: "Internal error occurred. Please try again." };
@@ -5510,49 +5595,78 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         }, 200);
       }
       if (action === "add_timesheet_entries") {
-        const { entries, project_name, entry_date } = data;
-        if (!entries || entries.length === 0) {
-          return c.json({ success: false, reply: "No valid operational entries found in context to log." }, 200);
-        }
+        let { entries, project_name, entry_date } = data;
         const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-        const entryDate = !entry_date || !entry_date.startsWith("2026-") || entry_date === "2024-07-26" ? todayStr : entry_date;
-        const statements = entries.map((entry) => {
-          return db.prepare(`
-                        INSERT INTO timesheets 
-                        (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    `).bind(
+        const safeDate = !entry_date || !entry_date.startsWith("2026-") || entry_date === "2024-07-26" ? todayStr : entry_date;
+        if (!Array.isArray(entries)) {
+          entries = entries ? [entries] : [];
+        }
+        if (entries.length === 0) {
+          return c.json({ success: false, reply: "No valid entries found to log." }, 200);
+        }
+        if (entries.length === 1 && Number(entries[0].duration_hours) === 8) {
+          const DAILY_SLOTS = [
+            { start: "09:00", end: "11:00" },
+            { start: "11:00", end: "13:00" },
+            { start: "14:00", end: "16:00" },
+            { start: "16:00", end: "18:00" }
+          ];
+          const original = entries[0];
+          entries = DAILY_SLOTS.map((slot, i) => ({
+            start_time: slot.start,
+            end_time: slot.end,
+            duration_hours: 2,
+            module_name: original.module_name || "GENERAL",
+            task_description: `${original.task_description} (Part ${i + 1} of 4)`
+          }));
+        }
+        const statements = entries.map(
+          (entry) => db.prepare(`
+            INSERT INTO timesheets 
+            (employee_id, entry_date, start_time, end_time, 
+             duration_hours, module_name, task_description, project_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
             user.id,
-            entryDate,
+            safeDate,
             entry.start_time || "09:00",
             entry.end_time || calcEndTime(entry.start_time || "09:00", entry.duration_hours || 2),
             Number(entry.duration_hours) || 2,
             (entry.module_name || "GENERAL").toUpperCase().trim(),
             entry.task_description?.trim() || "Work Status Update",
             project_name?.trim()
-          );
-        });
+          )
+        );
         await db.batch(statements);
         return c.json({
           success: true,
           action: "ADD_MULTIPLE_TIMESHEETS",
-          reply: `\u2705 Loaded ${entries.length} shift segment logs successfully for date ${entryDate}!`
+          reply: `\u2705 ${entries.length} entries saved for ${safeDate}!`
         }, 200);
       }
       if (action === "get_timesheet_logs") {
-        const { from_date, to_date } = data;
+        const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+        let from_date = data.from_date;
+        let to_date = data.to_date;
+        if (!from_date || !from_date.startsWith("2026-")) {
+          from_date = todayStr;
+        }
+        if (!to_date || !to_date.startsWith("2026-")) {
+          to_date = from_date;
+        }
         const rows = await db.prepare(`
-                    SELECT id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name 
-                    FROM timesheets
-                    WHERE employee_id = ?
-                    AND entry_date BETWEEN ? AND ?
-                    ORDER BY entry_date ASC, start_time ASC
-                `).bind(user.id, from_date, to_date || from_date).all();
+        SELECT id, entry_date, start_time, end_time, 
+               duration_hours, module_name, task_description, project_name 
+        FROM timesheets
+        WHERE employee_id = ?
+        AND entry_date BETWEEN ? AND ?
+        ORDER BY entry_date ASC, start_time ASC
+    `).bind(user.id, from_date, to_date).all();
         const total = rows.results ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0) : 0;
         return c.json({
           success: true,
           action: "GET_TIMESHEET",
-          reply: `${from_date} to ${to_date || from_date} \u2014 Total logged: ${total} hrs`,
+          reply: `${from_date} to ${to_date} \u2014 Total logged: ${total} hrs`,
           data: rows.results || []
         }, 200);
       }
@@ -5652,7 +5766,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-vZT4Cv/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-SZmLph/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5684,7 +5798,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-vZT4Cv/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-SZmLph/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

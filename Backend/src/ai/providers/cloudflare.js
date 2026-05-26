@@ -1,10 +1,12 @@
-// backend/src/ai/providers/cloudflare.js
+// FILE: backend/src/ai/providers/cloudflare.js
+// V2.5 - REFACTORED WORKERS AI INTEGRATION WITH POLYMORPHIC TOOL RUNNER
+
 import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from '../ai-config.js';
 
 /**
  * Message Normalization Layer - Combines overlapping roles and truncates over-budget contexts
  */
-export function normalizeMessages(messages = []){
+export function normalizeMessages(messages = []) {
     const validMessages = [];
     let totalChars = 0;
 
@@ -41,7 +43,7 @@ export function normalizeMessages(messages = []){
 /**
  * Fallback Text Extractor Layer - Prevents server runtime crash when parsing deep nested objects
  */
-function extractText(response){
+function extractText(response) {
     if (!response) throw new Error('Cloudflare AI returned an empty response object');
 
     if (response?.result?.choices?.[0]?.message?.content) return response.result.choices[0].message.content;
@@ -59,8 +61,9 @@ function extractText(response){
 
 /**
  * High-Level Request Gateway - Wrapper to safely query Cloudflare Workers AI platform
+ * ✅ NOW SUPPORTS POLYMORPHIC TOOL CALLS MATRIX
  */
-export async function askCloudflareAI(systemPrompt, message, history = [], env){
+export async function askCloudflareAI(systemPrompt, message, history = [], env, tools = null) {
     if (!env?.AI?.run) {
         throw new Error('Cloudflare AI system binding connection is missing. Ensure wrangler.toml contains [ai] configurations.');
     }
@@ -71,11 +74,25 @@ export async function askCloudflareAI(systemPrompt, message, history = [], env){
         { role: 'user', content: message || 'Hello' }
     ]);
 
-    const response = await env.AI.run(CHAT_MODEL, {
+    const payload = {
         messages,
         temperature: 0.1, // Highly locked down token settings for absolute mathematical response accuracy
-        max_tokens: 400
-    });
+        max_tokens: 1000  // Increased budget slightly to prevent tool extraction cutoff tokens
+    };
 
+    // 🔥 DYNAMIC LINK: Agar controller/chat layer se tools ka array aaya hai, toh payload mein bind karo
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+        payload.tools = tools;
+    }
+
+    const response = await env.AI.run(CHAT_MODEL, payload);
+
+    // 🚨 PROTECTION FILTER: Agar response ke andar native 'tool_calls' exist karta hai, 
+    // toh text extract mat karo, balki poora raw object return karo taaki chat.js use catch kar sake!
+    if (response.tool_calls && response.tool_calls.length > 0) {
+        return response; 
+    }
+
+    // Normal conversational flowchart path
     return extractText(response).trim();
 }
