@@ -388,29 +388,33 @@ export const aiChatHandler = async (c) => {
 // ✅ GET block — date guardrail add kiya
 if (action === "get_timesheet_logs") {
     const todayStr = new Date().toISOString().split('T')[0];
+    let { from_date, to_date, module_name } = data;
 
-    // ✅ Guardrail — AI galat date de to today use karo
-    let from_date = data.from_date;
-    let to_date = data.to_date;
+    // Date guardrails
+    if (!from_date || !from_date.startsWith("2026-")) from_date = "2026-01-01";
+    if (!to_date   || !to_date.startsWith("2026-"))   to_date = todayStr;
+    
+    // ✅ Future date block
+    if (to_date > todayStr) to_date = todayStr;
 
-    if (!from_date || !from_date.startsWith("2026-")) {
-        from_date = todayStr;
-    }
-    if (!to_date || !to_date.startsWith("2026-")) {
-        to_date = from_date;
-    }
-
-    const rows = await db.prepare(`
+    // ✅ Dynamic query — module filter optional
+    let query = `
         SELECT id, entry_date, start_time, end_time, 
                duration_hours, module_name, task_description, project_name 
         FROM timesheets
         WHERE employee_id = ?
         AND entry_date BETWEEN ? AND ?
-        ORDER BY entry_date ASC, start_time ASC
-    `)
-    .bind(user.id, from_date, to_date)
-    .all();
+    `;
+    const binds = [user.id, from_date, to_date];
 
+    if (module_name) {
+        query += ` AND UPPER(module_name) = UPPER(?)`;
+        binds.push(module_name);
+    }
+
+    query += ` ORDER BY entry_date ASC, start_time ASC`;
+
+    const rows = await db.prepare(query).bind(...binds).all();
     const total = rows.results
         ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0)
         : 0;
@@ -418,10 +422,11 @@ if (action === "get_timesheet_logs") {
     return c.json({
         success: true,
         action: "GET_TIMESHEET",
-        reply: `${from_date} to ${to_date} — Total logged: ${total} hrs`,
+        reply: `${from_date} to ${to_date}${module_name ? ` [${module_name}]` : ''} — Total: ${total} hrs`,
         data: rows.results || []
     }, 200);
 }
+
             // ---------------------------------------------------------------------
             // 🗑️ INTENT C: DELETE_TIMESHEET INTERCEPT STAGE (100% Intact)
             // ---------------------------------------------------------------------

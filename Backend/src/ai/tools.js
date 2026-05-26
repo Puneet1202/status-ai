@@ -81,6 +81,10 @@ export const TIMESHEET_TOOLS = [
           to_date: {
             type: "string",
             description: `End date YYYY-MM-DD. MUST be 2026 or later. Default: ${todayDateStr}`
+          },
+          module_name: {
+            type: "string",
+            description: "Filter by specific module like BUG_FIXING, FRONTEND, MIDDLEWARE. Optional."
           }
         }
       }
