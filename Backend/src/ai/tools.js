@@ -62,7 +62,10 @@ export function getTimesheetTools() {
                 properties: {
                   start_time: { type: "string", description: "HH:MM format if mentioned (e.g. 09:00)" },
                   end_time:   { type: "string", description: "HH:MM format if mentioned (e.g. 11:00)" },
-                  module_name: { type: "string", description: "UPPERCASE token: FRONTEND, BACKEND, BUG_FIXING, AI_INTEGRATION, MIDDLEWARE, GENERAL" },
+                 module_name: { 
+    type: "string", 
+    description: "Convert work topic from user message to UPPERCASE_SNAKE_CASE. Extract directly from what user wrote." 
+},
                   task_description: { type: "string", description: "Clean summary of what tasks were done" }
                 }
               }

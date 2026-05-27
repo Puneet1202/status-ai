@@ -1,5 +1,5 @@
 // FILE: backend/src/controllers/timesheet.controller.js
-// V3.2 - PRODUCTION READY BLUEPRINT (WITH TIME MATRIX & GET SEARCH FILTERS)
+// V3.3 - PRODUCTION READY BLUEPRINT (VALIDATION ENGINE FIXED)
 
 import { aiChat } from '../ai/chat.js';
 
@@ -49,7 +49,7 @@ function calcEndTime(startTime, durationMinutes) {
 }
 
 // =========================================================================
-// 🛠️ UTILITY HELPER: Pure Time-String To Minutes Calculation (Claude Fix)
+// 🛠️ UTILITY HELPER: Pure Time-String To Minutes Calculation
 // =========================================================================
 function calcMinutesFromTimes(startTime, endTime) {
     if (!startTime || !endTime) return 120; // Backup fallback 2 hours
@@ -260,8 +260,12 @@ export const aiChatHandler = async (c) => {
             // ---------------------------------------------------------------------
             if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
                 
+                // 🎯 CLAUDE VALIDATION FIX: Checking fields nested inside entries array safely
                 const targetProjectName = data.project_name;
-                if (!targetProjectName || !data.task_description) {
+                const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
+                const hasTask = data.task_description || hasEntries;
+
+                if (!targetProjectName || !hasTask) {
                     return c.json({ reply: "Please specify project name and task description clearly." }, 200);
                 }
 
@@ -283,7 +287,6 @@ export const aiChatHandler = async (c) => {
                     let computedMin = data.duration_minutes;
                     if (!computedMin && data.duration_hours) computedMin = Math.round(Number(data.duration_hours) * 60);
                     
-                    // Fallback runtime time duration extraction if fields missing from tool payload
                     if (!computedMin && data.start_time && data.end_time) {
                         computedMin = calcMinutesFromTimes(data.start_time, data.end_time);
                     }
@@ -302,7 +305,7 @@ export const aiChatHandler = async (c) => {
                     return c.json({ reply: "No operational metadata slots extracted to commit." }, 200);
                 }
 
-                // 🔄 CLAUDE FIX: Calculate derived context for the first item to evaluate 8-Hour check safely
+                // Calculate derived context for the first item to evaluate 8-Hour check safely
                 const firstEntry = entriesToBatch[0];
                 const calculatedMins = firstEntry.duration_minutes 
                     || calcMinutesFromTimes(firstEntry.start_time, firstEntry.end_time);
@@ -385,7 +388,6 @@ export const aiChatHandler = async (c) => {
                     queryBinds.push(filterModule);
                 }
 
-                // ✅ CLAUDE FIX: Dynamic project name search query parameter check
                 if (data.project_name) {
                     logQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
                     queryBinds.push(`%${data.project_name.trim()}%`);
