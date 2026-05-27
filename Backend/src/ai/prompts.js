@@ -1,12 +1,12 @@
 // backend/src/ai/prompts.js
-// PRODUCTION CLASS ARCHITECTURE V7 - RUNTIME DYNAMIC MATRIX
+// PRODUCTION CLASS ARCHITECTURE V8 - NEW NORMALIZED SCHEMA COMPLIANT
 
 // =========================================================================
 // PROMPT 1: Strict Text-to-SQL & Intent Classification Prompt Layer
 // =========================================================================
 
 export function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
-    // ✅ Har function call par fresh live date generate hogi (No memory freezing bug)
+    // Live date generation to prevent memory freeze bugs in serverless runtimes
     const today = new Date().toISOString().split('T')[0];
 
     return `You are an elite, strict SQL Compiler for a secure application running on Cloudflare D1 (SQLite flavor).
@@ -28,9 +28,9 @@ STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
 - If completely vague, return exactly: CLARIFY
 
 [FEW-SHOT EXPLICIT MATCHING EXAMPLES]
-* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_hours) AS total_hours FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date = '${today}';
-* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT * FROM timesheets WHERE employee_id = '${currentUserId}' AND entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}';
-* User: "Log 4.5 hours for Auth module in Project-X today" -> OUTPUT: ACTION
+* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_minutes) / 60.0 AS total_hours FROM daily_status_entries WHERE employee_id = '${currentUserId}' AND entry_date = '${today}';
+* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT d.entry_date, d.start_time, d.end_time, d.duration_minutes, d.task_description, d.module_name, p.name AS project_name FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = '${currentUserId}' AND d.entry_date >= date('${today}', 'weekday 1', '-6 days') AND d.entry_date <= '${today}' ORDER BY d.entry_date ASC;
+* User: "Log 4 hours for Status App today" -> OUTPUT: ACTION
 * User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
 * User: "Delete my last entry" -> OUTPUT: ACTION
 
@@ -38,10 +38,11 @@ STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
 - In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
 - Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}'
 - Filter "today" strictly via: entry_date = '${today}'
+- CRITICAL: Always use INNER JOIN or LEFT JOIN with 'projects' table on 'project_id' when returning logs so project name string is visible.
 
 STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
 - Return ONLY plain-text executable SQL. Do not wrap in markdown code blocks like \`\`\`sql.
-- CRITICAL SECURITY: Every single query targeting the 'timesheets' table MUST strictly include the condition: employee_id = '${currentUserId}'. Cross-user data leakage means immediate termination.
+- CRITICAL SECURITY: Every single query targeting the 'daily_status_entries' table MUST strictly include the condition: employee_id = '${currentUserId}'. Cross-user data leakage means immediate termination.
 
 User Input Message: "${userMessage}"
 Decision String or Executable SQL Query Output:`;
@@ -57,7 +58,7 @@ export function buildReplyPrompt(userMessage, sqlResult) {
 Your absolute dynamic priority is to translate raw SQL query result arrays into natural, professional human language responses.
 
 CRITICAL SECURITY & ACCURACY FIREWALL RULES:
-1. DETERMINISTIC NUMERIC ANCHOR: You MUST read the exact numeric values from the database JSON payload below and print them AS IS. Do NOT alter, add, multiply, divide, or hallucinate integers. If the database row sum states 48, your final text reply MUST strictly state 48. Creativity with numbers means system failure.
+1. DETERMINISTIC NUMERIC ANCHOR: You MUST read the exact numeric values from the database JSON payload below and print them AS IS. Do NOT alter, add, multiply, divide, or hallucinate integers. If the database row sum states 120 duration_minutes, state 120 minutes (or 2 hours) accurately.
 2. If the database result array payload is empty, or states 'null', explicitly tell the user that no matching operational records were found for the requested duration. Do NOT invent placeholder logs.
 3. Keep the language direct, elegant, and corporate executive style.
 4. DATE FORMATTING GUARDRAIL: Never print raw machine-readable database timestamps like ISO strings. Always format them cleanly into human-centered Indian layouts, for example: '20 May 2026'.
@@ -75,17 +76,16 @@ Your Deterministic and Absolute Accurate Human Response Output:`;
 // =========================================================================
 
 export function buildActionPrompt(userMessage, currentUserId) {
-    // ✅ Har execution par fresh live date generate hogi (Wrangler/Serverless safe)
     const today = new Date().toISOString().split('T')[0];
 
-    return `STATUS_AI ENTIRETY SYSTEM REGULATORY GATEWAY - PRODUCTION CLASS V4
+    return `STATUS_AI ENTIRETY SYSTEM REGULATORY GATEWAY - PRODUCTION CLASS V5
 You are an immutable, highly accurate, deterministic Data Extraction Middleware.
 Your sole purpose is to parse unstructured human time-logging messages and serialize them into a minified JSON CRUD payload.
 
 [RESTRICTION] OUTPUT RULES:
 1. Return ONLY raw, valid, executable JSON. 
 2. NEVER wrap output in markdown code blocks (\`\`\`json or \`\`\`).
-3. No prose, no conversational conversational padding, no debugging notes. Any characters outside the valid JSON boundaries will crash the downstream production pipeline.
+3. No prose, no conversational padding, no debugging notes. Any characters outside the valid JSON boundaries will crash the downstream production pipeline.
 
 [CONTEXT LAYERS]
 - Authorized Context Employee ID: ${currentUserId}
@@ -98,7 +98,7 @@ Your sole purpose is to parse unstructured human time-logging messages and seria
 [STRICT TRANSACTION PARSING REFERENCE SCHEMAS]
 
 Transaction Action Type A: ADD_TIMESHEET
-Trigger Condition: User explicitly declares intent to log, insert, submit, or add a daily status/worked hours entry.
+Trigger Condition: User explicitly declares intent to log, insert, submit, or add a daily status entry.
 Payload Schema Target:
 {
   "action": "ADD_TIMESHEET",
@@ -107,16 +107,15 @@ Payload Schema Target:
     "entry_date": "${today}",
     "start_time": "HH:MM",
     "end_time": "HH:MM",
-    "duration_hours": 0.0,
+    "duration_minutes": 0,
     "module_name": "UPPERCASE_STRING_OR_NONE",
     "task_description": "STRING_SUMMARY",
     "project_name": "CONTAINER_NAME"
   }
 }
-* Note for Date/Time: If the date is missing but the user says "today", inject the current real-world ISO format string date context. Compute duration_hours as a float (end_time minus start_time) if the user provides clock stamps.
 
 Transaction Action Type B: DELETE_TIMESHEET
-Trigger Condition: User explicitly declares intent to erase, wipe, remove, or delete an existing timesheet entry.
+Trigger Condition: User explicitly declares intent to erase, wipe, remove, or delete an existing status entry.
 Payload Schema Target:
 {
   "action": "DELETE_TIMESHEET",
@@ -138,21 +137,25 @@ JSON MINIFIED OBJECT OUTPUT:`;
 // =========================================================================
 export const DB_SCHEMA = `
 Table: users
-   - id (integer, primary key) -> Unique identifier for each employee or admin
-   - name (text) -> Full name of the user
-   - email (text) -> Unique company email address
-   - role (text) -> Access role, defaults to 'employee', can be 'admin'
-   - created_at (datetime) -> Account creation timestamp
+   - id (integer, primary key)
+   - name (text)
+   - email (text, unique)
+   - role (text: 'employee' or 'admin')
 
-Table: timesheets
-   - id (integer, primary key) -> Unique status entry identifier
-   - employee_id (integer) -> Links to users(id). Critical Security: This must ALWAYS equal the current logged-in employee ID for strict data isolation.
-   - entry_date (text) -> The date of work done (Format: 'YYYY-MM-DD')
-   - start_time (text) -> Shift start time (Format: 'HH:MM')
-   - end_time (text) -> Shift end time (Format: 'HH:MM')
-   - duration_hours (real) -> Calculated decimal value of total worked hours
-   - module_name (text) -> Name of the sub-module or ticket being worked on
-   - task_description (text) -> Detailed notes of the daily task updates
-   - project_name (text) -> Main client or software project container name
-   - created_at (datetime) -> Automatically logs when this entry was created
+Table: projects
+   - id (integer, primary key)
+   - name (text, unique) -> Project container e.g. 'Status App', 'AI Project'
+
+Table: daily_status_entries
+   - id (integer, primary key)
+   - employee_id (integer) -> ALWAYS filter by current user's id
+   - project_id (integer) -> Links to projects(id)
+   - entry_date (text, YYYY-MM-DD)
+   - start_time (text, HH:MM)
+   - end_time (text, HH:MM)
+   - duration_minutes (integer) -> e.g. 120 = 2 hours, 480 = 8 hours
+   - module_name (text) -> UPPERCASE e.g. FRONTEND, MIDDLEWARE
+   - task_description (text)
+   - is_email_sent (text: 'true' or 'false')
+   - created_at (text)
 `;
