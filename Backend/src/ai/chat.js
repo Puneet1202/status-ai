@@ -1,10 +1,11 @@
 // FILE: backend/src/ai/chat.js
-// V13 PRODUCTION READY - FULL PROVIDER DECOUPLING + SQL FALLBACK MATRIX
+// V14 PRODUCTION READY - RUNTIME DYNAMIC MATRIX WITH COMPLIANCE HINTS
 
 import { askCloudflareAI } from './providers/cloudflare.js'; // Single source of truth provider
 import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
 import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config imported cleanly
-import { getSystemPrompt, TIMESHEET_TOOLS } from './tools.js';
+// ✅ Change 1: Fresh live function objects imported instead of static configurations array
+import { getSystemPrompt, getTimesheetTools } from './tools.js';
 
 export async function aiChat(env, userId, message, history = [], pendingAction = null) {
     try {
@@ -39,20 +40,20 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         // ================================================================
         // 🚀 PATH 1: STRUCTURED ACTION DETECTION VIA PROVIDER (With Tools)
         // ================================================================
-        // ✅ Fixed: Calling the polymorphic provider wrapper instead of env.AI.run direct bypass
+        // ✅ Change 2: Dynamic runtime execution using getTimesheetTools() fresh instance
         const toolResponse = await askCloudflareAI(
             getSystemPrompt(), 
             cleanMessage, 
             safeHistory, 
             env, 
-            TIMESHEET_TOOLS
+            getTimesheetTools() // ← Runtime fresh tools configuration
         );
 
         // Llama Specific Tool Calling Extractor
         const toolCall = toolResponse?.tool_calls?.[0];
 
         if (toolCall) {
-            // Safe parameter string parsing defense
+            // Safe parameter string parsing defense (Intact & Robust)
             const inputArgs = typeof toolCall.arguments === "string"
                 ? JSON.parse(toolCall.arguments)
                 : toolCall.arguments;
@@ -65,23 +66,26 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         // 🔍 PATH 2: FALLBACK PATH - CONVERSATIONAL OR MANUAL VIEWING LAYER
         // ================================================================
         // Agar Llama koi tool use nahi karta toh normal decision tree par jump karega
+        // ✅ Change 3: Refactored compliance schema metadata instructions for normalized table structures
         const finalDynamicSchema = `
 ${DB_SCHEMA}
-CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
-1. You MUST explicitly use aliases for calculations: 'SUM(duration_hours) AS total_hours'.
-2. Always select specific columns 'project_name', 'duration_hours', 'task_description' when listing raw logs.
+CRITICAL SQLITE COMPLIANCE:
+1. Table name is: daily_status_entries (NOT timesheets)
+2. Use SUM(duration_minutes)/60.0 AS total_hours
+3. JOIN projects table: JOIN projects p ON d.project_id = p.id
+4. Always use alias 'd' for daily_status_entries
 `;
 
         const sqlPrompt = buildSQLPrompt(cleanMessage, finalDynamicSchema, userId);
         
-        // ✅ Fixed: Normal chat conversion block routed via provider wrapper (Passing null to systemPrompt)
+        // Normal chat conversion block routed via provider wrapper (Passing null to systemPrompt)
         const firstReply = await askCloudflareAI(null, sqlPrompt, [], env);
         
         let decision = typeof firstReply === 'string' ? firstReply.trim() : (firstReply.response || "").trim();
 
         if (decision.toUpperCase() === "CLARIFY") {
             return {
-                reply: "Could you please clarify your request? For example: 'Show my hours this week' or 'Log 4 hours for Project-X today'"
+                reply: "Could you please clarify your request? For example: 'Show my timesheet logs for this week' or 'Log 4 hours for Project-X today'"
             };
         }
 
@@ -93,7 +97,7 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
             return { reply: rawFallbackText };
         }
 
-        // Security scope check
+        // Security scope check (Loose match works perfectly for d.employee_id)
         const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, 'i');
         if (!userIdRegex.test(sqlQuery)) {
             return { reply: "Security guardrail: Query must be scoped to your own data." };
@@ -112,7 +116,7 @@ CRITICAL SQLITE COMPLIANCE INSTRUCTIONS:
         const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
         const replyPrompt = buildReplyPrompt(cleanMessage, safeDbResult);
         
-        // ✅ Fixed: Human response generation node cleanly decoupled via provider
+        // Human response generation node cleanly decoupled via provider
         const finalHumanReply = await askCloudflareAI(null, replyPrompt, safeHistory, env);
 
         const textReply = typeof finalHumanReply === 'string' ? finalHumanReply : (finalHumanReply.response || finalHumanReply.text || "");
