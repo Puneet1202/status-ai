@@ -1,5 +1,5 @@
 // FILE: backend/src/ai/chat.js
-// V15 PRODUCTION READY - WATER-TIGHT RECOVERY WITH OUTPUT SANITIZATION
+// V16 PRODUCTION READY - STACK-BASED PARSING ISOLATION LOOP
 
 import { askCloudflareAI } from './providers/cloudflare.js'; // Single source of truth provider
 import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
@@ -8,22 +8,46 @@ import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js';
 import { getSystemPrompt, getTimesheetTools } from './tools.js';
 
 // =========================================================================
-// 🛡️ SECURITY SHIELD: Safe JSON Extractor Regex Loop (Bypass LLM Noise)
+// 🛡️ SECURITY SHIELD: Stack-Based Deterministic JSON Parser (Claude Fix)
 // =========================================================================
 function safeParseArgs(raw) {
     if (typeof raw !== "string") return raw;
     
-    // Greedy match to extract the outermost bound JSON structure cleanly
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (match) {
-        try {
-            return JSON.parse(match[0]);
-        } catch (err) {
-            console.error("[⚠️ Fatal Parsing Sync Failure]: Matched block syntax corrupted.", err);
-            throw new Error("Tool arguments JSON parse failed inside isolated regex sandbox.");
+    // First, try a direct native parse optimization pass
+    try {
+        return JSON.parse(raw);
+    } catch (parseErr) {
+        console.warn("[⚠️ Safe Parse Alert]: Native JSON corrupted, running linear stack extraction layer.");
+        
+        const start = raw.indexOf('{');
+        if (start === -1) {
+            throw new Error("Sandbox Isolation Failure: No JSON object boundary found.");
         }
+        
+        let depth = 0;
+        let end = -1;
+        
+        // Balanced Parentheses Tracking Framework
+        for (let i = start; i < raw.length; i++) {
+            if (raw[i] === '{') {
+                depth++;
+            } else if (raw[i] === '}') {
+                depth--;
+                if (depth === 0) { 
+                    end = i; 
+                    break; // Strictly freeze boundary at the true root closing bracket
+                }
+            }
+        }
+        
+        if (end === -1) {
+            throw new Error("Sandbox Isolation Failure: Malformed unclosed bracket hierarchy structure.");
+        }
+        
+        // Strict boundary slicing completely ignores trailing metadata explanation notes
+        const cleanJsonStr = raw.slice(start, end + 1);
+        return JSON.parse(cleanJsonStr);
     }
-    return JSON.parse(raw);
 }
 
 export async function aiChat(env, userId, message, history = [], pendingAction = null) {
@@ -38,7 +62,7 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         // 🚨 CONFIG SHIELD 2: Rolling History Character Volatility Protection (100% Intact)
         let safeHistory = Array.isArray(history) ? history : [];
         const totalHistoryChars = safeHistory.reduce((sum, h) => sum + (h?.length || 0), 0);
-        
+
         if (totalHistoryChars > MAX_TOTAL_CHARS) {
             console.log(`[⚠️ CONTEXT LIMIT BREACH] History total chars: ${totalHistoryChars}. Truncating array state.`);
             safeHistory = safeHistory.slice(-2);
@@ -61,10 +85,10 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         // ================================================================
         // ✅ Change 2: Dynamic runtime execution using getTimesheetTools() fresh instance
         const toolResponse = await askCloudflareAI(
-            getSystemPrompt(), 
-            cleanMessage, 
-            safeHistory, 
-            env, 
+            getSystemPrompt(),
+            cleanMessage,
+            safeHistory,
+            env,
             getTimesheetTools() // ← Runtime fresh tools configuration
         );
 
@@ -72,7 +96,7 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         const toolCall = toolResponse?.tool_calls?.[0];
 
         if (toolCall) {
-            // 🌟 ACTIVE HOOK: Applying the regex sanitization rule cleanly to bypass LLM trailing strings noise
+            // 🌟 ACTIVE HOOK: Applying the stack-based recovery layer cleanly to ignore trailing characters noise
             const inputArgs = safeParseArgs(toolCall.arguments);
 
             // Direct structured payload output to match the dispatch controller array keys
@@ -94,10 +118,10 @@ CRITICAL SQLITE COMPLIANCE:
 `;
 
         const sqlPrompt = buildSQLPrompt(cleanMessage, finalDynamicSchema, userId);
-        
+
         // Normal chat conversion block routed via provider wrapper (Passing null to systemPrompt)
         const firstReply = await askCloudflareAI(null, sqlPrompt, [], env);
-        
+
         let decision = typeof firstReply === 'string' ? firstReply.trim() : (firstReply.response || "").trim();
 
         if (decision.toUpperCase() === "CLARIFY") {
@@ -132,7 +156,7 @@ CRITICAL SQLITE COMPLIANCE:
 
         const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
         const replyPrompt = buildReplyPrompt(cleanMessage, safeDbResult);
-        
+
         // Human response generation node cleanly decoupled via provider
         const finalHumanReply = await askCloudflareAI(null, replyPrompt, safeHistory, env);
 

@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-5MIkaN/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-7O7qIh/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-5MIkaN/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-7O7qIh/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5325,16 +5325,33 @@ __name(getTimesheetTools, "getTimesheetTools");
 // src/ai/chat.js
 function safeParseArgs(raw2) {
   if (typeof raw2 !== "string") return raw2;
-  const match2 = raw2.match(/\{[\s\S]*\}/);
-  if (match2) {
-    try {
-      return JSON.parse(match2[0]);
-    } catch (err) {
-      console.error("[\u26A0\uFE0F Fatal Parsing Sync Failure]: Matched block syntax corrupted.", err);
-      throw new Error("Tool arguments JSON parse failed inside isolated regex sandbox.");
+  try {
+    return JSON.parse(raw2);
+  } catch (parseErr) {
+    console.warn("[\u26A0\uFE0F Safe Parse Alert]: Native JSON corrupted, running linear stack extraction layer.");
+    const start = raw2.indexOf("{");
+    if (start === -1) {
+      throw new Error("Sandbox Isolation Failure: No JSON object boundary found.");
     }
+    let depth = 0;
+    let end = -1;
+    for (let i = start; i < raw2.length; i++) {
+      if (raw2[i] === "{") {
+        depth++;
+      } else if (raw2[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      throw new Error("Sandbox Isolation Failure: Malformed unclosed bracket hierarchy structure.");
+    }
+    const cleanJsonStr = raw2.slice(start, end + 1);
+    return JSON.parse(cleanJsonStr);
   }
-  return JSON.parse(raw2);
 }
 __name(safeParseArgs, "safeParseArgs");
 async function aiChat(env, userId, message, history = [], pendingAction = null) {
@@ -5437,6 +5454,14 @@ function calcEndTime(startTime, durationMinutes) {
   return `${pad(endHH)}:${pad(endMM)}`;
 }
 __name(calcEndTime, "calcEndTime");
+function calcMinutesFromTimes(startTime, endTime) {
+  if (!startTime || !endTime) return 120;
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const diff = eh * 60 + em - (sh * 60 + sm);
+  return diff > 0 ? diff : 120;
+}
+__name(calcMinutesFromTimes, "calcMinutesFromTimes");
 var addTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
   try {
     const db = c.env.DB;
@@ -5452,6 +5477,9 @@ var addTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
     let durationMinutes = body.duration_minutes;
     if (!durationMinutes && body.duration_hours) {
       durationMinutes = Math.round(parseFloat(body.duration_hours) * 60);
+    }
+    if (!durationMinutes && startTime && endTime) {
+      durationMinutes = calcMinutesFromTimes(startTime, endTime);
     }
     if (!endTime && startTime && durationMinutes) {
       endTime = calcEndTime(startTime, durationMinutes);
@@ -5579,6 +5607,9 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         } else {
           let computedMin = data.duration_minutes;
           if (!computedMin && data.duration_hours) computedMin = Math.round(Number(data.duration_hours) * 60);
+          if (!computedMin && data.start_time && data.end_time) {
+            computedMin = calcMinutesFromTimes(data.start_time, data.end_time);
+          }
           if (!computedMin) computedMin = 120;
           entriesToBatch = [{
             start_time: data.start_time || "09:00",
@@ -5591,7 +5622,9 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         if (entriesToBatch.length === 0) {
           return c.json({ reply: "No operational metadata slots extracted to commit." }, 200);
         }
-        if (entriesToBatch.length === 1 && parseInt(entriesToBatch[0].duration_minutes, 10) === 480) {
+        const firstEntry = entriesToBatch[0];
+        const calculatedMins = firstEntry.duration_minutes || calcMinutesFromTimes(firstEntry.start_time, firstEntry.end_time);
+        if (entriesToBatch.length === 1 && calculatedMins === 480) {
           const DAILY_SLOTS = [
             { start: "09:00", end: "11:00" },
             { start: "11:00", end: "13:00" },
@@ -5608,9 +5641,9 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
           }));
         }
         const statements = entriesToBatch.map((entry) => {
-          const rawMinutes = parseInt(entry.duration_minutes, 10) || 120;
           const startTime = entry.start_time || "09:00";
-          const endTime = entry.end_time || calcEndTime(startTime, rawMinutes);
+          const endTime = entry.end_time || (entry.duration_minutes ? calcEndTime(startTime, entry.duration_minutes) : "11:00");
+          const rawMinutes = entry.duration_minutes || calcMinutesFromTimes(startTime, endTime);
           const modName = (entry.module_name || "GENERAL").toUpperCase().trim();
           return db.prepare(`
                         INSERT INTO daily_status_entries 
@@ -5654,6 +5687,10 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         if (filterModule) {
           logQuery += ` AND UPPER(d.module_name) = UPPER(?)`;
           queryBinds.push(filterModule);
+        }
+        if (data.project_name) {
+          logQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
+          queryBinds.push(`%${data.project_name.trim()}%`);
         }
         logQuery += ` ORDER BY d.entry_date ASC, d.start_time ASC`;
         const dbRows = await db.prepare(logQuery).bind(...queryBinds).all();
@@ -5779,7 +5816,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-5MIkaN/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-7O7qIh/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5811,7 +5848,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-5MIkaN/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-7O7qIh/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

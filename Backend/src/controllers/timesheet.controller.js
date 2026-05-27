@@ -1,5 +1,5 @@
 // FILE: backend/src/controllers/timesheet.controller.js
-// V3.1 - NORMALIZED BLUEPRINT READY (CROSS-CHECKED & FULLY VERIFIED)
+// V3.2 - PRODUCTION READY BLUEPRINT (WITH TIME MATRIX & GET SEARCH FILTERS)
 
 import { aiChat } from '../ai/chat.js';
 
@@ -48,6 +48,17 @@ function calcEndTime(startTime, durationMinutes) {
     return `${pad(endHH)}:${pad(endMM)}`;
 }
 
+// =========================================================================
+// 🛠️ UTILITY HELPER: Pure Time-String To Minutes Calculation (Claude Fix)
+// =========================================================================
+function calcMinutesFromTimes(startTime, endTime) {
+    if (!startTime || !endTime) return 120; // Backup fallback 2 hours
+    const [sh, sm] = startTime.split(":").map(Number);
+    const [eh, em] = endTime.split(":").map(Number);
+    const diff = (eh * 60 + em) - (sh * 60 + sm);
+    return diff > 0 ? diff : 120; // Negative sequence hone par 2hr fallback layout
+}
+
 /**
  * 1. ADD STATUS ENTRY (Direct REST endpoint)
  */
@@ -70,6 +81,10 @@ export const addTimesheetEntry = async (c) => {
         let durationMinutes = body.duration_minutes;
         if (!durationMinutes && body.duration_hours) {
             durationMinutes = Math.round(parseFloat(body.duration_hours) * 60);
+        }
+
+        if (!durationMinutes && startTime && endTime) {
+            durationMinutes = calcMinutesFromTimes(startTime, endTime);
         }
 
         if (!endTime && startTime && durationMinutes) {
@@ -267,6 +282,11 @@ export const aiChatHandler = async (c) => {
                     // Convert potential old single string keys or duration layouts dynamically
                     let computedMin = data.duration_minutes;
                     if (!computedMin && data.duration_hours) computedMin = Math.round(Number(data.duration_hours) * 60);
+                    
+                    // Fallback runtime time duration extraction if fields missing from tool payload
+                    if (!computedMin && data.start_time && data.end_time) {
+                        computedMin = calcMinutesFromTimes(data.start_time, data.end_time);
+                    }
                     if (!computedMin) computedMin = 120; // 2 hour default allocation fallback
 
                     entriesToBatch = [{
@@ -282,8 +302,13 @@ export const aiChatHandler = async (c) => {
                     return c.json({ reply: "No operational metadata slots extracted to commit." }, 200);
                 }
 
+                // 🔄 CLAUDE FIX: Calculate derived context for the first item to evaluate 8-Hour check safely
+                const firstEntry = entriesToBatch[0];
+                const calculatedMins = firstEntry.duration_minutes 
+                    || calcMinutesFromTimes(firstEntry.start_time, firstEntry.end_time);
+
                 // 🔄 8-Hour Single Block Partitioning Guardrail Engine
-                if (entriesToBatch.length === 1 && parseInt(entriesToBatch[0].duration_minutes, 10) === 480) {
+                if (entriesToBatch.length === 1 && calculatedMins === 480) {
                     const DAILY_SLOTS = [
                         { start: "09:00", end: "11:00" },
                         { start: "11:00", end: "13:00" },
@@ -302,9 +327,9 @@ export const aiChatHandler = async (c) => {
 
                 // Compile database statements pool array for atomic D1 batch operation execution
                 const statements = entriesToBatch.map(entry => {
-                    const rawMinutes = parseInt(entry.duration_minutes, 10) || 120;
                     const startTime = entry.start_time || "09:00";
-                    const endTime = entry.end_time || calcEndTime(startTime, rawMinutes);
+                    const endTime = entry.end_time || (entry.duration_minutes ? calcEndTime(startTime, entry.duration_minutes) : "11:00");
+                    const rawMinutes = entry.duration_minutes || calcMinutesFromTimes(startTime, endTime);
                     const modName = (entry.module_name || "GENERAL").toUpperCase().trim();
 
                     return db.prepare(`
@@ -358,6 +383,12 @@ export const aiChatHandler = async (c) => {
                 if (filterModule) {
                     logQuery += ` AND UPPER(d.module_name) = UPPER(?)`;
                     queryBinds.push(filterModule);
+                }
+
+                // ✅ CLAUDE FIX: Dynamic project name search query parameter check
+                if (data.project_name) {
+                    logQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
+                    queryBinds.push(`%${data.project_name.trim()}%`);
                 }
 
                 logQuery += ` ORDER BY d.entry_date ASC, d.start_time ASC`;
