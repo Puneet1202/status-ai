@@ -1,11 +1,30 @@
 // FILE: backend/src/ai/chat.js
-// V14 PRODUCTION READY - RUNTIME DYNAMIC MATRIX WITH COMPLIANCE HINTS
+// V15 PRODUCTION READY - WATER-TIGHT RECOVERY WITH OUTPUT SANITIZATION
 
 import { askCloudflareAI } from './providers/cloudflare.js'; // Single source of truth provider
 import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
 import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config imported cleanly
 // ✅ Change 1: Fresh live function objects imported instead of static configurations array
 import { getSystemPrompt, getTimesheetTools } from './tools.js';
+
+// =========================================================================
+// 🛡️ SECURITY SHIELD: Safe JSON Extractor Regex Loop (Bypass LLM Noise)
+// =========================================================================
+function safeParseArgs(raw) {
+    if (typeof raw !== "string") return raw;
+    
+    // Greedy match to extract the outermost bound JSON structure cleanly
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+        try {
+            return JSON.parse(match[0]);
+        } catch (err) {
+            console.error("[⚠️ Fatal Parsing Sync Failure]: Matched block syntax corrupted.", err);
+            throw new Error("Tool arguments JSON parse failed inside isolated regex sandbox.");
+        }
+    }
+    return JSON.parse(raw);
+}
 
 export async function aiChat(env, userId, message, history = [], pendingAction = null) {
     try {
@@ -53,10 +72,8 @@ export async function aiChat(env, userId, message, history = [], pendingAction =
         const toolCall = toolResponse?.tool_calls?.[0];
 
         if (toolCall) {
-            // Safe parameter string parsing defense (Intact & Robust)
-            const inputArgs = typeof toolCall.arguments === "string"
-                ? JSON.parse(toolCall.arguments)
-                : toolCall.arguments;
+            // 🌟 ACTIVE HOOK: Applying the regex sanitization rule cleanly to bypass LLM trailing strings noise
+            const inputArgs = safeParseArgs(toolCall.arguments);
 
             // Direct structured payload output to match the dispatch controller array keys
             return { action: { action: toolCall.name, data: inputArgs } };

@@ -6,7 +6,9 @@ import { cors } from 'hono/cors'; // Inbuilt CORS package import kiya
 import authRouter from './routers/auth.routes.js';
 import timesheetRouter from './routers/timesheet.routes.js';
 
+
 const app = new Hono();
+
 
 // =========================================================================
 // 🔓 GLOBAL CORS MIDDLEWARE LAYER (Handshake Multi-Port Enabler)

@@ -1,23 +1,49 @@
 // FILE: backend/src/controllers/timesheet.controller.js
-// V2.3 - WATER-TIGHT PRODUCTION FREEZE (ALL EDGE CASES RESOLVED)
+// V3.1 - NORMALIZED BLUEPRINT READY (CROSS-CHECKED & FULLY VERIFIED)
 
 import { aiChat } from '../ai/chat.js';
 
 // =========================================================================
-// ✅ UTILITY HELPER: Safe Time Calculation, Overflow Wrap & Zero Padding
+// 🛠️ UTILITY HELPER: Resolve or Create Project ID from Name String
 // =========================================================================
-function calcEndTime(startTime, durationHours) {
-    const hours = parseInt(durationHours, 10);
+async function getOrCreateProjectId(db, projectName) {
+    const cleanName = projectName.trim();
+    
+    // Check if the project already exists in projects master catalog
+    const existing = await db
+        .prepare("SELECT id FROM projects WHERE LOWER(name) = LOWER(?)")
+        .bind(cleanName)
+        .first();
+        
+    if (existing) return existing.id;
+
+    // Dynamic row insertion if it's a completely new project container
+    const insertResult = await db
+        .prepare("INSERT INTO projects (name) VALUES (?)")
+        .bind(cleanName)
+        .run();
+        
+    if (insertResult.meta.changes === 0) {
+        throw new Error(`Dynamic allocation failure for project identifier: ${cleanName}`);
+    }
+    
+    return insertResult.meta.last_row_id;
+}
+
+// =========================================================================
+// 🛠️ UTILITY HELPER: Pure Minutes-Based Safe Time Calculation 
+// =========================================================================
+function calcEndTime(startTime, durationMinutes) {
+    const totalMinutesInput = parseInt(durationMinutes, 10) || 120;
     const [startHH, startMM] = startTime.split(":").map(Number);
     
-    // Total minutes mein convert karke shift duration add karo
-    const totalMinutes = (startHH * 60 + startMM) + (hours * 60);
+    // Total minutes summation tracking layout
+    const totalMinutes = (startHH * 60 + startMM) + totalMinutesInput;
     
     // 24-hour wrap-around handles mid-night overflows safely
     const endHH = Math.floor(totalMinutes / 60) % 24; 
     const endMM = totalMinutes % 60;
     
-    // Strictly force double-digit format (e.g., "09:00" instead of "9:00")
     const pad = (n) => String(n).padStart(2, "0");
     return `${pad(endHH)}:${pad(endMM)}`;
 }
@@ -32,34 +58,45 @@ export const addTimesheetEntry = async (c) => {
         const employeeId = currentUser.id;
 
         const body = await c.req.json();
-        const {
-            entry_date,
-            start_time,
-            end_time,
-            duration_hours,
-            module_name,
-            task_description,
-            project_name
-        } = body;
-
-        if (!entry_date || !start_time || !end_time || !duration_hours || !task_description || !project_name) {
-            return c.json({ message: "Validation Fault: Missing required fields", success: false }, 400);
+        
+        let entryDate = body.entry_date;
+        let startTime = body.start_time || "09:00";
+        let endTime = body.end_time;
+        let moduleName = (body.module_name || "GENERAL").toUpperCase().trim();
+        let taskDescription = body.task_description;
+        let projectName = body.project_name;
+        
+        // 🌟 Backward Compatibility & Normalization Layer
+        let durationMinutes = body.duration_minutes;
+        if (!durationMinutes && body.duration_hours) {
+            durationMinutes = Math.round(parseFloat(body.duration_hours) * 60);
         }
+
+        if (!endTime && startTime && durationMinutes) {
+            endTime = calcEndTime(startTime, durationMinutes);
+        }
+
+        if (!entryDate || !startTime || !endTime || !durationMinutes || !taskDescription || !projectName) {
+            return c.json({ message: "Validation Fault: Missing required configurations or duration mappings", success: false }, 400);
+        }
+
+        // Dynamic Relation Binding Pipeline
+        const projectId = await getOrCreateProjectId(db, projectName);
 
         const result = await db
             .prepare(`
-                INSERT INTO timesheets 
-                (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name) 
+                INSERT INTO daily_status_entries 
+                (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `)
-            .bind(employeeId, entry_date, start_time, end_time, parseFloat(duration_hours), module_name || 'General', task_description, project_name)
+            .bind(employeeId, projectId, entryDate, startTime, endTime, parseInt(durationMinutes, 10), moduleName, taskDescription)
             .run();
 
         if (result.meta.changes === 0) {
-            throw new Error("D1 insert failed — no rows affected.");
+            throw new Error("D1 insert failed — zero rows affected.");
         }
 
-        return c.json({ message: "Status committed successfully!", success: true }, 201);
+        return c.json({ message: "Status committed successfully into enterprise ledger!", success: true }, 201);
 
     } catch (error) {
         console.error("[Timesheet Insert Error]:", error);
@@ -68,7 +105,7 @@ export const addTimesheetEntry = async (c) => {
 };
 
 /**
- * 2. MASTER FILTER SEARCH ENGINE
+ * 2. MASTER FILTER SEARCH ENGINE (Admin Dashboard Layer)
  */
 export const getAllTimesheetsAdmin = async (c) => {
     try {
@@ -78,12 +115,16 @@ export const getAllTimesheetsAdmin = async (c) => {
         const dateFrom = c.req.query('dateFrom');
         const dateTo = c.req.query('dateTo');
         const employeeName = c.req.query('employeeName');
-        const clientName = c.req.query('clientName');
+        const clientName = c.req.query('clientName'); 
 
         let sqlQuery = `
-            SELECT t.*, u.name as employee_name, u.email as employee_email 
-            FROM timesheets t
+            SELECT t.id, t.employee_id, t.project_id, t.entry_date, t.start_time, t.end_time, 
+                   t.duration_minutes, t.task_description, t.module_name, t.is_email_sent, t.created_at,
+                   u.name as employee_name, u.email as employee_email,
+                   p.name as project_name
+            FROM daily_status_entries t
             JOIN users u ON t.employee_id = u.id
+            JOIN projects p ON t.project_id = p.id
             WHERE 1=1
         `;
 
@@ -107,7 +148,7 @@ export const getAllTimesheetsAdmin = async (c) => {
         }
 
         if (clientName && clientName !== 'all' && clientName !== 'All clients') {
-            sqlQuery += ` AND LOWER(t.project_name) LIKE LOWER(?)`;
+            sqlQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
             binds.push(`%${clientName}%`);
         }
 
@@ -120,7 +161,7 @@ export const getAllTimesheetsAdmin = async (c) => {
 
     } catch (error) {
         console.error("[Filter Engine Error]:", error);
-        return c.json({ message: "Internal Server Error: Query failed", success: false }, 500);
+        return c.json({ message: "Internal Server Error: Query failed to process logs", success: false }, 500);
     }
 };
 
@@ -138,24 +179,24 @@ export const deleteTimesheetEntry = async (c) => {
         }
 
         const result = await db
-            .prepare(`DELETE FROM timesheets WHERE id = ? AND employee_id = ?`)
+            .prepare(`DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?`)
             .bind(logId, currentUser.id)
             .run();
 
         if (result.meta.changes === 0) {
-            return c.json({ message: "Entry not found or already deleted.", success: false }, 404);
+            return c.json({ message: "Entry not found or unauthorized deletion scope request.", success: false }, 404);
         }
 
         return c.json({ message: "Entry deleted successfully!", success: true }, 200);
 
     } catch (error) {
         console.error("[Delete Error]:", error);
-        return c.json({ message: "Internal Server Error: Delete failed", success: false }, 500);
+        return c.json({ message: "Internal Server Error: Delete transaction failed", success: false }, 500);
     }
 };
 
 /**
- * 4. AI CHAT HANDLER
+ * 4. AI CHAT HANDLER INTERACTION ENGINE
  */
 export const aiChatHandler = async (c) => {
     try {
@@ -169,301 +210,229 @@ export const aiChatHandler = async (c) => {
         }
 
         // ================================================================
-        // 🛡️ CONFIRM FLOW: INTERCEPT FOR DELETION BYPASS (100% Intact)
+        // 🛡️ CONFIRM FLOW: INTERCEPT FOR DELETION BYPASS MATRIX
         // ================================================================
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
 
         if (pendingAction && pendingAction.action === "DELETE_TIMESHEET" && isConfirming) {
             const deleteResult = await db
-                .prepare("DELETE FROM timesheets WHERE id = ? AND employee_id = ?")
+                .prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?")
                 .bind(pendingAction.matchId, user.id)
                 .run();
 
             if (deleteResult.meta.changes === 0) {
-                return c.json({ reply: "Entry not found or already deleted." }, 200);
+                return c.json({ reply: "Entry not found or already tracking metadata execution drop." }, 200);
             }
 
             return c.json({
                 success: true,
                 action: "DELETE_TIMESHEET",
-                reply: `Entry from project "${pendingAction.projectName}" deleted successfully.`
+                reply: `Status record from project "${pendingAction.projectName}" has been permanently purged.`
             }, 200);
         }
 
-        // Normal AI Core Pipeline execution (Calling chat.js with pendingAction)
+        // Normal AI Core Pipeline execution context router
         const result = await aiChat(c.env, user.id, message, history, pendingAction);
 
         // ================================================================
-        // 🚀 METADATA INTENT ENGINE DISPATCH LAYER
+        // 🚀 METADATA INTENT ENGINE DISPATCH LAYER (ACTIONS PROCESSOR)
         // ================================================================
         if (result.action) {
             const { action, data } = result.action;
 
             // ---------------------------------------------------------------------
-            // 📝 INTENT A: ADD_TIMESHEET ENGINE (Purana 8-Hour Split Logic)
+            // 📝 INTENT A & D: ADD_TIMESHEET / add_timesheet_entries CONSOLIDATION
             // ---------------------------------------------------------------------
-            if (action === "ADD_TIMESHEET") {
-                if (!data.project_name || !data.duration_hours || !data.task_description) {
-                    return c.json({ reply: "Please specify project name, hours, and task description clearly." }, 200);
+            if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
+                
+                const targetProjectName = data.project_name;
+                if (!targetProjectName || !data.task_description) {
+                    return c.json({ reply: "Please specify project name and task description clearly." }, 200);
                 }
 
-                const totalHours = parseInt(data.duration_hours, 10);
-                if (isNaN(totalHours) || totalHours <= 0) {
-                    return c.json({ reply: "Invalid duration. Please provide valid working hours." }, 200);
-                }
-
+                // Resolve matching project identifier pointer string to integer ID
+                const projectId = await getOrCreateProjectId(db, targetProjectName);
                 const todayStr = new Date().toISOString().split('T')[0];
-                let entryDate = data.entry_date || data.date || todayStr;
+                let entryDate = data.entry_date || todayStr;
 
                 if (!entryDate || entryDate === "2024-07-26" || !entryDate.startsWith("2026-")) {
                     entryDate = todayStr;
                 }
-                const moduleName = (data.module_name || "GENERAL").toUpperCase().trim();
 
-                const DAILY_SLOTS = [
-                    { start: "09:00", end: "11:00" },
-                    { start: "11:00", end: "13:00" },
-                    { start: "14:00", end: "16:00" }, 
-                    { start: "16:00", end: "18:00" },
-                ];
-
-                if (totalHours === 8) {
-                    const results = [];
-                    for (let index = 0; index < DAILY_SLOTS.length; index++) {
-                        const slot = DAILY_SLOTS[index];
-                        const splitResult = await db
-                            .prepare(`
-                                INSERT INTO timesheets 
-                                (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            `)
-                            .bind(
-                                user.id,
-                                entryDate,
-                                slot.start,
-                                slot.end,
-                                2,
-                                moduleName,
-                                `${data.task_description.trim()} (Part ${index + 1} of 4)`,
-                                data.project_name.trim()
-                            )
-                            .run();
-
-                        if (splitResult.meta.changes === 0) {
-                            throw new Error(`Database Error: Matrix partition slot ${index + 1} failed.`);
-                        }
-                        results.push(splitResult);
-                    }
-
-                    return c.json({
-                        success: true,
-                        action: "ADD_TIMESHEET",
-                        reply: `Logged 8 hours split across 4 ordered enterprise slots (09-11, 11-01, 02-04, 04-06) under "${data.project_name}" [${moduleName}] for ${entryDate}.`
-                    }, 200);
-
+                // Normalizing structured batch array variables
+                let entriesToBatch = [];
+                if (action === "add_timesheet_entries" && Array.isArray(data.entries)) {
+                    entriesToBatch = data.entries;
                 } else {
-                    const startTime = data.start_time || "09:00";
-                    // ✅ BUG 1 FIXED: Custom hours calculation activated safely
-                    const endTime   = data.end_time   || calcEndTime(startTime, totalHours);
+                    // Convert potential old single string keys or duration layouts dynamically
+                    let computedMin = data.duration_minutes;
+                    if (!computedMin && data.duration_hours) computedMin = Math.round(Number(data.duration_hours) * 60);
+                    if (!computedMin) computedMin = 120; // 2 hour default allocation fallback
 
-                    const insertResult = await db
-                        .prepare(`
-                            INSERT INTO timesheets 
-                            (employee_id, entry_date, start_time, end_time, duration_hours, module_name, task_description, project_name)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        `)
-                        .bind(user.id, entryDate, startTime, endTime, totalHours, moduleName, data.task_description.trim(), data.project_name.trim())
-                        .run();
-
-                    if (insertResult.meta.changes === 0) {
-                        throw new Error("Database Error: Inline write transaction failed on Cloudflare D1.");
-                    }
-
-                    return c.json({
-                        success: true,
-                        action: "ADD_TIMESHEET",
-                        reply: `Logged ${totalHours} hours under "${data.project_name}" [${moduleName}] from ${startTime} to ${endTime} for ${entryDate}. Saved!`
-                    }, 200);
-                }
-            }
-
-            // ---------------------------------------------------------------------
-            // 📊 INTENT B: GET_TIMESHEET ENGINE (Purana Native Filter Block)
-            // ---------------------------------------------------------------------
-            if (action === "GET_TIMESHEET") {
-                const from = data.from_date;
-                const to   = data.to_date || from;
-
-                if (!from) {
-                    return c.json({ reply: "Please specify a valid start date to view timesheets." }, 200);
+                    entriesToBatch = [{
+                        start_time: data.start_time || "09:00",
+                        end_time: data.end_time || null,
+                        duration_minutes: computedMin,
+                        module_name: data.module_name || "GENERAL",
+                        task_description: data.task_description
+                    }];
                 }
 
-                const rows = await db
-                    .prepare(`
-                        SELECT id, entry_date, start_time, end_time, 
-                               duration_hours, module_name, task_description, project_name
-                        FROM timesheets
-                        WHERE employee_id = ?
-                        AND entry_date BETWEEN ? AND ?
-                        ORDER BY entry_date ASC, start_time ASC
-                    `)
-                    .bind(user.id, from, to)
-                    .all();
+                if (entriesToBatch.length === 0) {
+                    return c.json({ reply: "No operational metadata slots extracted to commit." }, 200);
+                }
 
-                const total = rows.results ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0) : 0;
+                // 🔄 8-Hour Single Block Partitioning Guardrail Engine
+                if (entriesToBatch.length === 1 && parseInt(entriesToBatch[0].duration_minutes, 10) === 480) {
+                    const DAILY_SLOTS = [
+                        { start: "09:00", end: "11:00" },
+                        { start: "11:00", end: "13:00" },
+                        { start: "14:00", end: "16:00" }, 
+                        { start: "16:00", end: "18:00" },
+                    ];
+                    const originalNode = entriesToBatch[0];
+                    entriesToBatch = DAILY_SLOTS.map((slot, idx) => ({
+                        start_time: slot.start,
+                        end_time: slot.end,
+                        duration_minutes: 120,
+                        module_name: originalNode.module_name || "GENERAL",
+                        task_description: `${originalNode.task_description.trim()} (Part ${idx + 1} of 4)`
+                    }));
+                }
+
+                // Compile database statements pool array for atomic D1 batch operation execution
+                const statements = entriesToBatch.map(entry => {
+                    const rawMinutes = parseInt(entry.duration_minutes, 10) || 120;
+                    const startTime = entry.start_time || "09:00";
+                    const endTime = entry.end_time || calcEndTime(startTime, rawMinutes);
+                    const modName = (entry.module_name || "GENERAL").toUpperCase().trim();
+
+                    return db.prepare(`
+                        INSERT INTO daily_status_entries 
+                        (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    `).bind(
+                        user.id,
+                        projectId,
+                        entryDate,
+                        startTime,
+                        endTime,
+                        rawMinutes,
+                        modName,
+                        entry.task_description?.trim() || "Work Status Update"
+                    );
+                });
+
+                await db.batch(statements);
 
                 return c.json({
                     success: true,
-                    action: "GET_TIMESHEET",
-                    reply: `Showing logs from ${from} to ${to} — Total logged: ${total} hours.`,
-                    data: rows.results || []
+                    action: "ADD_MULTIPLE_TIMESHEETS",
+                    reply: `✅ Successfully saved ${entriesToBatch.length} tracking partitions under project "${targetProjectName}" for allocation date ${entryDate}!`
                 }, 200);
             }
 
             // ---------------------------------------------------------------------
-            // 📝 INTENT D: ADD_MULTIPLE_TIMESHEETS (✅ TOOL USE BATCH BLOCK)
+            // 📊 INTENT B: GET_TIMESHEET / get_timesheet_logs DISPATCH LAYER
             // ---------------------------------------------------------------------
-          if (action === "add_timesheet_entries") {
-    let { entries, project_name, entry_date } = data;
+            if (action === "GET_TIMESHEET" || action === "get_timesheet_logs") {
+                const todayStr = new Date().toISOString().split('T')[0];
+                let fromDate = data.from_date || data.date;
+                let toDate = data.to_date || fromDate || todayStr;
+                const filterModule = data.module_name;
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const safeDate = (!entry_date || !entry_date.startsWith("2026-") || entry_date === "2024-07-26")
-        ? todayStr : entry_date;
+                if (!fromDate || !fromDate.startsWith("2026-")) fromDate = "2026-01-01";
+                if (!toDate || !toDate.startsWith("2026-")) toDate = todayStr;
+                if (toDate > todayStr) toDate = todayStr;
 
-    // ✅ Fix 1 — Object hai to array banao
-    if (!Array.isArray(entries)) {
-        entries = entries ? [entries] : [];
-    }
+                let logQuery = `
+                    SELECT d.id, d.entry_date, d.start_time, d.end_time, 
+                           d.duration_minutes, d.module_name, d.task_description, p.name as project_name
+                    FROM daily_status_entries d
+                    JOIN projects p ON d.project_id = p.id
+                    WHERE d.employee_id = ?
+                    AND d.entry_date BETWEEN ? AND ?
+                `;
+                const queryBinds = [user.id, fromDate, toDate];
 
-    // ✅ Fix 2 — Empty check
-    if (entries.length === 0) {
-        return c.json({ success: false, reply: "No valid entries found to log." }, 200);
-    }
+                if (filterModule) {
+                    logQuery += ` AND UPPER(d.module_name) = UPPER(?)`;
+                    queryBinds.push(filterModule);
+                }
 
-    // ✅ Fix 3 — 8 hours single entry → 4 slots mein split
-    if (entries.length === 1 && Number(entries[0].duration_hours) === 8) {
-        const DAILY_SLOTS = [
-            { start: "09:00", end: "11:00" },
-            { start: "11:00", end: "13:00" },
-            { start: "14:00", end: "16:00" },
-            { start: "16:00", end: "18:00" },
-        ];
-        const original = entries[0];
-        entries = DAILY_SLOTS.map((slot, i) => ({
-            start_time: slot.start,
-            end_time: slot.end,
-            duration_hours: 2,
-            module_name: original.module_name || "GENERAL",
-            task_description: `${original.task_description} (Part ${i + 1} of 4)`
-        }));
-    }
+                logQuery += ` ORDER BY d.entry_date ASC, d.start_time ASC`;
 
-    const statements = entries.map(entry =>
-        db.prepare(`
-            INSERT INTO timesheets 
-            (employee_id, entry_date, start_time, end_time, 
-             duration_hours, module_name, task_description, project_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-            user.id,
-            safeDate,
-            entry.start_time || "09:00",
-            entry.end_time || calcEndTime(entry.start_time || "09:00", entry.duration_hours || 2),
-            Number(entry.duration_hours) || 2,
-            (entry.module_name || "GENERAL").toUpperCase().trim(),
-            entry.task_description?.trim() || "Work Status Update",
-            project_name?.trim()
-        )
-    );
+                const dbRows = await db.prepare(logQuery).bind(...queryBinds).all();
+                
+                const totalMinutes = dbRows.results 
+                    ? dbRows.results.reduce((sum, r) => sum + parseInt(r.duration_minutes || 0, 10), 0) 
+                    : 0;
+                
+                const totalHoursDisplay = (totalMinutes / 60).toFixed(1);
 
-    await db.batch(statements);
-
-    return c.json({
-        success: true,
-        action: "ADD_MULTIPLE_TIMESHEETS",
-        reply: `✅ ${entries.length} entries saved for ${safeDate}!`
-    }, 200);
-}
-
-// ✅ GET block — date guardrail add kiya
-if (action === "get_timesheet_logs") {
-    const todayStr = new Date().toISOString().split('T')[0];
-    let { from_date, to_date, module_name } = data;
-
-    // Date guardrails
-    if (!from_date || !from_date.startsWith("2026-")) from_date = "2026-01-01";
-    if (!to_date   || !to_date.startsWith("2026-"))   to_date = todayStr;
-    
-    // ✅ Future date block
-    if (to_date > todayStr) to_date = todayStr;
-
-    // ✅ Dynamic query — module filter optional
-    let query = `
-        SELECT id, entry_date, start_time, end_time, 
-               duration_hours, module_name, task_description, project_name 
-        FROM timesheets
-        WHERE employee_id = ?
-        AND entry_date BETWEEN ? AND ?
-    `;
-    const binds = [user.id, from_date, to_date];
-
-    if (module_name) {
-        query += ` AND UPPER(module_name) = UPPER(?)`;
-        binds.push(module_name);
-    }
-
-    query += ` ORDER BY entry_date ASC, start_time ASC`;
-
-    const rows = await db.prepare(query).bind(...binds).all();
-    const total = rows.results
-        ? rows.results.reduce((sum, r) => sum + Number(r.duration_hours), 0)
-        : 0;
-
-    return c.json({
-        success: true,
-        action: "GET_TIMESHEET",
-        reply: `${from_date} to ${to_date}${module_name ? ` [${module_name}]` : ''} — Total: ${total} hrs`,
-        data: rows.results || []
-    }, 200);
-}
+                return c.json({
+                    success: true,
+                    action: "GET_TIMESHEET",
+                    reply: `${fromDate} to ${toDate}${filterModule ? ` [${filterModule}]` : ''} — Total logged status: ${totalHoursDisplay} hrs (${totalMinutes} mins)`,
+                    data: dbRows.results || []
+                }, 200);
+            }
 
             // ---------------------------------------------------------------------
-            // 🗑️ INTENT C: DELETE_TIMESHEET INTERCEPT STAGE (100% Intact)
+            // 🗑️ INTENT C: DELETE_TIMESHEET INTERCEPT STAGE
             // ---------------------------------------------------------------------
             if (action === "DELETE_TIMESHEET") {
                 let matchLog = null;
 
-                if (data.timesheet_id) {
+                if (data.entry_id || data.timesheet_id) {
+                    const lookupId = data.entry_id || data.timesheet_id;
                     matchLog = await db
-                        .prepare("SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE id = ? AND employee_id = ?")
-                        .bind(data.timesheet_id, user.id)
+                        .prepare(`
+                            SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
+                            FROM daily_status_entries d
+                            JOIN projects p ON d.project_id = p.id
+                            WHERE d.id = ? AND d.employee_id = ?
+                        `)
+                        .bind(lookupId, user.id)
                         .first();
                 }
 
                 if (!matchLog && (data.project_name?.trim() || data.task_description?.trim())) {
-                    let caseQuery = `SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE employee_id = ?`;
-                    const caseBinds = [user.id];
+                    let textSearchQuery = `
+                        SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
+                        FROM daily_status_entries d
+                        JOIN projects p ON d.project_id = p.id
+                        WHERE d.employee_id = ?
+                    `;
+                    const textSearchBinds = [user.id];
 
                     if (data.project_name?.trim()) {
-                        caseQuery += ` AND project_name LIKE ?`;
-                        caseBinds.push(`%${data.project_name.trim()}%`);
+                        textSearchQuery += ` AND p.name LIKE ?`;
+                        textSearchBinds.push(`%${data.project_name.trim()}%`);
                     }
                     if (data.task_description?.trim()) {
-                        caseQuery += ` AND task_description LIKE ?`;
-                        caseBinds.push(`%${data.task_description.trim()}%`);
+                        textSearchQuery += ` AND d.task_description LIKE ?`;
+                        textSearchBinds.push(`%${data.task_description.trim()}%`);
                     }
 
-                    caseQuery += ` ORDER BY created_at DESC LIMIT 1`;
-                    matchLog = await db.prepare(caseQuery).bind(...caseBinds).first();
+                    textSearchQuery += ` ORDER BY d.created_at DESC LIMIT 1`;
+                    matchLog = await db.prepare(textSearchQuery).bind(...textSearchBinds).first();
                 }
 
                 if (!matchLog) {
-                    const userWasSpecific = data.timesheet_id || data.project_name?.trim() || data.task_description?.trim();
-                    if (userWasSpecific) {
+                    const wasExplicit = data.entry_id || data.timesheet_id || data.project_name?.trim() || data.task_description?.trim();
+                    if (wasExplicit) {
                         return c.json({ reply: "Could not find any entry matching your description. Please check details." }, 200);
                     }
+                    // Extract latest fallback record context 
                     matchLog = await db
-                        .prepare("SELECT id, project_name, duration_hours, task_description FROM timesheets WHERE employee_id = ? ORDER BY created_at DESC LIMIT 1")
+                        .prepare(`
+                            SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
+                            FROM daily_status_entries d
+                            JOIN projects p ON d.project_id = p.id
+                            WHERE d.employee_id = ? 
+                            ORDER BY d.created_at DESC LIMIT 1
+                        `)
                         .bind(user.id)
                         .first();
                 }
@@ -479,7 +448,7 @@ if (action === "get_timesheet_logs") {
                         matchId: matchLog.id,
                         projectName: matchLog.project_name
                     },
-                    reply: `Found entry: "${matchLog.project_name}" (${matchLog.duration_hours} hrs — ${matchLog.task_description}). Type "confirm" to delete permanently.`
+                    reply: `Found entry: "${matchLog.project_name}" (${(matchLog.duration_minutes / 60).toFixed(1)} hrs — ${matchLog.task_description}). Type "confirm" to apply delete permanent lifecycle action.`
                 }, 200);
             }
         }
