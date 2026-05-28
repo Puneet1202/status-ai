@@ -25,7 +25,7 @@ export default function AIChatbot() {
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Smooth UI Scrolling Engine
+  // Smooth UI Scrolling Engine for Chat History
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -52,6 +52,18 @@ export default function AIChatbot() {
     })
     .catch(err => console.error("Error loading chat contexts:", err));
   }, []);
+
+  // ✅ UI OPTIMIZATION ENGINE: Dynamic Textarea Height Auto-Grow Realignment
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+
+    // Reset layout flow size to handle dynamic backspaces cleanly
+    textarea.style.height = 'auto';
+    
+    // Set explicit computed scroll bounds layout height parameters
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [inputValue]);
 
   // --- ✅ FIXED: Claude's Aligned Cursor Input Handler ---
   const handleInputChange = (e) => {
@@ -116,7 +128,7 @@ export default function AIChatbot() {
       id: Date.now(),
       role: 'user',
       content: inputValue,
-      context: activeContext ? activeContext.name : null, 
+      context: activeContext ? activeContext.name : null,  
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
@@ -125,24 +137,28 @@ export default function AIChatbot() {
     setIsLoading(true);
     setActiveContext(null); // Flushing contextual channel frame
 
- // --- Clean API Form Delivery Submission (Line Update) ---
-try {
-  const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${localStorage.getItem('keyss_token')}`
-    },
-    body: JSON.stringify({
-      message: userPayload.content,
-      history: [],        
-      pendingAction: null,
-      // ✅ Claude's Fix Injected: Selected Context Explicitly Sent
-      selectedProject: userPayload.context  
-    }),
-  });
-  
-  // Remaining implementation...
+    // ✅ UI SHRINK SEQUENCE: Collapse input node frame safely back to normal single row bounds
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
+
+    // --- Clean API Form Delivery Submission (Line Update) ---
+    try {
+      const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('keyss_token')}`
+        },
+        body: JSON.stringify({
+          message: userPayload.content,
+          history: [],        
+          pendingAction: null,
+          // ✅ Claude's Fix Injected: Selected Context Explicitly Sent
+          selectedProject: userPayload.context  
+        }),
+      });
+      
       if (!response.ok) throw new Error('Data payload tracking error');
       
       const data = await response.json();
@@ -262,7 +278,7 @@ try {
           </div>
 
           {/* Action Footer Entry Module */}
-          <div className="relative border-t border-slate-800 bg-slate-900/50 p-4 backdrop-blur-md">
+          <div className="relative border-t border-slate-800 bg-slate-900/50 p-4 backdrop-blur-md shrink-0">
             
             {/* Context Floating Dropdown Panel */}
             {showContextDropdown && (
@@ -291,10 +307,11 @@ try {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="relative flex flex-col gap-2">
+            {/* ✅ FIXED SCROLL CONTAINER WRAPPER FORM INTERFACE */}
+            <form onSubmit={handleSubmit} className="relative flex flex-col gap-2 max-h-[180px] overflow-y-auto style-scrollbar-none">
               {/* Context Explicit Overlay Tag */}
               {activeContext && (
-                <div className="flex">
+                <div className="flex shrink-0">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
                     {activeContext.name}:
                     <button type="button" onClick={() => setActiveContext(null)} className="ml-1 hover:text-white">
@@ -304,7 +321,8 @@ try {
                 </div>
               )}
 
-              <div className="relative flex items-center">
+              {/* ✅ Input Control Wrapper: Forcing End Anchor Alignment */}
+              <div className="relative flex items-end w-full bg-[#0b0f19] rounded-xl border border-slate-700 focus-within:border-indigo-500/50 focus-within:ring-4 focus-within:ring-indigo-500/10 min-h-[44px]">
                 <textarea
                   ref={inputRef}
                   rows={1}
@@ -318,18 +336,27 @@ try {
                   }}
                   placeholder={isLoading ? "Processing dynamic query..." : "Type '@' to link a project context..."}
                   disabled={isLoading}
-                  className="w-full resize-none rounded-xl border border-slate-700 bg-[#0b0f19] py-3 pl-4 pr-12 text-sm text-slate-200 outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10 disabled:opacity-50"
+                  style={{
+                    height: 'auto',
+                    maxHeight: '120px', // Prevents interface layout clipping
+                    overflowY: 'auto',  // ✅ Activates seamless internal scrolling when content expands max limits
+                  }}
+                  className="w-full resize-none bg-transparent py-3 pl-4 pr-12 text-sm text-slate-200 outline-none disabled:opacity-50 style-scrollbar-none"
                 />
-                <button
-                  type="submit"
-                  disabled={!inputValue.trim() || isLoading}
-                  className="absolute right-2 top-1.5 rounded-lg bg-indigo-600 p-2 text-white transition-all hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600"
-                >
-                  <Send size={18} />
-                </button>
+                
+                {/* ✅ Button Corner Alignment Anchor Pin */}
+                <div className="absolute right-2 bottom-1.5 flex items-center justify-center">
+                  <button
+                    type="submit"
+                    disabled={!inputValue.trim() || isLoading}
+                    className="rounded-lg bg-indigo-600 p-2 text-white transition-all hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600"
+                  >
+                    <Send size={18} />
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center justify-end px-1">
+              <div className="flex items-center justify-end px-1 shrink-0">
                 <span className="text-[10px] text-slate-600">
                   Press <kbd className="rounded border border-slate-700 px-1 font-sans">Enter</kbd> to submit
                 </span>
