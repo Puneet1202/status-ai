@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  MessageSquare, 
   X, 
   Send, 
   Database, 
@@ -9,66 +8,47 @@ import {
   Cpu, 
   Terminal, 
   Sparkles, 
-  Paperclip, 
-  MoreHorizontal,
-  ChevronRight,
   Loader2
 } from 'lucide-react';
 
-/**
- * AIChatbot.jsx
- * 
- * A premium, self-contained enterprise AI Chatbot component.
- * Features: 
- * - @Context mention system (Logs, Budgets, Database)
- * - Dynamic empty-state with quick-action chips
- * - Full Dark Slate/Indigo enterprise theme
- * - Integrated API handler for http://localhost:8787/api/chat
- */
-
+// 1. Data Scopes configuration mapped directly for your financial/logging framework
 const CONTEXT_OPTIONS = [
   { id: 'Logs', icon: <Terminal size={14} />, label: 'Sprint Logs & Metrics', color: 'text-blue-400' },
   { id: 'Budgets', icon: <BarChart3 size={14} />, label: 'Financial Thresholds', color: 'text-emerald-400' },
   { id: 'Database', icon: <Database size={14} />, label: 'Local/Cloud Tracking', color: 'text-purple-400' },
 ];
 
-const QUICK_PROMPTS = [
-  { label: "Analyze my sprint logs", context: "Logs" },
-  { label: "Check budget thresholds", context: "Budgets" },
-  { label: "Database sync status", context: "Database" },
-];
-
 export default function AIChatbot() {
-  // --- State Management ---
+  // --- UI Layout Controllers ---
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeContext, setActiveContext] = useState(null);
+  
+  // --- Isolated Metadata Context Tracking ---
+  const [activeContext, setActiveContext] = useState(null); 
   const [showContextDropdown, setShowContextDropdown] = useState(false);
   const [filteredContexts, setFilteredContexts] = useState(CONTEXT_OPTIONS);
   
-  // --- Refs ---
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
-  // --- Auto-scroll Effect ---
+  // Smooth UI Scrolling Engine
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isLoading]);
 
-  // --- Input & Context Logic ---
+  // --- Core Core Tokenized Logic Wrapper ---
   const handleInputChange = (e) => {
     const val = e.target.value;
     setInputValue(val);
 
-    // Detect '@' trigger
-    const lastChar = val.slice(-1);
     const words = val.split(' ');
     const lastWord = words[words.length - 1];
 
+    // Detect execution sequence token '@'
     if (lastWord.startsWith('@')) {
       const query = lastWord.slice(1).toLowerCase();
       const filtered = CONTEXT_OPTIONS.filter(opt => 
@@ -83,67 +63,58 @@ export default function AIChatbot() {
 
   const selectContext = (contextId) => {
     const words = inputValue.split(' ');
-    words.pop(); // Remove the '@' or partial '@word'
+    words.pop(); // Clear out unparsed literal '@' segment
     const newText = words.join(' ') + (words.length > 0 ? ' ' : '') + `@${contextId} `;
     
     setInputValue(newText);
-    setActiveContext(contextId);
+    setActiveContext(contextId); // Context scoped securely here
     setShowContextDropdown(false);
     inputRef.current?.focus();
   };
 
-  const handleQuickPrompt = (prompt) => {
-    setInputValue(prompt.label);
-    setActiveContext(prompt.context);
-    // Focus input to allow user to edit or just hit enter
-    inputRef.current?.focus();
-  };
-
-  // --- API Submission Handler ---
+  // --- Clean API Form Delivery Submission ---
   const handleSubmit = async (e) => {
     e?.preventDefault();
     if (!inputValue.trim() || isLoading) return;
 
-    const userMessage = {
+    const userPayload = {
       id: Date.now(),
       role: 'user',
       content: inputValue,
-      context: activeContext,
+      context: activeContext, // Forward tracking token explicitly 
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => [...prev, userPayload]);
     setInputValue('');
     setIsLoading(true);
-    setActiveContext(null);
+    setActiveContext(null); // Flushing contextual channel frame for next query cycle
 
     try {
       const response = await fetch('http://localhost:8787/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: userMessage.content,
-          activeContext: userMessage.context
+          message: userPayload.content,
+          activeContext: userPayload.context // Pass back context to your HNSW vector engine
         }),
       });
 
-      if (!response.ok) throw new Error('Network response was not ok');
+      if (!response.ok) throw new Error('Data payload tracking error');
       
       const data = await response.json();
       
-      const aiResponse = {
+      setMessages(prev => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
-        content: data.reply || "Context processed successfully. Systems within normal parameters.",
+        content: data.reply || "Context analytics synced successfully within architecture parameters.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-
-      setMessages(prev => [...prev, aiResponse]);
+      }]);
     } catch (error) {
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
-        content: "I encountered a connection error. Please ensure the local DevOps API is running.",
+        content: "Telemetry processing failed. Ensure your Hono backend microservice is operational.",
         error: true,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
@@ -154,11 +125,11 @@ export default function AIChatbot() {
 
   return (
     <div className="fixed bottom-6 right-6 z-50 font-sans antialiased text-slate-200">
-      {/* Floating Toggle Button */}
+      {/* Floating Toggle Icon */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="group relative flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-[0_0_20px_rgba(79,70,229,0.4)] transition-all hover:scale-105 hover:bg-indigo-500 active:scale-95"
+          className="group relative flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-[0_0_20px_rgba(79,70,229,0.4)] transition-all hover:scale-105 hover:bg-indigo-500"
         >
           <div className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
@@ -168,12 +139,11 @@ export default function AIChatbot() {
         </button>
       )}
 
-      {/* Main Chat Window */}
+      {/* Main Corporate Panel Container Layout */}
       {isOpen && (
-        <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-[#0f172a] shadow-2xl transition-all animate-in fade-in zoom-in-95 slide-in-from-bottom-10 
-          w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] sm:w-[440px] sm:h-[650px]">
+        <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-[#0f172a] shadow-2xl w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] sm:w-[440px] sm:h-[650px]">
           
-          {/* Header */}
+          {/* Header Element Area */}
           <div className="flex items-center justify-between bg-slate-900/80 px-5 py-4 backdrop-blur-md border-b border-slate-800">
             <div className="flex items-center gap-3">
               <div className="relative">
@@ -183,8 +153,8 @@ export default function AIChatbot() {
                 <div className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-slate-900 bg-emerald-500 animate-pulse"></div>
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-slate-100">DevOps AI Assistant</h3>
-                <p className="text-[11px] text-slate-400">System nodes online</p>
+                <h3 className="text-sm font-semibold text-slate-100">KEYSS AI System</h3>
+                <p className="text-[11px] text-slate-400">Intelligence Node Active</p>
               </div>
             </div>
             <button 
@@ -195,36 +165,23 @@ export default function AIChatbot() {
             </button>
           </div>
 
-          {/* Messages Body */}
+          {/* Chat Content Window Pane */}
           <div 
             ref={scrollRef}
-            className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent"
+            className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800"
           >
             {messages.length === 0 ? (
-              /* Empty State UI */
-              <div className="flex h-full flex-col items-center justify-center text-center animate-in fade-in duration-700">
+              /* Simplified Dynamic Onboarding Screen Area */
+              <div className="flex h-full flex-col items-center justify-center text-center">
                 <div className="mb-4 rounded-full bg-slate-900 p-4 ring-1 ring-slate-800">
                   <ShieldCheck className="h-8 w-8 text-indigo-500" />
                 </div>
-                <h4 className="text-base font-medium text-slate-200">Enterprise Contextual AI</h4>
+                <h4 className="text-base font-medium text-slate-200">KEYSS Contextual Engine</h4>
                 <p className="mt-2 px-6 text-xs leading-relaxed text-slate-500">
-                  I can analyze your infrastructure, logs, and billing. Use <span className="text-indigo-400 font-mono">@</span> to reference specific data scopes.
+                  Ask queries by tagging target structures. Type <span className="text-indigo-400 font-mono font-bold">@</span> to filter analysis across logs, metrics, or systemic thresholds.
                 </p>
-                <div className="mt-8 grid w-full gap-2">
-                  {QUICK_PROMPTS.map((prompt, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handleQuickPrompt(prompt)}
-                      className="group flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-left transition-all hover:border-indigo-500/50 hover:bg-indigo-500/5"
-                    >
-                      <span className="text-xs font-medium text-slate-300 group-hover:text-indigo-300">{prompt.label}</span>
-                      <ChevronRight size={14} className="text-slate-600 group-hover:text-indigo-400" />
-                    </button>
-                  ))}
-                </div>
               </div>
             ) : (
-              /* Message List */
               messages.map((msg) => (
                 <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                   <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
@@ -235,22 +192,21 @@ export default function AIChatbot() {
                         : 'bg-slate-900 border border-slate-800 text-slate-300 rounded-tl-none'
                   }`}>
                     {msg.context && (
-                      <div className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-200">
-                        <Terminal size={10} /> {msg.context}
+                      <div className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-300">
+                        @{msg.context}
                       </div>
                     )}
                     <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
                   </div>
-                  <span className="mt-1.5 text-[10px] text-slate-600 uppercase tracking-tight px-1">
+                  <span className="mt-1.5 text-[10px] text-slate-600 px-1 uppercase">
                     {msg.timestamp}
                   </span>
                 </div>
               ))
             )}
             
-            {/* Loading Indicator */}
             {isLoading && (
-              <div className="flex items-center gap-3 animate-in fade-in">
+              <div className="flex items-center gap-3">
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 border border-slate-800">
                   <Loader2 size={16} className="animate-spin text-indigo-500" />
                 </div>
@@ -263,14 +219,14 @@ export default function AIChatbot() {
             )}
           </div>
 
-          {/* Input Footer Area */}
+          {/* Action Footer Entry Module */}
           <div className="relative border-t border-slate-800 bg-slate-900/50 p-4 backdrop-blur-md">
             
-            {/* Context Dropdown Layer */}
+            {/* Context Floating Dropdown Panel */}
             {showContextDropdown && (
-              <div className="absolute bottom-full left-4 right-4 mb-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl animate-in slide-in-from-bottom-2">
+              <div className="absolute bottom-full left-4 right-4 mb-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
                 <div className="bg-slate-800/50 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                  Select Context Scope
+                  Select Systemic Boundary
                 </div>
                 {filteredContexts.length > 0 ? (
                   filteredContexts.map(ctx => (
@@ -287,17 +243,17 @@ export default function AIChatbot() {
                     </button>
                   ))
                 ) : (
-                  <div className="p-3 text-xs text-slate-500 italic">No scope matches...</div>
+                  <div className="p-3 text-xs text-slate-500 italic">No contexts identified...</div>
                 )}
               </div>
             )}
 
             <form onSubmit={handleSubmit} className="relative flex flex-col gap-2">
-              {/* Context Tag Display */}
+              {/* Context Explicit Overlay Tag */}
               {activeContext && (
-                <div className="flex animate-in zoom-in-95">
+                <div className="flex">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
-                    <Database size={12} /> @{activeContext}
+                    @{activeContext}
                     <button onClick={() => setActiveContext(null)} className="ml-1 hover:text-white">
                       <X size={12} />
                     </button>
@@ -305,7 +261,7 @@ export default function AIChatbot() {
                 </div>
               )}
 
-              <div className="group relative flex items-center">
+              <div className="relative flex items-center">
                 <textarea
                   ref={inputRef}
                   rows={1}
@@ -317,9 +273,9 @@ export default function AIChatbot() {
                       handleSubmit();
                     }
                   }}
-                  placeholder={isLoading ? "Processing context..." : "Ask AI or type '@' for context..."}
+                  placeholder={isLoading ? "Processing dynamic query..." : "Type '@' to target specific system layer..."}
                   disabled={isLoading}
-                  className="w-full resize-none rounded-xl border border-slate-700 bg-[#0b0f19] py-3 pl-4 pr-12 text-sm text-slate-200 outline-none transition-all focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10 disabled:opacity-50"
+                  className="w-full resize-none rounded-xl border border-slate-700 bg-[#0b0f19] py-3 pl-4 pr-12 text-sm text-slate-200 outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10 disabled:opacity-50"
                 />
                 <button
                   type="submit"
@@ -330,17 +286,9 @@ export default function AIChatbot() {
                 </button>
               </div>
 
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-3">
-                  <button type="button" className="text-slate-500 hover:text-slate-300">
-                    <Paperclip size={16} />
-                  </button>
-                  <button type="button" className="text-slate-500 hover:text-slate-300">
-                    <MoreHorizontal size={16} />
-                  </button>
-                </div>
+              <div className="flex items-center justify-end px-1">
                 <span className="text-[10px] text-slate-600">
-                  Press <kbd className="rounded border border-slate-700 px-1 font-sans">Enter</kbd> to send
+                  Press <kbd className="rounded border border-slate-700 px-1 font-sans">Enter</kbd> to submit
                 </span>
               </div>
             </form>
