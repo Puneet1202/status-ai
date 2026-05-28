@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-nbMoMo/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-41gIvJ/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-nbMoMo/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-41gIvJ/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5242,12 +5242,50 @@ DATE RULES FOR GET:
 - "this week"      \u2192 from: Monday of this week, to: ${today}
 - "this month"     \u2192 from: first of month, to: ${today}
 
+TIME SLOT & LUNCH RULES (CRITICAL):
+1. STANDARD WORK DAY contains a FIXED LUNCH BREAK from 13:00 to 14:00.
+2. Never log any task between 13:00 and 14:00 unless user explicitly says: "worked during lunch", "lunch break mein bhi kaam kiya", or "lunch skip kiya".
+3. Overlap Prevention: NEVER generate multiple entries with overlapping time slots for the same date. Each time slot must be strictly sequential.
+4. EXACT TIMES ONLY: Word-based slots must use EXACT predefined times. No partial hours, no rounding, no guessing.
+
+SLOT DEFINITIONS \u2014 STRICT EXACT TIMES:
+- "morning"           \u2192 start: 09:00, end: 11:00 (exactly)
+- "mid-day" / "noon"  \u2192 start: 11:00, end: 13:00 (exactly) \u2190 NEVER 12:30 or any other end time
+- "afternoon"         \u2192 start: 14:00, end: 16:00 (exactly) \u2190 starts AFTER lunch
+- "evening"           \u2192 start: 16:00, end: 18:00 (exactly)
+
+NUMERICAL TIME MAPPING:
+- "9-11" / "9 AM-11 AM"   \u2192 09:00 to 11:00
+- "11-1" / "11 AM-1 PM"   \u2192 11:00 to 13:00
+- "2-4"  / "2 PM-4 PM"    \u2192 14:00 to 16:00
+- "4-6"  / "4 PM-6 PM"    \u2192 16:00 to 18:00
+
+FULL DAY / CONTINUOUS TIMELINE RULE:
+If user says "full day", "morning to evening", or covers all shifts:
+Generate EXACTLY 4 entries \u2014 same task, sequential slots:
+  1. 09:00\u201311:00
+  2. 11:00\u201313:00
+  [13:00\u201314:00 LUNCH \u2014 SKIP]
+  3. 14:00\u201316:00
+  4. 16:00\u201318:00
+
 EXAMPLES:
-"8 hours Status App today"           \u2192 add, entry_date: "${today}"
-"9-11 frontend, 11-1 backend"        \u2192 add, entry_date: "${today}"
-"aaj ka dikhao"                      \u2192 get, from: "${today}", to: "${today}"
-"is hafte kitna kaam kiya"           \u2192 get, from: [monday], to: "${today}"
-"show all BUG_FIXING"                \u2192 get, from: "2026-01-01", to: "${today}", module: "BUG_FIXING"`;
+"morning testing, afternoon review"
+  \u2192 Entry 1: 09:00\u201311:00, task: testing
+  \u2192 Entry 2: 14:00\u201316:00, task: review
+
+"mid-day mentorship review"
+  \u2192 Entry 1: 11:00\u201313:00 (EXACTLY), task: mentorship review
+
+"9-11 frontend, 11-1 backend"
+  \u2192 Entry 1: 09:00\u201311:00, task: frontend
+  \u2192 Entry 2: 11:00\u201313:00, task: backend
+
+"full day on AI Project"
+  \u2192 4 entries: 09\u201311, 11\u201313, 14\u201316, 16\u201318
+
+"aaj ka dikhao"        \u2192 get, from: "${today}", to: "${today}"
+"is hafte ka kaam"     \u2192 get, from: [monday], to: "${today}"`;
 }
 __name(getSystemPrompt, "getSystemPrompt");
 function getTimesheetTools() {
@@ -5264,27 +5302,35 @@ function getTimesheetTools() {
           properties: {
             project_name: {
               type: "string",
-              description: "Project name e.g. 'Status App', 'AI Project', 'Core Infra V2', 'Project-X'"
+              description: "Project name as mentioned by user. Examples: 'AI Project', 'Status App', 'Project-X', 'Core Infra V2'. Extract from message, never assume."
             },
             entry_date: {
               type: "string",
-              description: `Date in YYYY-MM-DD format. Default context lock: ${today}`
+              description: `Date in YYYY-MM-DD format. Default: ${today}`
             },
             entries: {
               type: "array",
-              description: "Work slots array \u2014 one object per logged time block",
+              description: "Work slots array \u2014 one object per time block",
               items: {
                 type: "object",
-                // 🌟 FIX: required se start/end time hata diya taaki implicit hours mapping block na ho
-                required: ["module_name", "task_description"],
+                required: ["module_name", "task_description", "start_time", "end_time"],
                 properties: {
-                  start_time: { type: "string", description: "HH:MM format if mentioned (e.g. 09:00)" },
-                  end_time: { type: "string", description: "HH:MM format if mentioned (e.g. 11:00)" },
+                  start_time: {
+                    type: "string",
+                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (09:00, 11:00, 14:00, 16:00). Never guess or round."
+                  },
+                  end_time: {
+                    type: "string",
+                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (11:00, 13:00, 16:00, 18:00). Never guess or round."
+                  },
                   module_name: {
                     type: "string",
-                    description: "Convert work topic from user message to UPPERCASE_SNAKE_CASE. Extract directly from what user wrote."
+                    description: "Work category in UPPERCASE_SNAKE_CASE. Convert user's topic directly. Examples: EDGE_CASE_TESTING, MENTOR_SESSION, REQUIREMENT_ANALYSIS, ARCHITECTURAL_PIPELINE, BUG_FIXING, FRONTEND, BACKEND. Not limited to these \u2014 derive from context."
                   },
-                  task_description: { type: "string", description: "Clean summary of what tasks were done" }
+                  task_description: {
+                    type: "string",
+                    description: "Clean declarative summary of what was done."
+                  }
                 }
               }
             }
@@ -5296,26 +5342,26 @@ function getTimesheetTools() {
       type: "function",
       function: {
         name: "get_timesheet_logs",
-        description: "Fetch and filter daily status history records by date ranges, modules, or projects.",
+        description: "Fetch and filter daily status history by date range, module, or project.",
         parameters: {
           type: "object",
           required: ["from_date", "to_date"],
           properties: {
             from_date: {
               type: "string",
-              description: `Start date YYYY-MM-DD. Force lock: 2026 or later. Default: ${today}`
+              description: `Start date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
             },
             to_date: {
               type: "string",
-              description: `End date YYYY-MM-DD. Force lock: 2026 or later. Default: ${today}`
+              description: `End date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
             },
             module_name: {
               type: "string",
-              description: "Optional: Filter status logs by module e.g. BUG_FIXING, FRONTEND"
+              description: "Optional: filter by module e.g. BUG_FIXING, FRONTEND"
             },
             project_name: {
               type: "string",
-              description: "Optional: Filter status logs by project name container e.g. 'Status App'"
+              description: "Optional: filter by project name e.g. 'AI Project', 'Status App'"
             }
           }
         }
@@ -5594,7 +5640,7 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
     if (result.action) {
       const { action, data } = result.action;
       if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
-        const targetProjectName = selectedProject || data.project_name;
+        const targetProjectName = selectedProject;
         const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
         const hasTask = data.task_description || hasEntries;
         if (!targetProjectName) {
@@ -5835,7 +5881,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-nbMoMo/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-41gIvJ/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5867,7 +5913,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-nbMoMo/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-41gIvJ/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

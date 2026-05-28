@@ -262,7 +262,7 @@ export const aiChatHandler = async (c) => {
             if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
                 
                 // 🎯 CLAUDE VALIDATION FIX: Checking fields nested inside entries array safely
-                const targetProjectName = selectedProject || data.project_name;
+                const targetProjectName = selectedProject;
                 const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
                 const hasTask = data.task_description || hasEntries;
 

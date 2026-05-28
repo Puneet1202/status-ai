@@ -1,7 +1,6 @@
 // FILE: backend/src/ai/tools.js
-// V14.0 - MIDNIGHT SAFE & FUNCTION CALLING PARAMETERS OPTIMIZED
+// V15.0 - TIME STRICT + MODULE FLEXIBLE
 
-// ✅ Function ke andar rakha hai — Midnight Bug se safe rehne ke liye
 export function getSystemPrompt() {
   const today = new Date().toISOString().split('T')[0];
   const year = new Date().getFullYear();
@@ -22,15 +21,52 @@ DATE RULES FOR GET:
 - "this week"      → from: Monday of this week, to: ${today}
 - "this month"     → from: first of month, to: ${today}
 
+TIME SLOT & LUNCH RULES (CRITICAL):
+1. STANDARD WORK DAY contains a FIXED LUNCH BREAK from 13:00 to 14:00.
+2. Never log any task between 13:00 and 14:00 unless user explicitly says: "worked during lunch", "lunch break mein bhi kaam kiya", or "lunch skip kiya".
+3. Overlap Prevention: NEVER generate multiple entries with overlapping time slots for the same date. Each time slot must be strictly sequential.
+4. EXACT TIMES ONLY: Word-based slots must use EXACT predefined times. No partial hours, no rounding, no guessing.
+
+SLOT DEFINITIONS — STRICT EXACT TIMES:
+- "morning"           → start: 09:00, end: 11:00 (exactly)
+- "mid-day" / "noon"  → start: 11:00, end: 13:00 (exactly) ← NEVER 12:30 or any other end time
+- "afternoon"         → start: 14:00, end: 16:00 (exactly) ← starts AFTER lunch
+- "evening"           → start: 16:00, end: 18:00 (exactly)
+
+NUMERICAL TIME MAPPING:
+- "9-11" / "9 AM-11 AM"   → 09:00 to 11:00
+- "11-1" / "11 AM-1 PM"   → 11:00 to 13:00
+- "2-4"  / "2 PM-4 PM"    → 14:00 to 16:00
+- "4-6"  / "4 PM-6 PM"    → 16:00 to 18:00
+
+FULL DAY / CONTINUOUS TIMELINE RULE:
+If user says "full day", "morning to evening", or covers all shifts:
+Generate EXACTLY 4 entries — same task, sequential slots:
+  1. 09:00–11:00
+  2. 11:00–13:00
+  [13:00–14:00 LUNCH — SKIP]
+  3. 14:00–16:00
+  4. 16:00–18:00
+
 EXAMPLES:
-"8 hours Status App today"           → add, entry_date: "${today}"
-"9-11 frontend, 11-1 backend"        → add, entry_date: "${today}"
-"aaj ka dikhao"                      → get, from: "${today}", to: "${today}"
-"is hafte kitna kaam kiya"           → get, from: [monday], to: "${today}"
-"show all BUG_FIXING"                → get, from: "2026-01-01", to: "${today}", module: "BUG_FIXING"`;
+"morning testing, afternoon review"
+  → Entry 1: 09:00–11:00, task: testing
+  → Entry 2: 14:00–16:00, task: review
+
+"mid-day mentorship review"
+  → Entry 1: 11:00–13:00 (EXACTLY), task: mentorship review
+
+"9-11 frontend, 11-1 backend"
+  → Entry 1: 09:00–11:00, task: frontend
+  → Entry 2: 11:00–13:00, task: backend
+
+"full day on AI Project"
+  → 4 entries: 09–11, 11–13, 14–16, 16–18
+
+"aaj ka dikhao"        → get, from: "${today}", to: "${today}"
+"is hafte ka kaam"     → get, from: [monday], to: "${today}"`;
 }
 
-// ✅ Fresh instance return karega har call par
 export function getTimesheetTools() {
   const today = new Date().toISOString().split('T')[0];
 
@@ -46,27 +82,35 @@ export function getTimesheetTools() {
           properties: {
             project_name: {
               type: "string",
-              description: "Project name e.g. 'Status App', 'AI Project', 'Core Infra V2', 'Project-X'"
+              description: "Project name as mentioned by user. Examples: 'AI Project', 'Status App', 'Project-X', 'Core Infra V2'. Extract from message, never assume."
             },
             entry_date: {
               type: "string",
-              description: `Date in YYYY-MM-DD format. Default context lock: ${today}`
+              description: `Date in YYYY-MM-DD format. Default: ${today}`
             },
             entries: {
               type: "array",
-              description: "Work slots array — one object per logged time block",
+              description: "Work slots array — one object per time block",
               items: {
                 type: "object",
-                // 🌟 FIX: required se start/end time hata diya taaki implicit hours mapping block na ho
-                required: ["module_name", "task_description"], 
+                required: ["module_name", "task_description", "start_time", "end_time"],
                 properties: {
-                  start_time: { type: "string", description: "HH:MM format if mentioned (e.g. 09:00)" },
-                  end_time:   { type: "string", description: "HH:MM format if mentioned (e.g. 11:00)" },
-                 module_name: { 
-    type: "string", 
-    description: "Convert work topic from user message to UPPERCASE_SNAKE_CASE. Extract directly from what user wrote." 
-},
-                  task_description: { type: "string", description: "Clean summary of what tasks were done" }
+                  start_time: {
+                    type: "string",
+                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (09:00, 11:00, 14:00, 16:00). Never guess or round."
+                  },
+                  end_time: {
+                    type: "string",
+                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (11:00, 13:00, 16:00, 18:00). Never guess or round."
+                  },
+                  module_name: {
+                    type: "string",
+                    description: "Work category in UPPERCASE_SNAKE_CASE. Convert user's topic directly. Examples: EDGE_CASE_TESTING, MENTOR_SESSION, REQUIREMENT_ANALYSIS, ARCHITECTURAL_PIPELINE, BUG_FIXING, FRONTEND, BACKEND. Not limited to these — derive from context."
+                  },
+                  task_description: {
+                    type: "string",
+                    description: "Clean declarative summary of what was done."
+                  }
                 }
               }
             }
@@ -78,26 +122,26 @@ export function getTimesheetTools() {
       type: "function",
       function: {
         name: "get_timesheet_logs",
-        description: "Fetch and filter daily status history records by date ranges, modules, or projects.",
+        description: "Fetch and filter daily status history by date range, module, or project.",
         parameters: {
           type: "object",
           required: ["from_date", "to_date"],
           properties: {
             from_date: {
               type: "string",
-              description: `Start date YYYY-MM-DD. Force lock: 2026 or later. Default: ${today}`
+              description: `Start date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
             },
             to_date: {
               type: "string",
-              description: `End date YYYY-MM-DD. Force lock: 2026 or later. Default: ${today}`
+              description: `End date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
             },
             module_name: {
               type: "string",
-              description: "Optional: Filter status logs by module e.g. BUG_FIXING, FRONTEND"
+              description: "Optional: filter by module e.g. BUG_FIXING, FRONTEND"
             },
             project_name: {
               type: "string",
-              description: "Optional: Filter status logs by project name container e.g. 'Status App'"
+              description: "Optional: filter by project name e.g. 'AI Project', 'Status App'"
             }
           }
         }
