@@ -4,6 +4,8 @@ import { AuthScreen } from './routes/auth';
 import { Sidebar } from './components/Sidebar';
 import { EnterStatus } from './routes/enter';
 import { CheckStatus } from './routes/check';
+// 1. Import the AI Chatbot component here (adjust path if needed)
+import AIChatbot from './components/AIChatbot'; 
 
 const AppLayout = () => {
   const { token } = useAppState();
@@ -18,6 +20,9 @@ const AppLayout = () => {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       <main className="flex-1 h-screen overflow-y-auto bg-[#020617] p-8 lg:p-12 custom-scrollbar relative">
         {activeTab === 'enter' ? <EnterStatus /> : <CheckStatus />}
+        
+        {/* 2. Injected globally so it floats neatly over your views */}
+        <AIChatbot />
       </main>
     </div>
   );
