@@ -2,21 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Send, 
-  Database, 
-  BarChart3, 
-  ShieldCheck, 
+  Folder, 
   Cpu, 
-  Terminal, 
+  ShieldCheck, 
   Sparkles, 
   Loader2
 } from 'lucide-react';
-
-// 1. Data Scopes configuration mapped directly for your financial/logging framework
-const CONTEXT_OPTIONS = [
-  { id: 'Logs', icon: <Terminal size={14} />, label: 'Sprint Logs & Metrics', color: 'text-blue-400' },
-  { id: 'Budgets', icon: <BarChart3 size={14} />, label: 'Financial Thresholds', color: 'text-emerald-400' },
-  { id: 'Database', icon: <Database size={14} />, label: 'Local/Cloud Tracking', color: 'text-purple-400' },
-];
 
 export default function AIChatbot() {
   // --- UI Layout Controllers ---
@@ -25,10 +16,11 @@ export default function AIChatbot() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
-  // --- Isolated Metadata Context Tracking ---
+  // --- Dynamic Projects Context Tracking (Problem 4 Fixed) ---
+  const [projects, setProjects] = useState([]); 
   const [activeContext, setActiveContext] = useState(null); 
   const [showContextDropdown, setShowContextDropdown] = useState(false);
-  const [filteredContexts, setFilteredContexts] = useState(CONTEXT_OPTIONS);
+  const [filteredContexts, setFilteredContexts] = useState([]);
   
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
@@ -40,7 +32,34 @@ export default function AIChatbot() {
     }
   }, [messages, isLoading]);
 
-  // --- Core Core Tokenized Logic Wrapper ---
+  // --- Fetch Dynamic Projects from DB ---
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    fetch('http://localhost:8787/api/projects', {
+      headers: { 
+        'Authorization': `Bearer ${token}` 
+      }
+    })
+    .then(res => {
+      if (!res.ok) throw new Error('Failed to fetch projects');
+      return res.json();
+    })
+    .then(data => {
+      // Mapping database structure to UI options
+      const mappedProjects = (data.projects || []).map(proj => ({
+        id: proj.id,
+        name: proj.name,
+        label: `Project ID: ${proj.id}`
+      }));
+      setProjects(mappedProjects);
+      setFilteredContexts(mappedProjects);
+    })
+    .catch(err => console.error("Error loading chat contexts:", err));
+  }, []);
+
+  // --- Core Tokenized Logic Wrapper ---
   const handleInputChange = (e) => {
     const val = e.target.value;
     setInputValue(val);
@@ -51,8 +70,9 @@ export default function AIChatbot() {
     // Detect execution sequence token '@'
     if (lastWord.startsWith('@')) {
       const query = lastWord.slice(1).toLowerCase();
-      const filtered = CONTEXT_OPTIONS.filter(opt => 
-        opt.id.toLowerCase().includes(query)
+      const filtered = projects.filter(proj => 
+        proj.name.toLowerCase().includes(query) || 
+        String(proj.id).toLowerCase().includes(query)
       );
       setFilteredContexts(filtered);
       setShowContextDropdown(true);
@@ -61,18 +81,18 @@ export default function AIChatbot() {
     }
   };
 
-  const selectContext = (contextId) => {
+  const selectContext = (projectId, projectName) => {
     const words = inputValue.split(' ');
     words.pop(); // Clear out unparsed literal '@' segment
-    const newText = words.join(' ') + (words.length > 0 ? ' ' : '') + `@${contextId} `;
+    const newText = words.join(' ') + (words.length > 0 ? ' ' : '') + `@${projectName} `;
     
     setInputValue(newText);
-    setActiveContext(contextId); // Context scoped securely here
+    setActiveContext({ id: projectId, name: projectName }); // Securely tracking object reference
     setShowContextDropdown(false);
     inputRef.current?.focus();
   };
 
-  // --- Clean API Form Delivery Submission ---
+  // --- Clean API Form Delivery Submission (Problem 1, 2, & 3 Fixed) ---
   const handleSubmit = async (e) => {
     e?.preventDefault();
     if (!inputValue.trim() || isLoading) return;
@@ -81,22 +101,29 @@ export default function AIChatbot() {
       id: Date.now(),
       role: 'user',
       content: inputValue,
-      context: activeContext, // Forward tracking token explicitly 
+      context: activeContext ? activeContext.name : null,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     setMessages(prev => [...prev, userPayload]);
     setInputValue('');
     setIsLoading(true);
-    setActiveContext(null); // Flushing contextual channel frame for next query cycle
+    setActiveContext(null); // Flushing contextual channel frame
 
     try {
-      const response = await fetch('http://localhost:8787/api/chat', {
+      // ✅ Problem 1: URL Fixed to '/api/timesheet/ai/chat'
+      const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // ✅ Problem 3: Authorization Header Injected
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        // ✅ Problem 2: Body Structure Realigned
         body: JSON.stringify({
           message: userPayload.content,
-          activeContext: userPayload.context // Pass back context to your HNSW vector engine
+          history: [],        
+          pendingAction: null 
         }),
       });
 
@@ -171,14 +198,13 @@ export default function AIChatbot() {
             className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800"
           >
             {messages.length === 0 ? (
-              /* Simplified Dynamic Onboarding Screen Area */
               <div className="flex h-full flex-col items-center justify-center text-center">
                 <div className="mb-4 rounded-full bg-slate-900 p-4 ring-1 ring-slate-800">
                   <ShieldCheck className="h-8 w-8 text-indigo-500" />
                 </div>
                 <h4 className="text-base font-medium text-slate-200">KEYSS Contextual Engine</h4>
                 <p className="mt-2 px-6 text-xs leading-relaxed text-slate-500">
-                  Ask queries by tagging target structures. Type <span className="text-indigo-400 font-mono font-bold">@</span> to filter analysis across logs, metrics, or systemic thresholds.
+                  Ask queries by tagging target projects. Type <span className="text-indigo-400 font-mono font-bold">@</span> to filter analysis across active database structures.
                 </p>
               </div>
             ) : (
@@ -224,26 +250,27 @@ export default function AIChatbot() {
             
             {/* Context Floating Dropdown Panel */}
             {showContextDropdown && (
-              <div className="absolute bottom-full left-4 right-4 mb-2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
-                <div className="bg-slate-800/50 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                  Select Systemic Boundary
+              <div className="absolute bottom-full left-4 right-4 mb-2 max-h-48 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-2xl scrollbar-thin">
+                <div className="bg-slate-800/50 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 sticky top-0">
+                  Select Project Context
                 </div>
                 {filteredContexts.length > 0 ? (
-                  filteredContexts.map(ctx => (
+                  filteredContexts.map(proj => (
                     <button
-                      key={ctx.id}
-                      onClick={() => selectContext(ctx.id)}
-                      className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-indigo-600/10 hover:text-white"
+                      key={proj.id}
+                      type="button"
+                      onClick={() => selectContext(proj.id, proj.name)}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-indigo-600/10 hover:text-white border-b border-slate-800/50 last:border-0"
                     >
-                      <span className={ctx.color}>{ctx.icon}</span>
+                      <span className="text-purple-400"><Folder size={14} /></span>
                       <div className="flex flex-col">
-                        <span className="font-medium">@{ctx.id}</span>
-                        <span className="text-[11px] text-slate-500">{ctx.label}</span>
+                        <span className="font-medium text-slate-200">@{proj.name}</span>
+                        <span className="text-[11px] text-slate-500">{proj.label}</span>
                       </div>
                     </button>
                   ))
                 ) : (
-                  <div className="p-3 text-xs text-slate-500 italic">No contexts identified...</div>
+                  <div className="p-3 text-xs text-slate-500 italic">No matching projects found...</div>
                 )}
               </div>
             )}
@@ -253,8 +280,8 @@ export default function AIChatbot() {
               {activeContext && (
                 <div className="flex">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
-                    @{activeContext}
-                    <button onClick={() => setActiveContext(null)} className="ml-1 hover:text-white">
+                    @{activeContext.name}
+                    <button type="button" onClick={() => setActiveContext(null)} className="ml-1 hover:text-white">
                       <X size={12} />
                     </button>
                   </span>
@@ -273,7 +300,7 @@ export default function AIChatbot() {
                       handleSubmit();
                     }
                   }}
-                  placeholder={isLoading ? "Processing dynamic query..." : "Type '@' to target specific system layer..."}
+                  placeholder={isLoading ? "Processing dynamic query..." : "Type '@' to link a project context..."}
                   disabled={isLoading}
                   className="w-full resize-none rounded-xl border border-slate-700 bg-[#0b0f19] py-3 pl-4 pr-12 text-sm text-slate-200 outline-none focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10 disabled:opacity-50"
                 />
