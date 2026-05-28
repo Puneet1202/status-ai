@@ -218,7 +218,8 @@ export const aiChatHandler = async (c) => {
         const user = c.get('user');
         const db = c.env.DB;
 
-        const { message, history = [], pendingAction = null } = await c.req.json();
+    
+        const { message, history = [], pendingAction = null, selectedProject = null } = await c.req.json();
 
         if (!message) {
             return c.json({ success: false, message: 'Message required' }, 400);
@@ -261,13 +262,16 @@ export const aiChatHandler = async (c) => {
             if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
                 
                 // 🎯 CLAUDE VALIDATION FIX: Checking fields nested inside entries array safely
-                const targetProjectName = data.project_name;
+                const targetProjectName = selectedProject || data.project_name;
                 const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
                 const hasTask = data.task_description || hasEntries;
 
-                if (!targetProjectName || !hasTask) {
-                    return c.json({ reply: "Please specify project name and task description clearly." }, 200);
-                }
+                if (!targetProjectName) {
+    return c.json({ reply: "Please select a project! Type '@' to choose your project." }, 200);
+}
+if (!hasTask) {
+    return c.json({ reply: "Please describe what you worked on." }, 200);
+}
 
                 // Resolve matching project identifier pointer string to integer ID
                 const projectId = await getOrCreateProjectId(db, targetProjectName);
@@ -492,5 +496,22 @@ export const aiChatHandler = async (c) => {
     } catch (error) {
         console.error("[AI Handler Error]:", error);
         return c.json({ message: 'Internal server error in AI handler.', status: 500 }, 500);
+    }
+};
+
+
+
+
+// Sabse neeche add karo
+export const getProjects = async (c) => {
+    try {
+        const db = c.env.DB;
+        const { results } = await db
+            .prepare("SELECT id, name FROM projects ORDER BY name ASC")
+            .all();
+        return c.json({ projects: results, success: true }, 200);
+    } catch (error) {
+        console.error("[Projects Error]:", error);
+        return c.json({ success: false, message: "Failed to fetch projects" }, 500);
     }
 };

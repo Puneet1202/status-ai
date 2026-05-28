@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-PGULOj/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-nbMoMo/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-PGULOj/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-nbMoMo/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5574,7 +5574,7 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
   try {
     const user = c.get("user");
     const db = c.env.DB;
-    const { message, history = [], pendingAction = null } = await c.req.json();
+    const { message, history = [], pendingAction = null, selectedProject = null } = await c.req.json();
     if (!message) {
       return c.json({ success: false, message: "Message required" }, 400);
     }
@@ -5594,11 +5594,14 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
     if (result.action) {
       const { action, data } = result.action;
       if (action === "ADD_TIMESHEET" || action === "add_timesheet_entries") {
-        const targetProjectName = data.project_name;
+        const targetProjectName = selectedProject || data.project_name;
         const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
         const hasTask = data.task_description || hasEntries;
-        if (!targetProjectName || !hasTask) {
-          return c.json({ reply: "Please specify project name and task description clearly." }, 200);
+        if (!targetProjectName) {
+          return c.json({ reply: "Please select a project! Type '@' to choose your project." }, 200);
+        }
+        if (!hasTask) {
+          return c.json({ reply: "Please describe what you worked on." }, 200);
         }
         const projectId = await getOrCreateProjectId(db, targetProjectName);
         const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
@@ -5771,6 +5774,16 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
     return c.json({ message: "Internal server error in AI handler.", status: 500 }, 500);
   }
 }, "aiChatHandler");
+var getProjects = /* @__PURE__ */ __name(async (c) => {
+  try {
+    const db = c.env.DB;
+    const { results } = await db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all();
+    return c.json({ projects: results, success: true }, 200);
+  } catch (error) {
+    console.error("[Projects Error]:", error);
+    return c.json({ success: false, message: "Failed to fetch projects" }, 500);
+  }
+}, "getProjects");
 
 // src/routers/timesheet.routes.js
 var timesheetRouter = new Hono2();
@@ -5778,6 +5791,7 @@ timesheetRouter.post("/submit", authMiddleware, addTimesheetEntry);
 timesheetRouter.get("/admin/all-logs", authMiddleware, getAllTimesheetsAdmin);
 timesheetRouter.delete("/delete/:id", authMiddleware, deleteTimesheetEntry);
 timesheetRouter.post("/ai/chat", authMiddleware, aiChatHandler);
+timesheetRouter.get("/projects", authMiddleware, getProjects);
 var timesheet_routes_default = timesheetRouter;
 
 // src/index.js
@@ -5821,7 +5835,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-PGULOj/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-nbMoMo/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5853,7 +5867,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-PGULOj/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-nbMoMo/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

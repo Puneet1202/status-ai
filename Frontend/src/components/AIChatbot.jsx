@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Send, 
-  Folder, 
+  Database, 
   Cpu, 
   ShieldCheck, 
   Sparkles, 
@@ -16,11 +16,11 @@ export default function AIChatbot() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
-  // --- Dynamic Projects Context Tracking (Problem 4 Fixed) ---
+  // --- Dynamic Projects Context Tracking ---
   const [projects, setProjects] = useState([]); 
   const [activeContext, setActiveContext] = useState(null); 
   const [showContextDropdown, setShowContextDropdown] = useState(false);
-  const [filteredContexts, setFilteredContexts] = useState([]);
+  const [filteredProjects, setFilteredProjects] = useState([]);
   
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
@@ -34,10 +34,10 @@ export default function AIChatbot() {
 
   // --- Fetch Dynamic Projects from DB ---
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('keyss_token');
     if (!token) return;
 
-    fetch('http://localhost:8787/api/projects', {
+    fetch('http://localhost:8787/api/timesheet/projects', {
       headers: { 
         'Authorization': `Bearer ${token}` 
       }
@@ -47,52 +47,67 @@ export default function AIChatbot() {
       return res.json();
     })
     .then(data => {
-      // Mapping database structure to UI options
-      const mappedProjects = (data.projects || []).map(proj => ({
-        id: proj.id,
-        name: proj.name,
-        label: `Project ID: ${proj.id}`
-      }));
-      setProjects(mappedProjects);
-      setFilteredContexts(mappedProjects);
+      setProjects(data.projects || []);
+      setFilteredProjects(data.projects || []);
     })
     .catch(err => console.error("Error loading chat contexts:", err));
   }, []);
 
-  // --- Core Tokenized Logic Wrapper ---
+  // --- ✅ FIXED: Claude's Aligned Cursor Input Handler ---
   const handleInputChange = (e) => {
     const val = e.target.value;
     setInputValue(val);
 
-    const words = val.split(' ');
-    const lastWord = words[words.length - 1];
+    const cursorPos = e.target.selectionStart; // Track context position precisely
 
-    // Detect execution sequence token '@'
-    if (lastWord.startsWith('@')) {
-      const query = lastWord.slice(1).toLowerCase();
-      const filtered = projects.filter(proj => 
-        proj.name.toLowerCase().includes(query) || 
-        String(proj.id).toLowerCase().includes(query)
+    // Cursor se pehle ka text nikal kar aakhri typed word lo
+    const textBeforeCursor = val.slice(0, cursorPos);
+    const words = textBeforeCursor.split(' ');
+    const currentWord = words[words.length - 1]; 
+
+    // Global `@` mention trigger framework
+    if (currentWord.startsWith('@')) {
+      const query = currentWord.slice(1).toLowerCase();
+      const filtered = projects.filter(p => 
+        p.name.toLowerCase().includes(query)
       );
-      setFilteredContexts(filtered);
+      setFilteredProjects(filtered);
       setShowContextDropdown(true);
     } else {
       setShowContextDropdown(false);
     }
   };
 
+  // --- ✅ FIXED: Cursor-Aware Context Selection (No '@' and with Colon ':') ---
   const selectContext = (projectId, projectName) => {
-    const words = inputValue.split(' ');
-    words.pop(); // Clear out unparsed literal '@' segment
-    const newText = words.join(' ') + (words.length > 0 ? ' ' : '') + `@${projectName} `;
+    const textarea = inputRef.current;
+    if (!textarea) return;
+
+    const cursorPos = textarea.selectionStart;
+    const textBeforeCursor = inputValue.slice(0, cursorPos);
+    const textAfterCursor = inputValue.slice(cursorPos);
+
+    // Cursor ke theek pehle wale `@word` ko array pop se clean karo
+    const words = textBeforeCursor.split(' ');
+    words.pop(); 
     
+    // Naya string format create karo bina "@" ke aur automatic colon ke sath
+    const updatedTextBeforeCursor = words.join(' ') + (words.length > 0 ? ' ' : '') + `${projectName}: `;
+    const newText = updatedTextBeforeCursor + textAfterCursor;
+
     setInputValue(newText);
-    setActiveContext({ id: projectId, name: projectName }); // Securely tracking object reference
+    setActiveContext({ id: projectId, name: projectName }); 
     setShowContextDropdown(false);
-    inputRef.current?.focus();
+
+    // Context tracking state injection ke baad cursor focus auto reset karo
+    setTimeout(() => {
+      textarea.focus();
+      const newCursorPos = updatedTextBeforeCursor.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+    }, 10);
   };
 
-  // --- Clean API Form Delivery Submission (Problem 1, 2, & 3 Fixed) ---
+  // --- Clean API Form Delivery Submission ---
   const handleSubmit = async (e) => {
     e?.preventDefault();
     if (!inputValue.trim() || isLoading) return;
@@ -101,7 +116,7 @@ export default function AIChatbot() {
       id: Date.now(),
       role: 'user',
       content: inputValue,
-      context: activeContext ? activeContext.name : null,
+      context: activeContext ? activeContext.name : null, 
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
@@ -110,23 +125,24 @@ export default function AIChatbot() {
     setIsLoading(true);
     setActiveContext(null); // Flushing contextual channel frame
 
-    try {
-      // ✅ Problem 1: URL Fixed to '/api/timesheet/ai/chat'
-      const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
-        method: 'POST',
-        // ✅ Problem 3: Authorization Header Injected
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-        // ✅ Problem 2: Body Structure Realigned
-        body: JSON.stringify({
-          message: userPayload.content,
-          history: [],        
-          pendingAction: null 
-        }),
-      });
-
+ // --- Clean API Form Delivery Submission (Line Update) ---
+try {
+  const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${localStorage.getItem('keyss_token')}`
+    },
+    body: JSON.stringify({
+      message: userPayload.content,
+      history: [],        
+      pendingAction: null,
+      // ✅ Claude's Fix Injected: Selected Context Explicitly Sent
+      selectedProject: userPayload.context  
+    }),
+  });
+  
+  // Remaining implementation...
       if (!response.ok) throw new Error('Data payload tracking error');
       
       const data = await response.json();
@@ -166,11 +182,11 @@ export default function AIChatbot() {
         </button>
       )}
 
-      {/* Main Corporate Panel Container Layout */}
+      {/* Main Panel Container Layout */}
       {isOpen && (
         <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-800 bg-[#0f172a] shadow-2xl w-[calc(100vw-2rem)] max-h-[calc(100vh-6rem)] sm:w-[440px] sm:h-[650px]">
           
-          {/* Header Element Area */}
+          {/* Header */}
           <div className="flex items-center justify-between bg-slate-900/80 px-5 py-4 backdrop-blur-md border-b border-slate-800">
             <div className="flex items-center gap-3">
               <div className="relative">
@@ -219,7 +235,7 @@ export default function AIChatbot() {
                   }`}>
                     {msg.context && (
                       <div className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-300">
-                        @{msg.context}
+                        {msg.context}
                       </div>
                     )}
                     <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
@@ -254,18 +270,18 @@ export default function AIChatbot() {
                 <div className="bg-slate-800/50 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 sticky top-0">
                   Select Project Context
                 </div>
-                {filteredContexts.length > 0 ? (
-                  filteredContexts.map(proj => (
+                {filteredProjects.length > 0 ? (
+                  filteredProjects.map(project => (
                     <button
-                      key={proj.id}
+                      key={project.id}
                       type="button"
-                      onClick={() => selectContext(proj.id, proj.name)}
+                      onClick={() => selectContext(project.id, project.name)}
                       className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-indigo-600/10 hover:text-white border-b border-slate-800/50 last:border-0"
                     >
-                      <span className="text-purple-400"><Folder size={14} /></span>
+                      <span className="text-indigo-400"><Database size={14} /></span>
                       <div className="flex flex-col">
-                        <span className="font-medium text-slate-200">@{proj.name}</span>
-                        <span className="text-[11px] text-slate-500">{proj.label}</span>
+                        <span className="font-medium text-slate-200">@{project.name}</span>
+                        <span className="text-[11px] text-slate-500">Project ID: {project.id}</span>
                       </div>
                     </button>
                   ))
@@ -280,7 +296,7 @@ export default function AIChatbot() {
               {activeContext && (
                 <div className="flex">
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2.5 py-1 text-[11px] font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20">
-                    @{activeContext.name}
+                    {activeContext.name}:
                     <button type="button" onClick={() => setActiveContext(null)} className="ml-1 hover:text-white">
                       <X size={12} />
                     </button>
