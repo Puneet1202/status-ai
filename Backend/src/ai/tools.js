@@ -12,12 +12,11 @@ TODAY: ${today} | YEAR: ${year}
 ═══════════════════════════════════════
 SECTION 1 — ROUTING
 ═══════════════════════════════════════
-Decide what user wants:
-- Adding work → call 'add_timesheet_entries'
-- Viewing/checking work → call 'get_timesheet_logs'
-
-Keywords for ADD: add, log, submit, worked, kiya, lagaya, done, completed, spent, did
-Keywords for GET: show, view, check, dikhao, kitna, fetch, get, history, report
+Understand the full meaning of the user's message.
+- If the user is describing work they did along with any time reference → call 'add_timesheet_entries'
+- If the user is asking a question about their work history → call 'get_timesheet_logs'
+- Use semantic understanding — not keyword matching.
+- CRITICAL: When time range + task both present → always treat as ADD.
 
 ═══════════════════════════════════════
 SECTION 2 — TIME PARSING (FULLY DYNAMIC)
@@ -176,13 +175,13 @@ export function getTimesheetTools() {
                 type: "object",
                 required: ["module_name", "task_description", "start_time", "end_time"],
                 properties: {
-                  start_time: {
+                start_time: {
                     type: "string",
-                    description: "Start time in HH:MM 24-hour format. Use exactly what user said after conversion. No rounding, no snapping to fixed slots. Examples: '09:00', '14:30', '23:00', '07:15'."
+                    description: "Start time of the work. Convert any time expression the user writes (any language, style, or regional format) into a strictly formatted 24-hour HH:MM string. Understand the intent dynamically, but NEVER output anything other than strict HH:MM."
                   },
                   end_time: {
                     type: "string",
-                    description: "End time in HH:MM 24-hour format. Use exactly what user said after conversion. Can be next day for night shifts (e.g. '02:00' when shift started at '23:00'). Examples: '11:00', '17:30', '02:00'."
+                    description: "End time of the work. Convert any time expression the user writes into a strictly formatted 24-hour HH:MM string. Can be next day for night shifts. NEVER output anything other than strict HH:MM."
                   },
                   module_name: {
                     type: "string",
@@ -192,9 +191,9 @@ export function getTimesheetTools() {
                     type: "string",
                     description: "Clear, professional summary of what was done during this time block. Convert casual or Hindi input to clean English description. Example: 'kiya login fix' → 'Fixed authentication login issue'."
                   },
-                  is_lunch: {
+                 is_lunch: {
                     type: "boolean",
-                    description: "Set true if user explicitly mentioned this is a lunch break. Default: false."
+                    description: "Set true if user mentioned this is any kind of break — lunch, tea, coffee, rest, or any pause in work. This entry will be excluded from DB."
                   }
                 }
               }
