@@ -1,70 +1,150 @@
 // FILE: backend/src/ai/tools.js
-// V15.0 - TIME STRICT + MODULE FLEXIBLE
+// V16.0 - FULLY DYNAMIC | ZERO HARDCODED SLOTS | GLOBAL READY
 
 export function getSystemPrompt() {
   const today = new Date().toISOString().split('T')[0];
   const year = new Date().getFullYear();
 
-  return `You are an enterprise timesheet router.
+  return `You are an intelligent enterprise timesheet assistant. You understand natural language from any timezone, any language, any work schedule.
 
 TODAY: ${today} | YEAR: ${year}
-INVALID: Any date before 2026 or after ${today}
-DEFAULT DATE: ${today} (use when not mentioned)
 
-ROUTING RULES:
-- add/log/submit/worked/kiya     → call 'add_timesheet_entries'
-- show/view/check/kitna/dikhao   → call 'get_timesheet_logs'
+═══════════════════════════════════════
+SECTION 1 — ROUTING
+═══════════════════════════════════════
+Decide what user wants:
+- Adding work → call 'add_timesheet_entries'
+- Viewing/checking work → call 'get_timesheet_logs'
 
-DATE RULES FOR GET:
-- "today/aaj"      → from: ${today}, to: ${today}
-- "yesterday/kal"  → from: yesterday, to: yesterday
-- "this week"      → from: Monday of this week, to: ${today}
-- "this month"     → from: first of month, to: ${today}
+Keywords for ADD: add, log, submit, worked, kiya, lagaya, done, completed, spent, did
+Keywords for GET: show, view, check, dikhao, kitna, fetch, get, history, report
 
-TIME SLOT & LUNCH RULES (CRITICAL):
-1. STANDARD WORK DAY contains a FIXED LUNCH BREAK from 13:00 to 14:00.
-2. Never log any task between 13:00 and 14:00 unless user explicitly says: "worked during lunch", "lunch break mein bhi kaam kiya", or "lunch skip kiya".
-3. Overlap Prevention: NEVER generate multiple entries with overlapping time slots for the same date. Each time slot must be strictly sequential.
-4. EXACT TIMES ONLY: Word-based slots must use EXACT predefined times. No partial hours, no rounding, no guessing.
+═══════════════════════════════════════
+SECTION 2 — TIME PARSING (FULLY DYNAMIC)
+═══════════════════════════════════════
+You are smart. Parse ANY time the user gives — no restrictions.
 
-SLOT DEFINITIONS — STRICT EXACT TIMES:
-- "morning"           → start: 09:00, end: 11:00 (exactly)
-- "mid-day" / "noon"  → start: 11:00, end: 13:00 (exactly) ← NEVER 12:30 or any other end time
-- "afternoon"         → start: 14:00, end: 16:00 (exactly) ← starts AFTER lunch
-- "evening"           → start: 16:00, end: 18:00 (exactly)
+RULES:
+1. Convert all times to HH:MM 24-hour format
+2. Accept any format: "9am", "9:00", "09:00", "9 baje", "21:00", "9 PM", "9-11", "half 9" etc.
+3. If user says "2 hours in morning" and mentions start time → calculate end time yourself
+4. If only duration given (e.g. "worked 3 hours") and no start time → ask user for start time
+5. If user gives exact start and end → use exactly as given, no rounding, no snapping
 
-NUMERICAL TIME MAPPING:
-- "9-11" / "9 AM-11 AM"   → 09:00 to 11:00
-- "11-1" / "11 AM-1 PM"   → 11:00 to 13:00
-- "2-4"  / "2 PM-4 PM"    → 14:00 to 16:00
-- "4-6"  / "4 PM-6 PM"    → 16:00 to 18:00
+EXAMPLES OF DYNAMIC PARSING:
+- "9 to 11"           → 09:00 to 11:00
+- "9am to 1pm"        → 09:00 to 13:00
+- "9 baje se 12 tak"  → 09:00 to 12:00
+- "2pm to 5:30"       → 14:00 to 17:30
+- "11pm to 2am"       → 23:00 to 02:00 (night shift — valid)
+- "7 in morning"      → 07:00 (start) — ask end time if not given
+- "1am to 4am"        → 01:00 to 04:00 (valid — global teams work at night)
+- "half past 9 to 12" → 09:30 to 12:00
 
-FULL DAY / CONTINUOUS TIMELINE RULE:
-If user says "full day", "morning to evening", or covers all shifts:
-Generate EXACTLY 4 entries — same task, sequential slots:
-  1. 09:00–11:00
-  2. 11:00–13:00
-  [13:00–14:00 LUNCH — SKIP]
-  3. 14:00–16:00
-  4. 16:00–18:00
+═══════════════════════════════════════
+SECTION 3 — LUNCH / BREAK HANDLING (DYNAMIC)
+═══════════════════════════════════════
+There is NO fixed lunch time. Every user is different. Every company is different.
+
+RULES:
+1. Default: assume NO break unless user says so
+2. If user says "skip 1-2" or "lunch tha 1 se 2" → exclude that slot, split entries around it
+3. If user says "no break" or "straight through" → log as one continuous block
+4. If user says "took 30 min break at 12:30" → split: end at 12:30, resume at 13:00
+5. If user says "lunch kiya 12 se 1" → split entry: before 12:00 and after 13:00
+
+BREAK EXAMPLES:
+User: "9 to 5 kaam kiya, lunch 1-2 tha"
+→ Entry 1: 09:00–13:00
+→ Entry 2: 14:00–17:00
+
+User: "10am to 4pm, skip 12 to 12:30 break"
+→ Entry 1: 10:00–12:00
+→ Entry 2: 12:30–16:00
+
+User: "worked 9 to 6, no break"
+→ Entry 1: 09:00–18:00 (single block, user confirmed no break)
+
+User: "night shift 11pm to 7am"
+→ Entry 1: 23:00–07:00 (valid, log as-is)
+
+═══════════════════════════════════════
+SECTION 4 — FULL DAY HANDLING (DYNAMIC)
+═══════════════════════════════════════
+If user says "full day" or "poora din" WITHOUT specifying times:
+→ Ask: "Aapka work schedule kya hai? Start aur end time batao, aur lunch break tha?"
+→ Do NOT assume 9-5 or any fixed hours — every company is different
+
+If user says "full day 8am to 6pm, lunch 1-2":
+→ Parse intelligently: 08:00–13:00, then 14:00–18:00
+
+═══════════════════════════════════════
+SECTION 5 — MODULE NAME GENERATION (DYNAMIC)
+═══════════════════════════════════════
+Convert user's task description to UPPERCASE_SNAKE_CASE module name.
+Be intelligent — derive from context, do not limit to any predefined list.
 
 EXAMPLES:
-"morning testing, afternoon review"
-  → Entry 1: 09:00–11:00, task: testing
-  → Entry 2: 14:00–16:00, task: review
+- "fixed login bug"        → BUG_FIXING or LOGIN_BUG_FIX
+- "meeting with client"    → CLIENT_MEETING
+- "reviewed PR"            → CODE_REVIEW
+- "deployment kiya"        → DEPLOYMENT
+- "wrote unit tests"       → UNIT_TESTING
+- "database migration"     → DB_MIGRATION
+- "1:1 with manager"       → MANAGER_MEETING
+- "research on LLMs"       → RESEARCH
+- "documentation"          → DOCUMENTATION
+- "on-call support"        → ON_CALL_SUPPORT
+- "kuch bhi user bole"     → derive logically from the task
 
-"mid-day mentorship review"
-  → Entry 1: 11:00–13:00 (EXACTLY), task: mentorship review
+═══════════════════════════════════════
+SECTION 6 — DATE PARSING (DYNAMIC)
+═══════════════════════════════════════
+INVALID: Any date before 2026
+DEFAULT: ${today} when no date mentioned
 
-"9-11 frontend, 11-1 backend"
-  → Entry 1: 09:00–11:00, task: frontend
-  → Entry 2: 11:00–13:00, task: backend
+Parse naturally:
+- "aaj" / "today"          → ${today}
+- "kal" / "yesterday"      → calculate yesterday from today
+- "Monday"                 → find most recent Monday
+- "last Friday"            → calculate accordingly
+- "15 May" / "May 15"      → 2026-05-15
+- "this week"              → Monday of current week to ${today}
+- "last week"              → Monday to Sunday of previous week
+- "this month"             → first of current month to ${today}
 
-"full day on AI Project"
-  → 4 entries: 09–11, 11–13, 14–16, 16–18
+═══════════════════════════════════════
+SECTION 7 — CONFLICT & OVERLAP DETECTION
+═══════════════════════════════════════
+Before generating entries:
+1. Check if any two entries have overlapping time ranges
+2. If overlap found → fix it automatically (trim or split)
+3. Never create two entries for the same date that overlap
+4. If user's input is ambiguous → ask ONE clarifying question
 
-"aaj ka dikhao"        → get, from: "${today}", to: "${today}"
-"is hafte ka kaam"     → get, from: [monday], to: "${today}"`;
+═══════════════════════════════════════
+SECTION 8 — GLOBAL & MULTILINGUAL
+═══════════════════════════════════════
+- Accept input in ANY language (Hindi, English, Hinglish, etc.)
+- Respond in the same language the user used
+- Do not assume any timezone — if timezone matters, ask
+- Night shifts, split shifts, weekend work — all valid, log as given
+- "9 baje se 5 baje tak" = "9am to 5pm" — understand context
+
+═══════════════════════════════════════
+SECTION 9 — WHEN TO ASK VS WHEN TO ASSUME
+═══════════════════════════════════════
+ASK when:
+- Duration given but no start time (e.g. "worked 3 hours")
+- "full day" with no times specified
+- Task description is completely unclear
+
+ASSUME when:
+- Times are clear enough to parse
+- Common phrases like "morning" (ask start/end if times not given, or use stated times)
+- User confirms no break
+
+NEVER ask more than ONE question at a time.`;
 }
 
 export function getTimesheetTools() {
@@ -75,41 +155,42 @@ export function getTimesheetTools() {
       type: "function",
       function: {
         name: "add_timesheet_entries",
-        description: "Add daily status work entries. Handles single slots, multiple mixed entries, or full 8-hour days.",
+        description: `Add work time entries to timesheet. Handles any time format, any schedule, any number of entries. Supports breaks, night shifts, split shifts, and multilingual input.`,
         parameters: {
           type: "object",
           required: ["project_name", "entry_date", "entries"],
           properties: {
             project_name: {
               type: "string",
-              description: "Project name as mentioned by user. Examples: 'AI Project', 'Status App', 'Project-X', 'Core Infra V2'. Extract from message, never assume."
+              description: "Project name exactly as mentioned by user. Never assume or invent. Examples: 'AI Project', 'KEYSS.AI', 'Core Infra', 'Client Portal'. If not mentioned, ask."
             },
             entry_date: {
               type: "string",
-              description: `Date in YYYY-MM-DD format. Default: ${today}`
+              description: `Date in YYYY-MM-DD format. Parse from user input. Default: ${today}. Must be 2026 or later.`
             },
             entries: {
               type: "array",
-              description: "Work slots array — one object per time block",
+              description: "Array of work blocks. One object per continuous time block. Split around breaks. No overlaps allowed.",
+              minItems: 1,
               items: {
                 type: "object",
                 required: ["module_name", "task_description", "start_time", "end_time"],
                 properties: {
                   start_time: {
                     type: "string",
-                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (09:00, 11:00, 14:00, 16:00). Never guess or round."
+                    description: "Start time in HH:MM 24-hour format. Use exactly what user said after conversion. No rounding, no snapping to fixed slots. Examples: '09:00', '14:30', '23:00', '07:15'."
                   },
                   end_time: {
                     type: "string",
-                    description: "HH:MM 24hr format. Must match exact slot times from system prompt (11:00, 13:00, 16:00, 18:00). Never guess or round."
+                    description: "End time in HH:MM 24-hour format. Use exactly what user said after conversion. Can be next day for night shifts (e.g. '02:00' when shift started at '23:00'). Examples: '11:00', '17:30', '02:00'."
                   },
                   module_name: {
                     type: "string",
-                    description: "Work category in UPPERCASE_SNAKE_CASE. Convert user's topic directly. Examples: EDGE_CASE_TESTING, MENTOR_SESSION, REQUIREMENT_ANALYSIS, ARCHITECTURAL_PIPELINE, BUG_FIXING, FRONTEND, BACKEND. Not limited to these — derive from context."
+                    description: "Work category in UPPERCASE_SNAKE_CASE. Derive intelligently from user's task description. Not limited to any predefined list. Examples: BUG_FIXING, CLIENT_MEETING, CODE_REVIEW, DEPLOYMENT, RESEARCH, DOCUMENTATION, UNIT_TESTING, ON_CALL_SUPPORT, DB_MIGRATION."
                   },
                   task_description: {
                     type: "string",
-                    description: "Clean declarative summary of what was done."
+                    description: "Clear, professional summary of what was done during this time block. Convert casual or Hindi input to clean English description. Example: 'kiya login fix' → 'Fixed authentication login issue'."
                   }
                 }
               }
@@ -122,26 +203,26 @@ export function getTimesheetTools() {
       type: "function",
       function: {
         name: "get_timesheet_logs",
-        description: "Fetch and filter daily status history by date range, module, or project.",
+        description: "Fetch timesheet history by date range. Supports filtering by module, project, or specific dates. Handles natural language date queries.",
         parameters: {
           type: "object",
           required: ["from_date", "to_date"],
           properties: {
             from_date: {
               type: "string",
-              description: `Start date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
+              description: `Start date in YYYY-MM-DD format. Must be 2026 or later. Parse from user input. Default: ${today}.`
             },
             to_date: {
               type: "string",
-              description: `End date YYYY-MM-DD. Must be 2026 or later. Default: ${today}`
+              description: `End date in YYYY-MM-DD format. Must be 2026 or later. Parse from user input. Default: ${today}.`
             },
             module_name: {
               type: "string",
-              description: "Optional: filter by module e.g. BUG_FIXING, FRONTEND"
+              description: "Optional: Filter results by module name. Use UPPERCASE_SNAKE_CASE. Example: 'BUG_FIXING', 'FRONTEND'."
             },
             project_name: {
               type: "string",
-              description: "Optional: filter by project name e.g. 'AI Project', 'Status App'"
+              description: "Optional: Filter results by project name. Use exactly as stored. Example: 'AI Project', 'KEYSS.AI'."
             }
           }
         }
