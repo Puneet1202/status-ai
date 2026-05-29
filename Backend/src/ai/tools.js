@@ -191,6 +191,10 @@ export function getTimesheetTools() {
                   task_description: {
                     type: "string",
                     description: "Clear, professional summary of what was done during this time block. Convert casual or Hindi input to clean English description. Example: 'kiya login fix' → 'Fixed authentication login issue'."
+                  },
+                  is_lunch: {
+                    type: "boolean",
+                    description: "Set true if user explicitly mentioned this is a lunch break. Default: false."
                   }
                 }
               }

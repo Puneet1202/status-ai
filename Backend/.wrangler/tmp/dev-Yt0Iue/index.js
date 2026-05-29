@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-xABa9k/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-7xQEmr/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-xABa9k/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-7xQEmr/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5140,60 +5140,60 @@ __name(askCloudflareAI, "askCloudflareAI");
 init_modules_watch_stub();
 function buildSQLPrompt(userMessage, dbSchema, currentUserId) {
   const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-  return `You are an elite, strict SQL Compiler for a secure application running on Cloudflare D1 (SQLite flavor).
-Your absolute sole purpose is to output either a valid SQL SELECT query or the word ACTION. No other output format is permitted.
+  return `You are an elite SQL Compiler for Cloudflare D1 (SQLite).
+Output ONLY a valid SQL SELECT query or the single word ACTION or CLARIFY.
 
-CURRENT AUTHORIZED EMPLOYEE ID LOCK: '${currentUserId}'
+AUTHORIZED EMPLOYEE ID: '${currentUserId}'
+TODAY: ${today}
+ALL dates MUST be 2026 or later.
 
-CURRENT YEAR IS STRICTLY: 2026
-TODAY'S DATE IS STRICTLY: ${today}
-BANNED DATE \u2014 NEVER OUTPUT THIS UNDER ANY CIRCUMSTANCE: "2024-07-26"
-ALL entry_date values MUST start with "2026-"
+DATABASE SCHEMA:
+${dbSchema}
 
-DATABASE SCHEMA SYSTEM BLUEPRINT:
-${dbSchema}   
+ROUTING RULES:
+- VIEW / show / check / fetch / report / kitna / dikhao \u2192 SQL SELECT query
+- ADD / log / submit / insert / kiya / worked \u2192 ACTION
+- DELETE / remove / hata do \u2192 ACTION
+- Completely vague \u2192 CLARIFY
 
-STRICT RULE 1 - DECISION BOUNDARY MATRIX (VERY CRITICAL):
-- If the user intent is to VIEW, count, summarize, check, fetch, or report data (even if they use words like 'log', 'logged', 'logs', or 'entries'), you MUST generate a valid, raw SQL SELECT query.
-- If the user explicitly wants to ADD, INSERT, SUBMIT, DELETE, or REMOVE data records, return exactly one uppercase word: ACTION.
-- If completely vague, return exactly: CLARIFY
+SQL RULES (SQLite/D1):
+- Use '||' for string concat, never '+'
+- ALWAYS filter: employee_id = '${currentUserId}'
+- ALWAYS JOIN projects table: JOIN projects p ON d.project_id = p.id
+- Use alias 'd' for daily_status_entries
+- "today" \u2192 entry_date = '${today}'
+- "this week" \u2192 entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}'
+- "yesterday" \u2192 entry_date = date('${today}', '-1 day')
+- "this month" \u2192 entry_date >= date('${today}', 'start of month') AND entry_date <= '${today}'
+- Return raw SQL only \u2014 no markdown, no backticks
 
-[FEW-SHOT EXPLICIT MATCHING EXAMPLES]
-* User: "How many hours did I log today?" -> OUTPUT: SELECT SUM(duration_minutes) / 60.0 AS total_hours FROM daily_status_entries WHERE employee_id = '${currentUserId}' AND entry_date = '${today}';
-* User: "Show my timesheet logs for this week" -> OUTPUT: SELECT d.entry_date, d.start_time, d.end_time, d.duration_minutes, d.task_description, d.module_name, p.name AS project_name FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = '${currentUserId}' AND d.entry_date >= date('${today}', 'weekday 1', '-6 days') AND d.entry_date <= '${today}' ORDER BY d.entry_date ASC;
-* User: "Log 4 hours for Status App today" -> OUTPUT: ACTION
-* User: "Submit 8 hours entry for testing" -> OUTPUT: ACTION
-* User: "Delete my last entry" -> OUTPUT: ACTION
+EXAMPLES:
+"How many hours today?" \u2192 SELECT SUM(duration_minutes)/60.0 AS total_hours FROM daily_status_entries WHERE employee_id = '${currentUserId}' AND entry_date = '${today}'
+"Show this week" \u2192 SELECT d.entry_date, d.start_time, d.end_time, d.duration_minutes, d.task_description, d.module_name, p.name AS project_name FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = '${currentUserId}' AND d.entry_date >= date('${today}', 'weekday 1', '-6 days') AND d.entry_date <= '${today}' ORDER BY d.entry_date ASC
+"Log 4 hours" \u2192 ACTION
+"Delete my entry" \u2192 ACTION
 
-STRICT RULE 2 - SQLITE DIALECT COMPLIANCE:
-- In SQLite/D1, you MUST use '||' for string concatenation. NEVER use '+'.
-- Filter "this week" (Current Calendar Week Monday to Sunday) strictly via: entry_date >= date('${today}', 'weekday 1', '-6 days') AND entry_date <= '${today}'
-- Filter "today" strictly via: entry_date = '${today}'
-- CRITICAL: Always use INNER JOIN or LEFT JOIN with 'projects' table on 'project_id' when returning logs so project name string is visible.
-
-STRICT RULE 3 - RAW SQL ONLY GATEWAY & DATA ISOLATION:
-- Return ONLY plain-text executable SQL. Do not wrap in markdown code blocks like \`\`\`sql.
-- CRITICAL SECURITY: Every single query targeting the 'daily_status_entries' table MUST strictly include the condition: employee_id = '${currentUserId}'. Cross-user data leakage means immediate termination.
-
-User Input Message: "${userMessage}"
-Decision String or Executable SQL Query Output:`;
+User: "${userMessage}"
+Output:`;
 }
 __name(buildSQLPrompt, "buildSQLPrompt");
 function buildReplyPrompt(userMessage, sqlResult) {
-  return `You are a strict data reporting assistant for an enterprise employee timesheet management application.
-Your absolute dynamic priority is to translate raw SQL query result arrays into natural, professional human language responses.
+  return `You are a professional timesheet reporting assistant.
+Convert the raw database result below into a clear, natural human response.
 
-CRITICAL SECURITY & ACCURACY FIREWALL RULES:
-1. DETERMINISTIC NUMERIC ANCHOR: You MUST read the exact numeric values from the database JSON payload below and print them AS IS. Do NOT alter, add, multiply, divide, or hallucinate integers. If the database row sum states 120 duration_minutes, state 120 minutes (or 2 hours) accurately.
-2. If the database result array payload is empty, or states 'null', explicitly tell the user that no matching operational records were found for the requested duration. Do NOT invent placeholder logs.
-3. Keep the language direct, elegant, and corporate executive style.
-4. DATE FORMATTING GUARDRAIL: Never print raw machine-readable database timestamps like ISO strings. Always format them cleanly into human-centered Indian layouts, for example: '20 May 2026'.
+RULES:
+1. Use EXACT numbers from the data \u2014 never alter, round, or hallucinate values
+2. If result is empty or null \u2192 say no records found, do not invent data
+3. Format dates as: "29 May 2026" (never raw ISO strings)
+4. Format times as: "9:00 AM to 11:00 AM" (human readable)
+5. Be concise and professional
+6. Calculate total hours from duration_minutes if showing summary (divide by 60)
 
-RAW SQL DATABASE RESPONSE DATA PAYLOAD (JSON ARRAY):
+RAW DATABASE RESULT:
 ${JSON.stringify(sqlResult)}
 
-User Question context was: "${userMessage}"
-Your Deterministic and Absolute Accurate Human Response Output:`;
+User asked: "${userMessage}"
+Response:`;
 }
 __name(buildReplyPrompt, "buildReplyPrompt");
 var DB_SCHEMA = `
@@ -5205,17 +5205,17 @@ Table: users
 
 Table: projects
    - id (integer, primary key)
-   - name (text, unique) -> Project container e.g. 'Status App', 'AI Project'
+   - name (text, unique)
 
 Table: daily_status_entries
    - id (integer, primary key)
-   - employee_id (integer) -> ALWAYS filter by current user's id
-   - project_id (integer) -> Links to projects(id)
+   - employee_id (integer) \u2192 filter always by current user id
+   - project_id (integer) \u2192 links to projects(id)
    - entry_date (text, YYYY-MM-DD)
    - start_time (text, HH:MM)
    - end_time (text, HH:MM)
-   - duration_minutes (integer) -> e.g. 120 = 2 hours, 480 = 8 hours
-   - module_name (text) -> UPPERCASE e.g. FRONTEND, MIDDLEWARE
+   - duration_minutes (integer) \u2192 exact minutes between start and end
+   - module_name (text, UPPERCASE)
    - task_description (text)
    - is_email_sent (text: 'true' or 'false')
    - created_at (text)
@@ -5411,6 +5411,10 @@ function getTimesheetTools() {
                   task_description: {
                     type: "string",
                     description: "Clear, professional summary of what was done during this time block. Convert casual or Hindi input to clean English description. Example: 'kiya login fix' \u2192 'Fixed authentication login issue'."
+                  },
+                  is_lunch: {
+                    type: "boolean",
+                    description: "Set true if user explicitly mentioned this is a lunch break. Default: false."
                   }
                 }
               }
@@ -5569,82 +5573,75 @@ async function getOrCreateProjectId(db, projectName) {
   if (existing) return existing.id;
   const insertResult = await db.prepare("INSERT INTO projects (name) VALUES (?)").bind(cleanName).run();
   if (insertResult.meta.changes === 0) {
-    throw new Error(`Dynamic allocation failure for project identifier: ${cleanName}`);
+    throw new Error(`Project creation failed: ${cleanName}`);
   }
   return insertResult.meta.last_row_id;
 }
 __name(getOrCreateProjectId, "getOrCreateProjectId");
 function calcEndTime(startTime, durationMinutes) {
-  const totalMinutesInput = parseInt(durationMinutes, 10) || 120;
-  const [startHH, startMM] = startTime.split(":").map(Number);
-  const totalMinutes = startHH * 60 + startMM + totalMinutesInput;
-  const endHH = Math.floor(totalMinutes / 60) % 24;
-  const endMM = totalMinutes % 60;
+  const [sh, sm] = startTime.split(":").map(Number);
+  const total = sh * 60 + sm + parseInt(durationMinutes, 10);
   const pad = /* @__PURE__ */ __name((n) => String(n).padStart(2, "0"), "pad");
-  return `${pad(endHH)}:${pad(endMM)}`;
+  return `${pad(Math.floor(total / 60) % 24)}:${pad(total % 60)}`;
 }
 __name(calcEndTime, "calcEndTime");
 function calcMinutesFromTimes(startTime, endTime) {
-  if (!startTime || !endTime) return 120;
   const [sh, sm] = startTime.split(":").map(Number);
   const [eh, em] = endTime.split(":").map(Number);
-  const diff = eh * 60 + em - (sh * 60 + sm);
-  return diff > 0 ? diff : 120;
+  let diff = eh * 60 + em - (sh * 60 + sm);
+  if (diff < 0) diff += 24 * 60;
+  return diff;
 }
 __name(calcMinutesFromTimes, "calcMinutesFromTimes");
+function isValidTime(t) {
+  return typeof t === "string" && /^\d{2}:\d{2}$/.test(t);
+}
+__name(isValidTime, "isValidTime");
 var addTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
   try {
     const db = c.env.DB;
     const currentUser = c.get("user");
     const employeeId = currentUser.id;
     const body = await c.req.json();
-    let entryDate = body.entry_date;
-    let startTime = body.start_time || "09:00";
-    let endTime = body.end_time;
-    let moduleName = (body.module_name || "GENERAL").toUpperCase().trim();
-    let taskDescription = body.task_description;
-    let projectName = body.project_name;
-    let durationMinutes = body.duration_minutes;
-    if (!durationMinutes && body.duration_hours) {
-      durationMinutes = Math.round(parseFloat(body.duration_hours) * 60);
+    let { entry_date, start_time, end_time, module_name, task_description, project_name, duration_minutes, duration_hours } = body;
+    if (!duration_minutes && duration_hours) {
+      duration_minutes = Math.round(parseFloat(duration_hours) * 60);
     }
-    if (!durationMinutes && startTime && endTime) {
-      durationMinutes = calcMinutesFromTimes(startTime, endTime);
+    if (!duration_minutes && start_time && end_time) {
+      duration_minutes = calcMinutesFromTimes(start_time, end_time);
     }
-    if (!endTime && startTime && durationMinutes) {
-      endTime = calcEndTime(startTime, durationMinutes);
+    if (!end_time && start_time && duration_minutes) {
+      end_time = calcEndTime(start_time, duration_minutes);
     }
-    if (!entryDate || !startTime || !endTime || !durationMinutes || !taskDescription || !projectName) {
-      return c.json({ message: "Validation Fault: Missing required configurations or duration mappings", success: false }, 400);
+    if (!entry_date || !start_time || !end_time || !duration_minutes || !task_description || !project_name) {
+      return c.json({ message: "Missing required fields: entry_date, start_time, end_time, duration_minutes, task_description, project_name", success: false }, 400);
     }
-    const projectId = await getOrCreateProjectId(db, projectName);
-    const result = await db.prepare(`
-                INSERT INTO daily_status_entries 
-                (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `).bind(employeeId, projectId, entryDate, startTime, endTime, parseInt(durationMinutes, 10), moduleName, taskDescription).run();
-    if (result.meta.changes === 0) {
-      throw new Error("D1 insert failed \u2014 zero rows affected.");
+    if (parseInt(duration_minutes, 10) > 120) {
+      return c.json({
+        message: "Validation Error: You cannot log a manual entry exceeding 2 hours (120 mins) at once. Please split your work into smaller slots.",
+        success: false
+      }, 400);
     }
-    return c.json({ message: "Status committed successfully into enterprise ledger!", success: true }, 201);
+    const projectId = await getOrCreateProjectId(db, project_name);
+    const result = await db.prepare(`INSERT INTO daily_status_entries (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(employeeId, projectId, entry_date, start_time, end_time, parseInt(duration_minutes, 10), (module_name || "GENERAL").toUpperCase().trim(), task_description).run();
+    if (result.meta.changes === 0) throw new Error("Insert failed.");
+    return c.json({ message: "Entry saved successfully!", success: true }, 201);
   } catch (error) {
     console.error("[Timesheet Insert Error]:", error);
-    return c.json({ message: "Internal Server Error: Failed to write entry", success: false }, 500);
+    return c.json({ message: "Internal Server Error", success: false }, 500);
   }
 }, "addTimesheetEntry");
 var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
   try {
     const db = c.env.DB;
     const currentUser = c.get("user");
-    const dateFrom = c.req.query("dateFrom");
-    const dateTo = c.req.query("dateTo");
-    const employeeName = c.req.query("employeeName");
-    const clientName = c.req.query("clientName");
+    const { dateFrom, dateTo, employeeName, clientName } = Object.fromEntries(
+      ["dateFrom", "dateTo", "employeeName", "clientName"].map((k) => [k, c.req.query(k)])
+    );
     let sqlQuery = `
-            SELECT t.id, t.employee_id, t.project_id, t.entry_date, t.start_time, t.end_time, 
+            SELECT t.id, t.employee_id, t.project_id, t.entry_date, t.start_time, t.end_time,
                    t.duration_minutes, t.task_description, t.module_name, t.is_email_sent, t.created_at,
-                   u.name as employee_name, u.email as employee_email,
-                   p.name as project_name
+                   u.name as employee_name, u.email as employee_email, p.name as project_name
             FROM daily_status_entries t
             JOIN users u ON t.employee_id = u.id
             JOIN projects p ON t.project_id = p.id
@@ -5654,7 +5651,7 @@ var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
     if (currentUser.role === "employee") {
       sqlQuery += ` AND t.employee_id = ?`;
       binds.push(currentUser.id);
-    } else if (employeeName && employeeName !== "all" && employeeName !== "All employees") {
+    } else if (employeeName && employeeName !== "all") {
       sqlQuery += ` AND LOWER(u.name) = LOWER(?)`;
       binds.push(employeeName);
     }
@@ -5666,7 +5663,7 @@ var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
       sqlQuery += ` AND t.entry_date <= ?`;
       binds.push(dateTo);
     }
-    if (clientName && clientName !== "all" && clientName !== "All clients") {
+    if (clientName && clientName !== "all") {
       sqlQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
       binds.push(`%${clientName}%`);
     }
@@ -5676,7 +5673,7 @@ var getAllTimesheetsAdmin = /* @__PURE__ */ __name(async (c) => {
     return c.json({ total_records: results.length, telemetry_logs: results, success: true }, 200);
   } catch (error) {
     console.error("[Filter Engine Error]:", error);
-    return c.json({ message: "Internal Server Error: Query failed to process logs", success: false }, 500);
+    return c.json({ message: "Internal Server Error", success: false }, 500);
   }
 }, "getAllTimesheetsAdmin");
 var deleteTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
@@ -5684,17 +5681,13 @@ var deleteTimesheetEntry = /* @__PURE__ */ __name(async (c) => {
     const db = c.env.DB;
     const currentUser = c.get("user");
     const logId = c.req.param("id");
-    if (!logId) {
-      return c.json({ message: "Validation Fault: Missing entry ID", success: false }, 400);
-    }
+    if (!logId) return c.json({ message: "Missing entry ID", success: false }, 400);
     const result = await db.prepare(`DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?`).bind(logId, currentUser.id).run();
-    if (result.meta.changes === 0) {
-      return c.json({ message: "Entry not found or unauthorized deletion scope request.", success: false }, 404);
-    }
+    if (result.meta.changes === 0) return c.json({ message: "Entry not found or unauthorized.", success: false }, 404);
     return c.json({ message: "Entry deleted successfully!", success: true }, 200);
   } catch (error) {
     console.error("[Delete Error]:", error);
-    return c.json({ message: "Internal Server Error: Delete transaction failed", success: false }, 500);
+    return c.json({ message: "Internal Server Error", success: false }, 500);
   }
 }, "deleteTimesheetEntry");
 var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
@@ -5702,20 +5695,12 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
     const user = c.get("user");
     const db = c.env.DB;
     const { message, history = [], pendingAction = null, selectedProject = null } = await c.req.json();
-    if (!message) {
-      return c.json({ success: false, message: "Message required" }, 400);
-    }
+    if (!message) return c.json({ success: false, message: "Message required" }, 400);
     const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
-    if (pendingAction && pendingAction.action === "DELETE_TIMESHEET" && isConfirming) {
+    if (pendingAction?.action === "DELETE_TIMESHEET" && isConfirming) {
       const deleteResult = await db.prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?").bind(pendingAction.matchId, user.id).run();
-      if (deleteResult.meta.changes === 0) {
-        return c.json({ reply: "Entry not found or already tracking metadata execution drop." }, 200);
-      }
-      return c.json({
-        success: true,
-        action: "DELETE_TIMESHEET",
-        reply: `Status record from project "${pendingAction.projectName}" has been permanently purged.`
-      }, 200);
+      if (deleteResult.meta.changes === 0) return c.json({ reply: "Entry not found or already deleted." }, 200);
+      return c.json({ success: true, action: "DELETE_TIMESHEET", reply: `Entry from "${pendingAction.projectName}" permanently deleted.` }, 200);
     }
     const result = await aiChat(c.env, user.id, message, history, pendingAction);
     if (result.action) {
@@ -5725,7 +5710,7 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
         const hasTask = data.task_description || hasEntries;
         if (!targetProjectName) {
-          return c.json({ reply: "Please select a project! Type '@' to choose your project." }, 200);
+          return c.json({ reply: "Please select a project first! Type '@' to choose." }, 200);
         }
         if (!hasTask) {
           return c.json({ reply: "Please describe what you worked on." }, 200);
@@ -5733,51 +5718,46 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         const projectId = await getOrCreateProjectId(db, targetProjectName);
         const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
         let entryDate = data.entry_date || todayStr;
-        if (!entryDate || entryDate === "2024-07-26" || !entryDate.startsWith("2026-")) {
-          entryDate = todayStr;
-        }
+        if (!entryDate.startsWith("2026-")) entryDate = todayStr;
         let entriesToBatch = [];
-        if (action === "add_timesheet_entries" && Array.isArray(data.entries)) {
+        if (action === "add_timesheet_entries" && hasEntries) {
           entriesToBatch = data.entries;
         } else {
-          let computedMin = data.duration_minutes;
-          if (!computedMin && data.duration_hours) computedMin = Math.round(Number(data.duration_hours) * 60);
-          if (!computedMin && data.start_time && data.end_time) {
-            computedMin = calcMinutesFromTimes(data.start_time, data.end_time);
+          let mins = data.duration_minutes;
+          if (!mins && data.duration_hours) mins = Math.round(Number(data.duration_hours) * 60);
+          if (!mins && data.start_time && data.end_time) mins = calcMinutesFromTimes(data.start_time, data.end_time);
+          if (!data.start_time) {
+            return c.json({ reply: "Could not detect start time. Please mention when you started, e.g. 'from 10am to 2pm'." }, 200);
           }
-          if (!computedMin) computedMin = 120;
           entriesToBatch = [{
-            start_time: data.start_time || "09:00",
-            end_time: data.end_time || null,
-            duration_minutes: computedMin,
+            start_time: data.start_time,
+            end_time: data.end_time || (mins ? calcEndTime(data.start_time, mins) : null),
+            duration_minutes: mins,
             module_name: data.module_name || "GENERAL",
             task_description: data.task_description
           }];
         }
+        entriesToBatch = entriesToBatch.filter((e) => !e.is_lunch);
         if (entriesToBatch.length === 0) {
-          return c.json({ reply: "No operational metadata slots extracted to commit." }, 200);
+          return c.json({
+            reply: "No workable time entries found. Ya toh aapne time mention nahi kiya, ya phir sirf lunch break skip hua hai."
+          }, 200);
         }
-        const firstEntry = entriesToBatch[0];
-        const calculatedMins = firstEntry.duration_minutes || calcMinutesFromTimes(firstEntry.start_time, firstEntry.end_time);
-        if (entriesToBatch.length === 1 && calculatedMins === 480) {
-          const DAILY_SLOTS = [
-            { start: "09:00", end: "11:00" },
-            { start: "11:00", end: "13:00" },
-            { start: "14:00", end: "16:00" },
-            { start: "16:00", end: "18:00" }
-          ];
-          const originalNode = entriesToBatch[0];
-          entriesToBatch = DAILY_SLOTS.map((slot, idx) => ({
-            start_time: slot.start,
-            end_time: slot.end,
-            duration_minutes: 120,
-            module_name: originalNode.module_name || "GENERAL",
-            task_description: `${originalNode.task_description.trim()} (Part ${idx + 1} of 4)`
-          }));
+        const exceeding = entriesToBatch.find((e) => {
+          const mins = e.duration_minutes || calcMinutesFromTimes(e.start_time, e.end_time);
+          return mins > 120;
+        });
+        if (exceeding) {
+          return c.json({
+            reply: `Entry from ${exceeding.start_time} to ${exceeding.end_time} exceeds 2 hours. Please split into separate slots of max 2 hours each.`
+          }, 200);
         }
         const statements = entriesToBatch.map((entry) => {
-          const startTime = entry.start_time || "09:00";
-          const endTime = entry.end_time || (entry.duration_minutes ? calcEndTime(startTime, entry.duration_minutes) : "11:00");
+          const startTime = entry.start_time;
+          const endTime = entry.end_time || (entry.duration_minutes ? calcEndTime(startTime, entry.duration_minutes) : null);
+          if (!isValidTime(startTime) || !isValidTime(endTime)) {
+            throw new Error(`Invalid time format for entry: ${JSON.stringify(entry)}`);
+          }
           const rawMinutes = entry.duration_minutes || calcMinutesFromTimes(startTime, endTime);
           const modName = (entry.module_name || "GENERAL").toUpperCase().trim();
           return db.prepare(`
@@ -5792,36 +5772,44 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
             endTime,
             rawMinutes,
             modName,
-            entry.task_description?.trim() || "Work Status Update"
+            entry.task_description?.trim() || "Work update"
           );
         });
         await db.batch(statements);
+        const summaryLines = entriesToBatch.map(
+          (e) => `\u2022 ${e.start_time} \u2192 ${e.end_time} (${((e.duration_minutes || calcMinutesFromTimes(e.start_time, e.end_time)) / 60).toFixed(1)} hrs) \u2014 ${e.task_description}`
+        ).join("\n");
+        const totalMins = entriesToBatch.reduce(
+          (sum, e) => sum + (e.duration_minutes || calcMinutesFromTimes(e.start_time, e.end_time)),
+          0
+        );
         return c.json({
           success: true,
           action: "ADD_MULTIPLE_TIMESHEETS",
-          reply: `\u2705 Successfully saved ${entriesToBatch.length} tracking partitions under project "${targetProjectName}" for allocation date ${entryDate}!`
+          reply: `\u2705 ${entriesToBatch.length} ${entriesToBatch.length === 1 ? "entry" : "entries"} saved under "${targetProjectName}" for ${entryDate}.
+
+${summaryLines}
+
+Total: ${(totalMins / 60).toFixed(1)} hrs`
         }, 200);
       }
       if (action === "GET_TIMESHEET" || action === "get_timesheet_logs") {
         const todayStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-        let fromDate = data.from_date || data.date;
+        let fromDate = data.from_date || data.date || "2026-01-01";
         let toDate = data.to_date || fromDate || todayStr;
-        const filterModule = data.module_name;
-        if (!fromDate || !fromDate.startsWith("2026-")) fromDate = "2026-01-01";
-        if (!toDate || !toDate.startsWith("2026-")) toDate = todayStr;
-        if (toDate > todayStr) toDate = todayStr;
+        if (!fromDate.startsWith("2026-")) fromDate = "2026-01-01";
+        if (!toDate.startsWith("2026-") || toDate > todayStr) toDate = todayStr;
         let logQuery = `
-                    SELECT d.id, d.entry_date, d.start_time, d.end_time, 
+                    SELECT d.id, d.entry_date, d.start_time, d.end_time,
                            d.duration_minutes, d.module_name, d.task_description, p.name as project_name
                     FROM daily_status_entries d
                     JOIN projects p ON d.project_id = p.id
-                    WHERE d.employee_id = ?
-                    AND d.entry_date BETWEEN ? AND ?
+                    WHERE d.employee_id = ? AND d.entry_date BETWEEN ? AND ?
                 `;
         const queryBinds = [user.id, fromDate, toDate];
-        if (filterModule) {
+        if (data.module_name) {
           logQuery += ` AND UPPER(d.module_name) = UPPER(?)`;
-          queryBinds.push(filterModule);
+          queryBinds.push(data.module_name);
         }
         if (data.project_name) {
           logQuery += ` AND LOWER(p.name) LIKE LOWER(?)`;
@@ -5829,76 +5817,48 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
         }
         logQuery += ` ORDER BY d.entry_date ASC, d.start_time ASC`;
         const dbRows = await db.prepare(logQuery).bind(...queryBinds).all();
-        const totalMinutes = dbRows.results ? dbRows.results.reduce((sum, r) => sum + parseInt(r.duration_minutes || 0, 10), 0) : 0;
-        const totalHoursDisplay = (totalMinutes / 60).toFixed(1);
+        const totalMinutes = (dbRows.results || []).reduce((sum, r) => sum + parseInt(r.duration_minutes || 0, 10), 0);
         return c.json({
           success: true,
           action: "GET_TIMESHEET",
-          reply: `${fromDate} to ${toDate}${filterModule ? ` [${filterModule}]` : ""} \u2014 Total logged status: ${totalHoursDisplay} hrs (${totalMinutes} mins)`,
+          reply: `${fromDate} to ${toDate} \u2014 Total: ${(totalMinutes / 60).toFixed(1)} hrs (${totalMinutes} mins)`,
           data: dbRows.results || []
         }, 200);
       }
       if (action === "DELETE_TIMESHEET") {
         let matchLog = null;
         if (data.entry_id || data.timesheet_id) {
-          const lookupId = data.entry_id || data.timesheet_id;
-          matchLog = await db.prepare(`
-                            SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
-                            FROM daily_status_entries d
-                            JOIN projects p ON d.project_id = p.id
-                            WHERE d.id = ? AND d.employee_id = ?
-                        `).bind(lookupId, user.id).first();
+          matchLog = await db.prepare(`SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.id = ? AND d.employee_id = ?`).bind(data.entry_id || data.timesheet_id, user.id).first();
         }
         if (!matchLog && (data.project_name?.trim() || data.task_description?.trim())) {
-          let textSearchQuery = `
-                        SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
-                        FROM daily_status_entries d
-                        JOIN projects p ON d.project_id = p.id
-                        WHERE d.employee_id = ?
-                    `;
-          const textSearchBinds = [user.id];
+          let q = `SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = ?`;
+          const b = [user.id];
           if (data.project_name?.trim()) {
-            textSearchQuery += ` AND p.name LIKE ?`;
-            textSearchBinds.push(`%${data.project_name.trim()}%`);
+            q += ` AND p.name LIKE ?`;
+            b.push(`%${data.project_name.trim()}%`);
           }
           if (data.task_description?.trim()) {
-            textSearchQuery += ` AND d.task_description LIKE ?`;
-            textSearchBinds.push(`%${data.task_description.trim()}%`);
+            q += ` AND d.task_description LIKE ?`;
+            b.push(`%${data.task_description.trim()}%`);
           }
-          textSearchQuery += ` ORDER BY d.created_at DESC LIMIT 1`;
-          matchLog = await db.prepare(textSearchQuery).bind(...textSearchBinds).first();
+          q += ` ORDER BY d.created_at DESC LIMIT 1`;
+          matchLog = await db.prepare(q).bind(...b).first();
         }
         if (!matchLog) {
-          const wasExplicit = data.entry_id || data.timesheet_id || data.project_name?.trim() || data.task_description?.trim();
-          if (wasExplicit) {
-            return c.json({ reply: "Could not find any entry matching your description. Please check details." }, 200);
-          }
-          matchLog = await db.prepare(`
-                            SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description 
-                            FROM daily_status_entries d
-                            JOIN projects p ON d.project_id = p.id
-                            WHERE d.employee_id = ? 
-                            ORDER BY d.created_at DESC LIMIT 1
-                        `).bind(user.id).first();
+          matchLog = await db.prepare(`SELECT d.id, p.name as project_name, d.duration_minutes, d.task_description FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = ? ORDER BY d.created_at DESC LIMIT 1`).bind(user.id).first();
         }
-        if (!matchLog) {
-          return c.json({ reply: "No timesheet entries found to delete." }, 200);
-        }
+        if (!matchLog) return c.json({ reply: "No timesheet entries found to delete." }, 200);
         return c.json({
           requiresConfirmation: true,
-          pendingAction: {
-            action: "DELETE_TIMESHEET",
-            matchId: matchLog.id,
-            projectName: matchLog.project_name
-          },
-          reply: `Found entry: "${matchLog.project_name}" (${(matchLog.duration_minutes / 60).toFixed(1)} hrs \u2014 ${matchLog.task_description}). Type "confirm" to apply delete permanent lifecycle action.`
+          pendingAction: { action: "DELETE_TIMESHEET", matchId: matchLog.id, projectName: matchLog.project_name },
+          reply: `Found: "${matchLog.project_name}" \u2014 ${(matchLog.duration_minutes / 60).toFixed(1)} hrs \u2014 "${matchLog.task_description}". Type "confirm" to delete.`
         }, 200);
       }
     }
     return c.json({ ...result, status: 200 }, 200);
   } catch (error) {
     console.error("[AI Handler Error]:", error);
-    return c.json({ message: "Internal server error in AI handler.", status: 500 }, 500);
+    return c.json({ message: "Internal server error.", status: 500 }, 500);
   }
 }, "aiChatHandler");
 var getProjects = /* @__PURE__ */ __name(async (c) => {
@@ -5962,7 +5922,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-xABa9k/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-7xQEmr/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -5994,7 +5954,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-xABa9k/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-7xQEmr/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;
