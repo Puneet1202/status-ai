@@ -1,5 +1,11 @@
 // FILE: backend/src/ai/tools.js
-// V16.0 - FULLY DYNAMIC | ZERO HARDCODED SLOTS | GLOBAL READY
+// V17.0 - REGISTRY-DRIVEN PROMPT | ZERO HARDCODED SCHEMAS | GLOBAL READY
+//
+// Tool *schemas* now live in ./tools/*.tool.js and are assembled in ./tools/index.js.
+// This file only builds the natural-language system prompt, injecting the live
+// tool directory so the routing section never drifts from the actual toolset.
+
+import { getToolDirectory } from './tools/index.js';
 
 export function getSystemPrompt() {
   const today = new Date().toISOString().split('T')[0];
@@ -10,11 +16,17 @@ export function getSystemPrompt() {
 TODAY: ${today} | YEAR: ${year}
 
 ═══════════════════════════════════════
+AVAILABLE TOOLS (call exactly one when the user's intent matches)
+═══════════════════════════════════════
+${getToolDirectory()}
+
+═══════════════════════════════════════
 SECTION 1 — ROUTING
 ═══════════════════════════════════════
-Understand the full meaning of the user's message.
-- If the user is describing work they did along with any time reference → call 'add_timesheet_entries'
-- If the user is asking a question about their work history → call 'get_timesheet_logs'
+Understand the full meaning of the user's message and pick the right tool above.
+- Describing work done + any time reference → call 'add_timesheet_entries'
+- Asking about past work / hours / history → call 'get_timesheet_logs'
+- Asking to remove/erase an entry → call 'delete_timesheet'
 - Use semantic understanding — not keyword matching.
 - CRITICAL: When time range + task both present → always treat as ADD.
 
@@ -99,15 +111,14 @@ EXAMPLES:
 ═══════════════════════════════════════
 SECTION 6 — DATE PARSING (DYNAMIC)
 ═══════════════════════════════════════
-INVALID: Any date before 2026
-DEFAULT: ${today} when no date mentioned
+DEFAULT: ${today} when no date mentioned. Never use a future date for logged work.
 
 Parse naturally:
 - "aaj" / "today"          → ${today}
 - "kal" / "yesterday"      → calculate yesterday from today
 - "Monday"                 → find most recent Monday
 - "last Friday"            → calculate accordingly
-- "15 May" / "May 15"      → 2026-05-15
+- "15 May" / "May 15"      → resolve to ${year}-05-15
 - "this week"              → Monday of current week to ${today}
 - "last week"              → Monday to Sunday of previous week
 - "this month"             → first of current month to ${today}
@@ -144,92 +155,4 @@ ASSUME when:
 - User confirms no break
 
 NEVER ask more than ONE question at a time.`;
-}
-
-export function getTimesheetTools() {
-  const today = new Date().toISOString().split('T')[0];
-
-  return [
-    {
-      type: "function",
-      function: {
-        name: "add_timesheet_entries",
-        description: `Add work time entries to timesheet. Handles any time format, any schedule, any number of entries. Supports breaks, night shifts, split shifts, and multilingual input.`,
-        parameters: {
-          type: "object",
-          required: ["project_name", "entry_date", "entries"],
-          properties: {
-            project_name: {
-              type: "string",
-              description: "Project name exactly as mentioned by user. Never assume or invent. Examples: 'AI Project', 'KEYSS.AI', 'Core Infra', 'Client Portal'. If not mentioned, ask."
-            },
-            entry_date: {
-              type: "string",
-              description: `Date in YYYY-MM-DD format. Parse from user input. Default: ${today}. Must be 2026 or later.`
-            },
-            entries: {
-              type: "array",
-              description: "Array of work blocks. One object per continuous time block. Split around breaks. No overlaps allowed.",
-              minItems: 1,
-              items: {
-                type: "object",
-                required: ["module_name", "task_description", "start_time", "end_time"],
-                properties: {
-                start_time: {
-                    type: "string",
-                    description: "Start time of the work. Convert any time expression the user writes (any language, style, or regional format) into a strictly formatted 24-hour HH:MM string. Understand the intent dynamically, but NEVER output anything other than strict HH:MM."
-                  },
-                  end_time: {
-                    type: "string",
-                    description: "End time of the work. Convert any time expression the user writes into a strictly formatted 24-hour HH:MM string. Can be next day for night shifts. NEVER output anything other than strict HH:MM."
-                  },
-                  module_name: {
-                    type: "string",
-                    description: "Work category in UPPERCASE_SNAKE_CASE. Derive intelligently from user's task description. Not limited to any predefined list. Examples: BUG_FIXING, CLIENT_MEETING, CODE_REVIEW, DEPLOYMENT, RESEARCH, DOCUMENTATION, UNIT_TESTING, ON_CALL_SUPPORT, DB_MIGRATION."
-                  },
-                  task_description: {
-                    type: "string",
-                    description: "Clear, professional summary of what was done during this time block. Convert casual or Hindi input to clean English description. Example: 'kiya login fix' → 'Fixed authentication login issue'."
-                  },
-                 is_lunch: {
-                    type: "boolean",
-                    description: "Set true if user mentioned this is any kind of break — lunch, tea, coffee, rest, or any pause in work. This entry will be excluded from DB."
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      type: "function",
-      function: {
-        name: "get_timesheet_logs",
-        description: "Fetch timesheet history by date range. Supports filtering by module, project, or specific dates. Handles natural language date queries.",
-        parameters: {
-          type: "object",
-          required: ["from_date", "to_date"],
-          properties: {
-            from_date: {
-              type: "string",
-              description: `Start date in YYYY-MM-DD format. Must be 2026 or later. Parse from user input. Default: ${today}.`
-            },
-            to_date: {
-              type: "string",
-              description: `End date in YYYY-MM-DD format. Must be 2026 or later. Parse from user input. Default: ${today}.`
-            },
-            module_name: {
-              type: "string",
-              description: "Optional: Filter results by module name. Use UPPERCASE_SNAKE_CASE. Example: 'BUG_FIXING', 'FRONTEND'."
-            },
-            project_name: {
-              type: "string",
-              description: "Optional: Filter results by project name. Use exactly as stored. Example: 'AI Project', 'KEYSS.AI'."
-            }
-          }
-        }
-      }
-    }
-  ];
 }

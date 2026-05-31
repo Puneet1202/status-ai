@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "wrangler dev",
+    "test:stress": "node test/stress.mjs",
+    "test:stress:full": "node test/stress.mjs --full"
   },
   "keywords": [],
   "author": "",

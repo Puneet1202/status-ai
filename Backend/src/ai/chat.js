@@ -1,170 +1,98 @@
 // FILE: backend/src/ai/chat.js
-// V16 PRODUCTION READY - STACK-BASED PARSING ISOLATION LOOP
+// V20 PRODUCTION — SINGLE ROUND-TRIP | SLIDING-WINDOW MEMORY | REGISTRY DISPATCH
+//
+// One LLM call decides intent + extracts args via native tool calling. There is
+// NO raw-SQL path anymore (removed: data-exfiltration risk + 2 extra LLM hops).
+// All reads/writes flow through parameterized tools in ./tools/*.
 
-import { askCloudflareAI } from './providers/cloudflare.js'; // Single source of truth provider
-import { buildSQLPrompt, buildReplyPrompt, DB_SCHEMA } from './prompts.js';
-import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from './ai-config.js'; // Config imported cleanly
-// ✅ Change 1: Fresh live function objects imported instead of static configurations array
-import { getSystemPrompt, getTimesheetTools } from './tools.js';
+import { askCloudflareAI } from './providers/cloudflare.js';
+import { getSystemPrompt } from './tools.js';
+import { getToolSchemas } from './tools/index.js';
+import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-config.js';
 
 // =========================================================================
-// 🛡️ SECURITY SHIELD: Stack-Based Deterministic JSON Parser (Claude Fix)
+// 🛡️ Stack-based deterministic JSON parser — defense-in-depth for the rare
+// case where tool-call arguments come back truncated/with trailing noise.
 // =========================================================================
 function safeParseArgs(raw) {
     if (typeof raw !== "string") return raw;
-    
-    // First, try a direct native parse optimization pass
     try {
         return JSON.parse(raw);
-    } catch (parseErr) {
-        console.warn("[⚠️ Safe Parse Alert]: Native JSON corrupted, running linear stack extraction layer.");
-        
+    } catch {
         const start = raw.indexOf('{');
-        if (start === -1) {
-            throw new Error("Sandbox Isolation Failure: No JSON object boundary found.");
-        }
-        
-        let depth = 0;
-        let end = -1;
-        
-        // Balanced Parentheses Tracking Framework
+        if (start === -1) throw new Error("Tool args: no JSON object boundary found.");
+        let depth = 0, end = -1;
         for (let i = start; i < raw.length; i++) {
-            if (raw[i] === '{') {
-                depth++;
-            } else if (raw[i] === '}') {
-                depth--;
-                if (depth === 0) { 
-                    end = i; 
-                    break; // Strictly freeze boundary at the true root closing bracket
-                }
-            }
+            if (raw[i] === '{') depth++;
+            else if (raw[i] === '}' && --depth === 0) { end = i; break; }
         }
-        
-        if (end === -1) {
-            throw new Error("Sandbox Isolation Failure: Malformed unclosed bracket hierarchy structure.");
-        }
-        
-        // Strict boundary slicing completely ignores trailing metadata explanation notes
-        const cleanJsonStr = raw.slice(start, end + 1);
-        return JSON.parse(cleanJsonStr);
+        if (end === -1) throw new Error("Tool args: malformed unclosed bracket structure.");
+        return JSON.parse(raw.slice(start, end + 1));
     }
 }
 
-export async function aiChat(env, userId, message, history = [], pendingAction = null) {
-    try {
-        const cleanMessage = message.trim();
+// =========================================================================
+// 🧠 SHORT-TERM WORKING MEMORY — sliding window of the last N messages.
+// Keeps the model context-aware without blowing the token budget.
+// =========================================================================
+function buildSlidingWindow(history) {
+    let safe = (Array.isArray(history) ? history : [])
+        // accept only well-formed {role, content} turns
+        .filter(h => h && typeof h.content === 'string' && h.content.trim())
+        .slice(-MAX_HISTORY_MESSAGES);
 
-        // 🚨 CONFIG SHIELD 1: Single Message Length Guardrail (100% Intact)
+    // FIX (was always 0): measure .content length, evict OLDEST until in budget.
+    let total = safe.reduce((s, h) => s + h.content.length, 0);
+    while (total > MAX_TOTAL_CHARS && safe.length > 1) {
+        total -= safe[0].content.length;
+        safe = safe.slice(1);
+    }
+    return safe.map(h => ({
+        role: h.role === 'assistant' ? 'assistant' : 'user',
+        content: h.content,
+    }));
+}
+
+export async function aiChat(env, userId, message, history = []) {
+    try {
+        const cleanMessage = (message || '').trim();
+
+        // Guardrail: single-message length.
         if (cleanMessage.length > MAX_MESSAGE_CHARS) {
             return { reply: "Message too long. Please keep your request under 4000 characters." };
         }
 
-        // 🚨 CONFIG SHIELD 2: Rolling History Character Volatility Protection (100% Intact)
-        let safeHistory = Array.isArray(history) ? history : [];
-        const totalHistoryChars = safeHistory.reduce((sum, h) => sum + (h?.length || 0), 0);
+        const window = buildSlidingWindow(history);
 
-        if (totalHistoryChars > MAX_TOTAL_CHARS) {
-            console.log(`[⚠️ CONTEXT LIMIT BREACH] History total chars: ${totalHistoryChars}. Truncating array state.`);
-            safeHistory = safeHistory.slice(-2);
-        } else {
-            safeHistory = safeHistory.slice(-4);
-        }
-
-        const cleanMessageLower = cleanMessage.toLowerCase();
-        const isConfirming = /^(confirm|yes|haan|ha|ok|okay|confirm delete)\b/i.test(cleanMessageLower);
-
-        // ================================================================
-        // 🛡️ STATELESS CONFIRMATION INTERCEPTION (Bypass AI entirely if true)
-        // ================================================================
-        if (pendingAction && isConfirming) {
-            return { action: { action: "PENDING_CONFIRMATION_FLOW_TRIGGERED", data: {} } };
-        }
-
-        // ================================================================
-        // 🚀 PATH 1: STRUCTURED ACTION DETECTION VIA PROVIDER (With Tools)
-        // ================================================================
-        // ✅ Change 2: Dynamic runtime execution using getTimesheetTools() fresh instance
+        // ── Single LLM round-trip: intent routing + argument extraction ──
         const toolResponse = await askCloudflareAI(
             getSystemPrompt(),
             cleanMessage,
-            safeHistory,
+            window,
             env,
-            getTimesheetTools() // ← Runtime fresh tools configuration
+            getToolSchemas()
         );
 
-        // Llama Specific Tool Calling Extractor
         const toolCall = toolResponse?.tool_calls?.[0];
-
         if (toolCall) {
-            // 🌟 ACTIVE HOOK: Applying the stack-based recovery layer cleanly to ignore trailing characters noise
-            const inputArgs = safeParseArgs(toolCall.arguments);
-
-            // Direct structured payload output to match the dispatch controller array keys
-            return { action: { action: toolCall.name, data: inputArgs } };
+            const args = safeParseArgs(toolCall.arguments);
+            // Hand the tool name + parsed args to the controller's registry dispatcher.
+            return { action: { name: toolCall.name, data: args } };
         }
 
-        // ================================================================
-        // 🔍 PATH 2: FALLBACK PATH - CONVERSATIONAL OR MANUAL VIEWING LAYER
-        // ================================================================
-        // Agar Llama koi tool use nahi karta toh normal decision tree par jump karega
-        // ✅ Change 3: Refactored compliance schema metadata instructions for normalized table structures
-        const finalDynamicSchema = `
-${DB_SCHEMA}
-CRITICAL SQLITE COMPLIANCE:
-1. Table name is: daily_status_entries (NOT timesheets)
-2. Use SUM(duration_minutes)/60.0 AS total_hours
-3. JOIN projects table: JOIN projects p ON d.project_id = p.id
-4. Always use alias 'd' for daily_status_entries
-`;
+        // No tool matched → conversational reply (already a trimmed string).
+        const reply = typeof toolResponse === 'string'
+            ? toolResponse
+            : (toolResponse?.response || "Could you clarify your request? e.g. 'Log 9 to 11 on Project-X' or 'Show my hours this week'.");
+        return { reply };
 
-        const sqlPrompt = buildSQLPrompt(cleanMessage, finalDynamicSchema, userId);
-
-        // Normal chat conversion block routed via provider wrapper (Passing null to systemPrompt)
-        const firstReply = await askCloudflareAI(null, sqlPrompt, [], env);
-
-        let decision = typeof firstReply === 'string' ? firstReply.trim() : (firstReply.response || "").trim();
-
-        if (decision.toUpperCase() === "CLARIFY") {
-            return {
-                reply: "Could you please clarify your request? For example: 'Show my timesheet logs for this week' or 'Log 4 hours for Project-X today'"
-            };
+    } catch (err) {
+        // Graceful degradation on Workers AI timeout / any pipeline fault.
+        if (String(err?.message).includes('_TIMEOUT')) {
+            console.warn("[AI Timeout]:", err.message);
+            return { reply: "I'm taking too long to respond right now — please try again in a moment." };
         }
-
-        let sqlQuery = decision.trim();
-        if (sqlQuery.endsWith(';')) sqlQuery = sqlQuery.slice(0, -1).trim();
-
-        if (!sqlQuery.toUpperCase().includes("SELECT")) {
-            const rawFallbackText = typeof toolResponse === 'string' ? toolResponse : (toolResponse.response || "I understood your request but couldn't structure it. Can you rephrase?");
-            return { reply: rawFallbackText };
-        }
-
-        // Security scope check (Loose match works perfectly for d.employee_id)
-        const userIdRegex = new RegExp(`employee_id\\s*=\\s*['"]?${userId}['"]?`, 'i');
-        if (!userIdRegex.test(sqlQuery)) {
-            return { reply: "Security guardrail: Query must be scoped to your own data." };
-        }
-
-        // DB Fetch Execution Loop
-        let dbResult = [];
-        try {
-            const { results } = await env.DB.prepare(sqlQuery).all();
-            dbResult = results || [];
-        } catch (dbErr) {
-            console.error("[D1 Query Failed]:", dbErr);
-            return { reply: "I encountered an error fetching your data. Please try rephrasing." };
-        }
-
-        const safeDbResult = Array.isArray(dbResult) ? dbResult.slice(0, 50) : [];
-        const replyPrompt = buildReplyPrompt(cleanMessage, safeDbResult);
-
-        // Human response generation node cleanly decoupled via provider
-        const finalHumanReply = await askCloudflareAI(null, replyPrompt, safeHistory, env);
-
-        const textReply = typeof finalHumanReply === 'string' ? finalHumanReply : (finalHumanReply.response || finalHumanReply.text || "");
-        return { reply: textReply };
-
-    } catch (globalErr) {
-        console.error("[Fatal Pipeline Error]:", globalErr);
+        console.error("[Fatal Pipeline Error]:", err);
         return { reply: "Internal error occurred. Please try again." };
     }
 }

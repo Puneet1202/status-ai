@@ -17,10 +17,13 @@ export default function AIChatbot() {
   const [isLoading, setIsLoading] = useState(false);
   
   // --- Dynamic Projects Context Tracking ---
-  const [projects, setProjects] = useState([]); 
-  const [activeContext, setActiveContext] = useState(null); 
+  const [projects, setProjects] = useState([]);
+  const [activeContext, setActiveContext] = useState(null);
   const [showContextDropdown, setShowContextDropdown] = useState(false);
   const [filteredProjects, setFilteredProjects] = useState([]);
+
+  // --- Agent State: pending destructive action carried across turns (delete confirm) ---
+  const [pendingAction, setPendingAction] = useState(null);
   
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
@@ -142,27 +145,41 @@ export default function AIChatbot() {
       inputRef.current.style.height = 'auto';
     }
 
-    // --- Clean API Form Delivery Submission (Line Update) ---
+    // 🧠 SHORT-TERM MEMORY: forward a sliding window of PRIOR turns as
+    // {role, content} (mirrors the backend window). The current message is sent
+    // separately as `message`, so we exclude it here to avoid duplication.
+    // `messages` in this closure still holds the conversation before this turn.
+    const history = messages
+      .slice(-10)
+      .map(m => ({ role: m.role, content: m.content }));
+
+    // ⏱️ Client-side timeout so the spinner can never hang forever.
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 15000);
+
     try {
       const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('keyss_token')}`
         },
         body: JSON.stringify({
           message: userPayload.content,
-          history: [],        
-          pendingAction: null,
-          // ✅ Claude's Fix Injected: Selected Context Explicitly Sent
-          selectedProject: userPayload.context  
+          history,                              // ✅ real sliding window
+          pendingAction,                        // ✅ carries delete-confirm across turns
+          selectedProject: userPayload.context
         }),
+        signal: controller.signal,
       });
-      
+
       if (!response.ok) throw new Error('Data payload tracking error');
-      
+
       const data = await response.json();
-      
+
+      // Carry any pending confirmation (e.g. delete) into the next turn.
+      setPendingAction(data.pendingAction ?? null);
+
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
@@ -170,14 +187,18 @@ export default function AIChatbot() {
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
     } catch (error) {
+      const aborted = error?.name === 'AbortError';
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
-        content: "Telemetry processing failed. Ensure your Hono backend microservice is operational.",
+        content: aborted
+          ? "Request timed out. Please try again."
+          : "Telemetry processing failed. Ensure your Hono backend microservice is operational.",
         error: true,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
     } finally {
+      clearTimeout(abortTimer);
       setIsLoading(false);
     }
   };

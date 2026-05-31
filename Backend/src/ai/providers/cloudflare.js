@@ -1,7 +1,20 @@
 // FILE: backend/src/ai/providers/cloudflare.js
 // V2.5 - REFACTORED WORKERS AI INTEGRATION WITH POLYMORPHIC TOOL RUNNER
 
-import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS } from '../ai-config.js';
+import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, AI_TIMEOUT_MS } from '../ai-config.js';
+
+/**
+ * Hard timeout guard around any promise. If the edge model stalls past `ms`,
+ * we reject with a `<label>_TIMEOUT` error so the caller can degrade gracefully
+ * instead of hanging the worker until the platform force-kills the request.
+ */
+function withTimeout(promise, ms, label = 'AI') {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Message Normalization Layer - Combines overlapping roles and truncates over-budget contexts
@@ -85,7 +98,7 @@ export async function askCloudflareAI(systemPrompt, message, history = [], env, 
         payload.tools = tools;
     }
 
-    const response = await env.AI.run(CHAT_MODEL, payload);
+    const response = await withTimeout(env.AI.run(CHAT_MODEL, payload), AI_TIMEOUT_MS, 'WORKERS_AI');
 
     // 🚨 PROTECTION FILTER: Agar response ke andar native 'tool_calls' exist karta hai, 
     // toh text extract mat karo, balki poora raw object return karo taaki chat.js use catch kar sake!
