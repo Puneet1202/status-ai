@@ -16,8 +16,11 @@ import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-c
 // Used to decide when we can settle a turn in code (reliable) vs. hand it to
 // the flaky model. Add is the hot path → parsed deterministically below.
 // =========================================================================
-const DELETE_INTENT = /\b(delete|remove|erase|discard|hata|mita|cancel)\b/i;
-const UPDATE_INTENT = /\b(update|change|correct|edit|modify|actually|instead|wrong|galat|fix (?:the|my|it))\b/i;
+const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
+// Conservative on purpose: only fire on phrases that clearly mean "edit an
+// EXISTING logged entry" — NOT common work verbs like "fix"/"change" which
+// appear in normal descriptions ("9-10 fix the ui bugs" is an ADD, not an edit).
+const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)/i;
 // STRONG_GET = read verbs only (NOT date words) — used to keep an obvious
 // history query from being parsed as an add. "log yesterday 9-11" has a date
 // word but no read verb, so it stays an ADD.

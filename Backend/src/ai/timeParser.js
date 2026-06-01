@@ -84,6 +84,10 @@ function deriveModule(label) {
 // Clean a raw label fragment into a short, readable task description.
 function cleanLabel(raw) {
   let s = (raw || "").replace(/\s+/g, " ").trim();
+  // Strip leading separators first — the structured "TIME: description" format
+  // leaves a leading ":" (e.g. ": Lunch Break") that would otherwise defeat the
+  // ^-anchored break detector and let breaks slip through as work.
+  s = s.replace(/^[\s:;,.\-–—]+/, "");
   // Drop leading connectors/fillers (whole words only — never cut mid-word).
   s = s.replace(/^(?:and|then|also|so|now|next|ok|okay|to|followed by|shifted to|moved to|spent|did|i|worked on|work on|working on|on|for|the|a|an|,|-|–|—)\b[\s,]*/i, "");
   // Strip Hinglish clock filler tokens that aren't part of the task.
@@ -95,11 +99,21 @@ function cleanLabel(raw) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-const BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b/i;
+const BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b(?!-)/i;
+// PURE break: the label is ONLY a break phrase (e.g. "lunch", "lunch break",
+// "tea break") with nothing else. Distinct from BREAK_LABEL_RE so that a work
+// block describing a separate break event ("Took a 15 min break at 10:30") is
+// NOT mistaken for a break block.
+const PURE_BREAK_RE = /^(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\s*$/i;
 
 export function parseWorkBlocks(message) {
-  const text = String(message || "");
+  let text = String(message || "");
   if (!text.trim()) return { entries: [] };
+
+  // 0) Normalize arrow-style range separators to " to " (Postel's law: accept
+  // any reasonable format the user types). Handles → ⟶ ⟹ ➜ ▶ as well as the
+  // ASCII forms -> --> => ==> ─>. Plain dashes (- – —) are already valid CONNs.
+  text = text.replace(/\s*(?:-{1,2}>|={1,2}>|─+>|→|⟶|⟹|➜|▶|▸|»)\s*/g, " to ");
 
   // 1) Collect every range with its position.
   const ranges = [];
@@ -115,11 +129,20 @@ export function parseWorkBlocks(message) {
   }
   if (ranges.length === 0) return { entries: [] };
 
-  // 2) Classify break-ranges (preceded by lunch/break/rest/tea within ~16 chars).
+  // 2) Classify break-ranges: a break keyword sits in THIS range's OWN leading
+  // clause (e.g. "lunch from 1 to 2"). We cut the lookback at clause boundaries
+  // (comma/semicolon/period/newline) so a PREVIOUS block's break word
+  // ("...1 to 2 lunch break, 2 to 4 testing") can't taint the next range.
   const breaks = [];
   for (const r of ranges) {
-    const pre = text.slice(Math.max(0, r.index - 18), r.index).toLowerCase();
-    r.isBreak = /\b(lunch|break|rest|tea)\b[^.]*$/.test(pre);
+    const pre = text.slice(Math.max(0, r.index - 40), r.index).toLowerCase().split(/[,;.\n]/).pop();
+    // A break keyword in the pre-text only flags THIS range when it isn't
+    // trailing an EARLIER time in the same clause. In "12-1 lunch break 1-2
+    // worked" (no comma), "lunch break" is 12-1's label, not 1-2's prefix — so
+    // if a time appears before the break word here, skip pre-detection and let
+    // the after-label PURE_BREAK check classify the real break block.
+    const hasTimeBefore = /\d{1,2}(?::\d{2})?\s*(?:-|–|—|to|till|baje)/i.test(pre);
+    r.isBreak = !hasTimeBefore && /\b(lunch|break|rest|tea)\b(?!-)/.test(pre); // (?!-) skips "break-fix"
   }
   const workRanges = ranges.filter((r) => !r.isBreak);
 
@@ -184,13 +207,23 @@ export function parseWorkBlocks(message) {
   function labelFor(piece) {
     let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 70)).split(CLAUSE)[0];
     const lblA = cleanLabel(after);
+    // If this block's OWN trailing label is PURELY a break ("1 to 2 lunch",
+    // "TIME: Lunch Break"), it IS a break — surface it so the filter drops it,
+    // and do NOT let the previous block's text (before) rescue it as work.
+    if (lblA && PURE_BREAK_RE.test(lblA)) return lblA;
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
 
     let before = text.slice(Math.max(0, piece.index - 90), piece.index);
     if (piece.index - 90 > 0) before = before.replace(/^\S+\s/, ""); // drop a cut-off leading word
     const lblB = cleanLabel(before.split(CLAUSE).pop());
     if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
-    return lblA && !BREAK_LABEL_RE.test(lblA) ? lblA : "Work";
+
+    // No clean WORK label found. If the only candidate is a break phrase
+    // ("Lunch Break"), surface it AS-IS (do NOT mask to "Work") so the
+    // downstream break filter can DROP this block instead of saving it.
+    if (lblA && BREAK_LABEL_RE.test(lblA)) return lblA;
+    if (lblB && BREAK_LABEL_RE.test(lblB)) return lblB;
+    return "Work";
   }
 
   const entries = pieces

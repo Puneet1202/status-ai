@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-j1mswE/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-KMpiid/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-j1mswE/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-KMpiid/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -4847,6 +4847,8 @@ var decode2 = Jwt.decode;
 var sign2 = Jwt.sign;
 
 // src/controllers/auth.controller.js
+var ACCESS_TOKEN_TTL = 7 * 24 * 60 * 60;
+var REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60;
 function getCookieConfig(c, maxAgeSeconds) {
   const url = c.req.url;
   const isLocal = url.includes("localhost") || url.includes("127.0.0.1");
@@ -4904,8 +4906,8 @@ var loginController = /* @__PURE__ */ __name(async (c) => {
       return c.json({ message: "Server configuration error", status: 500 }, 500);
     }
     const now = Math.floor(Date.now() / 1e3);
-    const ACCESS_EXPIRY = 7 * 24 * 60 * 60;
-    const REFRESH_EXPIRY = 30 * 24 * 60 * 60;
+    const ACCESS_EXPIRY = ACCESS_TOKEN_TTL;
+    const REFRESH_EXPIRY = REFRESH_TOKEN_TTL;
     const accessToken = await sign2({
       id: user.id,
       name: user.name,
@@ -4987,8 +4989,8 @@ var refreshTokenController = /* @__PURE__ */ __name(async (c) => {
       return c.json({ message: "User not found.", status: 401 }, 401);
     }
     const now = Math.floor(Date.now() / 1e3);
-    const ACCESS_EXPIRY = 15 * 60;
-    const REFRESH_EXPIRY = 7 * 24 * 60 * 60;
+    const ACCESS_EXPIRY = ACCESS_TOKEN_TTL;
+    const REFRESH_EXPIRY = REFRESH_TOKEN_TTL;
     const newAccessToken = await sign2({
       id: user.id,
       name: user.name,
@@ -6033,6 +6035,7 @@ function deriveModule(label) {
 __name(deriveModule, "deriveModule");
 function cleanLabel(raw2) {
   let s = (raw2 || "").replace(/\s+/g, " ").trim();
+  s = s.replace(/^[\s:;,.\-–—]+/, "");
   s = s.replace(/^(?:and|then|also|so|now|next|ok|okay|to|followed by|shifted to|moved to|spent|did|i|worked on|work on|working on|on|for|the|a|an|,|-|–|—)\b[\s,]*/i, "");
   s = s.replace(/\b(?:baje|bje|tak)\b/gi, " ").replace(/\s+/g, " ").trim();
   s = s.replace(/\b(?:from|at|for|to|on|in|and|then)\s*$/i, "").trim();
@@ -6041,10 +6044,12 @@ function cleanLabel(raw2) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 __name(cleanLabel, "cleanLabel");
-var BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b/i;
+var BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b(?!-)/i;
+var PURE_BREAK_RE = /^(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\s*$/i;
 function parseWorkBlocks(message) {
-  const text = String(message || "");
+  let text = String(message || "");
   if (!text.trim()) return { entries: [] };
+  text = text.replace(/\s*(?:-{1,2}>|={1,2}>|─+>|→|⟶|⟹|➜|▶|▸|»)\s*/g, " to ");
   const ranges = [];
   let m;
   RANGE_RE.lastIndex = 0;
@@ -6063,8 +6068,9 @@ function parseWorkBlocks(message) {
   if (ranges.length === 0) return { entries: [] };
   const breaks = [];
   for (const r of ranges) {
-    const pre = text.slice(Math.max(0, r.index - 18), r.index).toLowerCase();
-    r.isBreak = /\b(lunch|break|rest|tea)\b[^.]*$/.test(pre);
+    const pre = text.slice(Math.max(0, r.index - 40), r.index).toLowerCase().split(/[,;.\n]/).pop();
+    const hasTimeBefore = /\d{1,2}(?::\d{2})?\s*(?:-|–|—|to|till|baje)/i.test(pre);
+    r.isBreak = !hasTimeBefore && /\b(lunch|break|rest|tea)\b(?!-)/.test(pre);
   }
   const workRanges = ranges.filter((r) => !r.isBreak);
   let pointer = 0;
@@ -6116,12 +6122,15 @@ function parseWorkBlocks(message) {
   function labelFor(piece) {
     let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 70)).split(CLAUSE)[0];
     const lblA = cleanLabel(after);
+    if (lblA && PURE_BREAK_RE.test(lblA)) return lblA;
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
     let before = text.slice(Math.max(0, piece.index - 90), piece.index);
     if (piece.index - 90 > 0) before = before.replace(/^\S+\s/, "");
     const lblB = cleanLabel(before.split(CLAUSE).pop());
     if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
-    return lblA && !BREAK_LABEL_RE.test(lblA) ? lblA : "Work";
+    if (lblA && BREAK_LABEL_RE.test(lblA)) return lblA;
+    if (lblB && BREAK_LABEL_RE.test(lblB)) return lblB;
+    return "Work";
   }
   __name(labelFor, "labelFor");
   const entries = pieces.map((p) => {
@@ -6174,8 +6183,8 @@ function parseEntryDate(message, now = /* @__PURE__ */ new Date()) {
 __name(parseEntryDate, "parseEntryDate");
 
 // src/ai/chat.js
-var DELETE_INTENT = /\b(delete|remove|erase|discard|hata|mita|cancel)\b/i;
-var UPDATE_INTENT = /\b(update|change|correct|edit|modify|actually|instead|wrong|galat|fix (?:the|my|it))\b/i;
+var DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
+var UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)/i;
 var STRONG_GET = /\b(show|list|view|fetch|display|history|report|summary|how many|how much|kitne|kitna|total hours|fetch my|my logs)\b/i;
 var GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
 function safeParseArgs(raw2) {
@@ -6462,7 +6471,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-j1mswE/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-KMpiid/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -6494,7 +6503,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-j1mswE/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-KMpiid/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

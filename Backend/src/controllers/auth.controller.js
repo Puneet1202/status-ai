@@ -5,6 +5,19 @@ import bcrypt from 'bcryptjs';
 import { sign, verify } from 'hono/jwt';
 import { setCookie, getCookie } from 'hono/cookie';
 
+// ─── TOKEN LIFETIMES (single source of truth) ─────────────────────────────────
+// Used by BOTH loginController and refreshTokenController so the two can never
+// drift apart again (previously login issued a 7-day access token while refresh
+// issued a 15-min one — an inconsistency that silently changed sessions on
+// rotation). Values are in SECONDS.
+//
+// NOTE: access stays long-lived on purpose for now — the frontend has NO silent
+// auto-refresh flow (see Frontend/src/lib/app-state.tsx: it never calls
+// /auth/refresh). Dropping access to ~15 min REQUIRES building that refresh flow
+// first, otherwise users get logged out every 15 min with no recovery.
+const ACCESS_TOKEN_TTL = 7 * 24 * 60 * 60;   // 7 days
+const REFRESH_TOKEN_TTL = 30 * 24 * 60 * 60; // 30 days
+
 // Dynamic expiry pass-through configuration
 function getCookieConfig(c, maxAgeSeconds) {
     const url = c.req.url;
@@ -91,8 +104,8 @@ export const loginController = async (c) => {
         }
 
         const now = Math.floor(Date.now() / 1000);
-        const ACCESS_EXPIRY = 7 * 24 * 60 * 60       // 15 Min
-        const REFRESH_EXPIRY = 30 * 24 * 60 * 60; // 7 Days
+        const ACCESS_EXPIRY = ACCESS_TOKEN_TTL;
+        const REFRESH_EXPIRY = REFRESH_TOKEN_TTL;
 
         const accessToken = await sign({
             id: user.id,
@@ -206,8 +219,8 @@ export const refreshTokenController = async (c) => {
         }
 
         const now = Math.floor(Date.now() / 1000);
-        const ACCESS_EXPIRY = 15 * 60;
-        const REFRESH_EXPIRY = 7 * 24 * 60 * 60;
+        const ACCESS_EXPIRY = ACCESS_TOKEN_TTL;
+        const REFRESH_EXPIRY = REFRESH_TOKEN_TTL;
 
         const newAccessToken = await sign({
             id: user.id,
