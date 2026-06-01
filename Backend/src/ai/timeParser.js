@@ -76,7 +76,7 @@ const MODULE_RULES = [
   [/\bsupport|on-?call\b/i, "SUPPORT"],
 ];
 
-function deriveModule(label) {
+export function deriveModule(label) {
   for (const [re, mod] of MODULE_RULES) if (re.test(label)) return mod;
   return "GENERAL";
 }
@@ -105,6 +105,12 @@ const BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the
 // block describing a separate break event ("Took a 15 min break at 10:30") is
 // NOT mistaken for a break block.
 const PURE_BREAK_RE = /^(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\s*$/i;
+
+// Exposed so the hybrid extractor can re-flag a break the LLM mislabeled as
+// work (defense-in-depth using the SAME tested logic).
+export function isBreakLabel(text) {
+  return PURE_BREAK_RE.test(String(text || "").trim());
+}
 
 export function parseWorkBlocks(message) {
   let text = String(message || "");

@@ -9,6 +9,23 @@ export const MAX_MESSAGE_CHARS = 4000;
 export const MAX_TOTAL_CHARS = 52000;
 
 // =========================================================================
+// =========================================================================
+// HYBRID EXTRACTION MODE
+// =========================================================================
+// 'llm-first'  : LLM extracts work blocks (understands ANY format/language);
+//                the regex parser is the fallback when the LLM is empty/slow.
+// 'regex-first': deterministic parser primary (instant, free); LLM only rescues
+//                when regex finds nothing. Flip here if the LLM proves slow/flaky.
+// Either way the tool handler validates everything (2h cap, overlap, lunch,
+// dedup) — bad data is never saved.
+//
+// LOCKED to 'regex-first': common formats are parsed instantly (free, no
+// latency); the LLM only rescues a format the regex can't parse. Best
+// speed/cost while still escaping the per-format "treadmill".
+export const EXTRACTION_MODE = 'regex-first';
+// Shorter leash for the extraction call so a slow model falls back to regex fast.
+export const EXTRACT_TIMEOUT_MS = 10000;
+
 // SHORT-TERM WORKING MEMORY (Sliding Window)
 // =========================================================================
 // Last N chat messages forwarded to the model. 10 = ~5 user/assistant turns.

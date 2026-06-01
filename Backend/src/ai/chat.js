@@ -8,7 +8,8 @@
 import { askCloudflareAI } from './providers/cloudflare.js';
 import { getSystemPrompt, getCasualPrompt } from './tools.js';
 import { getToolSchemas } from './tools/index.js';
-import { parseWorkBlocks, parseEntryDate } from './timeParser.js';
+import { parseEntryDate } from './timeParser.js';
+import { extractWorkBlocks } from './blockExtractor.js';
 import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-config.js';
 
 // =========================================================================
@@ -130,14 +131,15 @@ export async function aiChat(env, userId, message, history = []) {
             STRONG_GET.test(cleanMessage);
 
         if (!wantsOther) {
-            const parsed = parseWorkBlocks(cleanMessage);
-            if (parsed.entries.length > 0) {
+            // HYBRID: LLM understands any format → regex fallback → handler validates.
+            const { entries, source } = await extractWorkBlocks(cleanMessage, env);
+            if (entries.length > 0) {
                 const entry_date = parseEntryDate(cleanMessage);
-                console.log('[deterministic add]', JSON.stringify({ entry_date, entries: parsed.entries }));
+                console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
                 return {
                     action: {
                         name: 'add_timesheet_entries',
-                        data: { entries: parsed.entries, ...(entry_date ? { entry_date } : {}) },
+                        data: { entries, ...(entry_date ? { entry_date } : {}) },
                     },
                 };
             }
