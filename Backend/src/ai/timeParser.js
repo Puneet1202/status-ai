@@ -211,7 +211,7 @@ export function parseWorkBlocks(message) {
   // doesn't swallow the following block's text ("bug fixing and 11 to 1 ...").
   const CLAUSE = /[,.;]| then | followed by | shifted | moved to | spent | after that |\bthen\b|\s+\d{1,2}(?::\d{2})?\s*(?:baje|bje|am|pm)?\s*(?:-|–|—|to|till|se)\b/i;
   function labelFor(piece) {
-    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 70)).split(CLAUSE)[0];
+    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 250)).split(CLAUSE)[0];
     const lblA = cleanLabel(after);
     // If this block's OWN trailing label is PURELY a break ("1 to 2 lunch",
     // "TIME: Lunch Break"), it IS a break — surface it so the filter drops it,

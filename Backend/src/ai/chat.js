@@ -143,6 +143,20 @@ export async function aiChat(env, userId, message, history = []) {
                     },
                 };
             }
+
+            // Extraction found nothing. If the message LOOKED like a time-log
+            // (has a digit), the regex couldn't parse it AND the LLM rescue
+            // failed/timed-out. Fail FAST with an actionable message instead of
+            // burning a second LLM round-trip — the user just re-sends in a
+            // clearer format (which the instant regex then handles). The user's
+            // text is never lost; nothing bad is saved.
+            if (/\d/.test(cleanMessage)) {
+                console.warn('[hybrid add] no blocks extracted (regex + LLM) for:', cleanMessage);
+                return {
+                    reply:
+                        "I couldn't read the time blocks in that one. Could you re-send in a clearer format? e.g. \"9-11 API work\" or \"9 to 11 fixed login bug; 2 to 4 testing\".",
+                };
+            }
         }
 
         // ── Otherwise: LLM round-trip for get/update/delete or ambiguous text ──

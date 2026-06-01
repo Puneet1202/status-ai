@@ -314,19 +314,20 @@ export default function AIChatbot() {
             ) : (
               messages.map((msg) => (
                 <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm ${
-                    msg.role === 'user' 
-                      ? 'bg-indigo-600 text-white rounded-tr-none' 
-                      : msg.error 
+                  <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm select-text ${
+                    msg.role === 'user'
+                      ? 'bg-indigo-600 text-white rounded-tr-none'
+                      : msg.error
                         ? 'bg-red-500/10 border border-red-500/20 text-red-200 rounded-tl-none'
                         : 'bg-slate-900 border border-slate-800 text-slate-300 rounded-tl-none'
                   }`}>
                     {msg.context && (
-                      <div className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-300">
+                      <div className="mb-1.5 inline-flex items-center gap-1 rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-300 select-text">
                         {msg.context}
                       </div>
                     )}
-                    <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+                    {/* select-text + cursor-text so users can highlight & copy any logged entry or AI reply */}
+                    <div className="whitespace-pre-wrap leading-relaxed select-text cursor-text">{msg.content}</div>
                   </div>
                   <span className="mt-1.5 text-[10px] text-slate-600 px-1 uppercase">
                     {msg.timestamp}

@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-KMpiid/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-q4xqzH/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-KMpiid/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-q4xqzH/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5067,6 +5067,8 @@ init_modules_watch_stub();
 var CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 var MAX_MESSAGE_CHARS = 4e3;
 var MAX_TOTAL_CHARS = 52e3;
+var EXTRACTION_MODE = "regex-first";
+var EXTRACT_TIMEOUT_MS = 1e4;
 var MAX_HISTORY_MESSAGES = 10;
 var AI_TIMEOUT_MS = 25e3;
 
@@ -6046,6 +6048,10 @@ function cleanLabel(raw2) {
 __name(cleanLabel, "cleanLabel");
 var BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b(?!-)/i;
 var PURE_BREAK_RE = /^(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\s*$/i;
+function isBreakLabel(text) {
+  return PURE_BREAK_RE.test(String(text || "").trim());
+}
+__name(isBreakLabel, "isBreakLabel");
 function parseWorkBlocks(message) {
   let text = String(message || "");
   if (!text.trim()) return { entries: [] };
@@ -6120,7 +6126,7 @@ function parseWorkBlocks(message) {
   pieces = pieces.filter((p) => p.end > p.start);
   const CLAUSE = /[,.;]| then | followed by | shifted | moved to | spent | after that |\bthen\b|\s+\d{1,2}(?::\d{2})?\s*(?:baje|bje|am|pm)?\s*(?:-|–|—|to|till|se)\b/i;
   function labelFor(piece) {
-    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 70)).split(CLAUSE)[0];
+    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 250)).split(CLAUSE)[0];
     const lblA = cleanLabel(after);
     if (lblA && PURE_BREAK_RE.test(lblA)) return lblA;
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
@@ -6182,6 +6188,123 @@ function parseEntryDate(message, now = /* @__PURE__ */ new Date()) {
 }
 __name(parseEntryDate, "parseEntryDate");
 
+// src/ai/blockExtractor.js
+init_modules_watch_stub();
+var EXTRACT_PROMPT = `You convert a worker's free-text status update into a STRICT JSON array of work blocks.
+
+OUTPUT RULES (critical):
+- Output ONLY a JSON array. No prose, no markdown fences, no explanation.
+- Each element: {"start_time":"HH:MM","end_time":"HH:MM","task":"short clean English summary","is_lunch":false}
+- Times in 24-hour HH:MM. Convert ANY format: "9am", "9-11", "9 to 11", "9 \u2192 11", "9 baje", "9:30 PM".
+- One element per continuous time block. Split around breaks.
+- Use the day's context so times read left-to-right (e.g. "11 to 1" after a 9-11 block = 11:00 to 13:00).
+- is_lunch = true ONLY for lunch/tea/rest breaks. These are removed later, but still include them.
+- task = the work described for THAT block, in clean professional English (fix obvious typos).
+- If the message contains no work time at all, output exactly: []
+
+EXAMPLE 1
+User: "10-11 made some ui, 12-1 lunch break, 1-2 worked on jira"
+Output: [{"start_time":"10:00","end_time":"11:00","task":"Made some UI","is_lunch":false},{"start_time":"12:00","end_time":"13:00","task":"Lunch break","is_lunch":true},{"start_time":"13:00","end_time":"14:00","task":"Worked on Jira","is_lunch":false}]
+
+EXAMPLE 2
+User: "9 \u2192 11 fix the api bugs then 11 \u2192 12:30 deployment"
+Output: [{"start_time":"09:00","end_time":"11:00","task":"Fix the API bugs","is_lunch":false},{"start_time":"11:00","end_time":"12:30","task":"Deployment","is_lunch":false}]`;
+function withTimeout2(promise, ms, label = "EXTRACT") {
+  let timer;
+  const t = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT`)), ms);
+  });
+  return Promise.race([promise, t]).finally(() => clearTimeout(timer));
+}
+__name(withTimeout2, "withTimeout");
+function toHHMM2(s) {
+  if (typeof s !== "string") return null;
+  const m = s.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = +m[1];
+  const min = +m[2];
+  if (h > 23 || min > 59) return null;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
+__name(toHHMM2, "toHHMM");
+function extractJsonArray(raw2) {
+  if (typeof raw2 !== "string") return null;
+  const start = raw2.indexOf("[");
+  const end = raw2.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(raw2.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+__name(extractJsonArray, "extractJsonArray");
+async function llmExtractBlocks(message, env) {
+  if (!env?.AI?.run) return [];
+  let response;
+  try {
+    response = await withTimeout2(
+      env.AI.run(CHAT_MODEL, {
+        messages: [
+          { role: "system", content: EXTRACT_PROMPT },
+          { role: "user", content: message }
+        ],
+        temperature: 0,
+        max_tokens: 800
+      }),
+      EXTRACT_TIMEOUT_MS
+    );
+  } catch (err) {
+    console.warn("[llmExtractBlocks] failed \u2192 regex fallback:", err?.message || err);
+    return [];
+  }
+  const text = typeof response === "string" ? response : response?.response ?? response?.result?.response ?? "";
+  const arr = extractJsonArray(text);
+  if (!arr) return [];
+  const out = [];
+  for (const it of arr) {
+    const start = toHHMM2(it?.start_time);
+    const end = toHHMM2(it?.end_time);
+    if (!start || !end) continue;
+    const task = typeof it?.task === "string" && it.task.trim() ? it.task.trim() : "Work";
+    out.push({
+      start_time: start,
+      end_time: end,
+      task_description: task,
+      module_name: deriveModule(task),
+      // Trust the model's flag, but re-flag a break it mislabeled as work
+      // using our tested break detector (defense-in-depth).
+      is_lunch: !!it?.is_lunch || isBreakLabel(task)
+    });
+  }
+  return out;
+}
+__name(llmExtractBlocks, "llmExtractBlocks");
+async function extractWorkBlocks(message, env) {
+  const runLLM = /* @__PURE__ */ __name(async () => {
+    const llm2 = await llmExtractBlocks(message, env);
+    return llm2.some((e) => !e.is_lunch) ? llm2 : null;
+  }, "runLLM");
+  const runRegex = /* @__PURE__ */ __name(() => {
+    const r = parseWorkBlocks(message).entries;
+    return r.length > 0 ? r : null;
+  }, "runRegex");
+  if (EXTRACTION_MODE === "regex-first") {
+    const regex2 = runRegex();
+    if (regex2) return { entries: regex2, source: "regex" };
+    const llm2 = await runLLM();
+    if (llm2) return { entries: llm2, source: "llm" };
+    return { entries: [], source: "none" };
+  }
+  const llm = await runLLM();
+  if (llm) return { entries: llm, source: "llm" };
+  const regex = runRegex();
+  if (regex) return { entries: regex, source: "regex" };
+  return { entries: [], source: "none" };
+}
+__name(extractWorkBlocks, "extractWorkBlocks");
+
 // src/ai/chat.js
 var DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
 var UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)/i;
@@ -6242,15 +6365,21 @@ async function aiChat(env, userId, message, history = []) {
     }
     const wantsOther = DELETE_INTENT.test(cleanMessage) || UPDATE_INTENT.test(cleanMessage) || STRONG_GET.test(cleanMessage);
     if (!wantsOther) {
-      const parsed = parseWorkBlocks(cleanMessage);
-      if (parsed.entries.length > 0) {
+      const { entries, source } = await extractWorkBlocks(cleanMessage, env);
+      if (entries.length > 0) {
         const entry_date = parseEntryDate(cleanMessage);
-        console.log("[deterministic add]", JSON.stringify({ entry_date, entries: parsed.entries }));
+        console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
         return {
           action: {
             name: "add_timesheet_entries",
-            data: { entries: parsed.entries, ...entry_date ? { entry_date } : {} }
+            data: { entries, ...entry_date ? { entry_date } : {} }
           }
+        };
+      }
+      if (/\d/.test(cleanMessage)) {
+        console.warn("[hybrid add] no blocks extracted (regex + LLM) for:", cleanMessage);
+        return {
+          reply: `I couldn't read the time blocks in that one. Could you re-send in a clearer format? e.g. "9-11 API work" or "9 to 11 fixed login bug; 2 to 4 testing".`
         };
       }
     }
@@ -6471,7 +6600,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-KMpiid/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-q4xqzH/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -6503,7 +6632,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-KMpiid/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-q4xqzH/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;
