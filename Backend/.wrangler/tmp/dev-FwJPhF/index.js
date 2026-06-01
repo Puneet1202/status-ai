@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-q4xqzH/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-80fTGZ/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-q4xqzH/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-80fTGZ/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5998,6 +5998,10 @@ function resolveTime(hour, minute, meridiem, minBound) {
   if (meridiem === "pm") return (hour % 12 + 12) * 60 + min;
   if (hour >= 13 && hour <= 23) return hour * 60 + min;
   if (hour === 0) return min;
+  if (hour === 12) {
+    const noon = 720 + min;
+    return noon >= minBound ? noon : 1440 + min;
+  }
   const am = hour % 12 * 60 + min;
   const pm = (hour % 12 + 12) * 60 + min;
   const cands = [am, pm].sort((a, b) => a - b);
@@ -6124,15 +6128,25 @@ function parseWorkBlocks(message) {
     pieces = next;
   }
   pieces = pieces.filter((p) => p.end > p.start);
-  const CLAUSE = /[,.;]| then | followed by | shifted | moved to | spent | after that |\bthen\b|\s+\d{1,2}(?::\d{2})?\s*(?:baje|bje|am|pm)?\s*(?:-|–|—|to|till|se)\b/i;
+  const nextStart = /* @__PURE__ */ __name((idx) => {
+    let best = text.length;
+    for (const r of ranges) if (r.index > idx && r.index < best) best = r.index;
+    return best;
+  }, "nextStart");
+  const prevEnd = /* @__PURE__ */ __name((idx) => {
+    let e = 0;
+    for (const r of ranges) if (r.end <= idx && r.end > e) e = r.end;
+    return e;
+  }, "prevEnd");
+  const SENT = /[.;\n]| then | followed by | shifted to | moved to | after that |\bthen\b/i;
+  const MAX_DESC = 400;
   function labelFor(piece) {
-    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 250)).split(CLAUSE)[0];
+    const after = text.slice(piece.endIdx, Math.min(nextStart(piece.index), piece.endIdx + MAX_DESC)).split(SENT)[0];
     const lblA = cleanLabel(after);
     if (lblA && PURE_BREAK_RE.test(lblA)) return lblA;
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
-    let before = text.slice(Math.max(0, piece.index - 90), piece.index);
-    if (piece.index - 90 > 0) before = before.replace(/^\S+\s/, "");
-    const lblB = cleanLabel(before.split(CLAUSE).pop());
+    const before = text.slice(prevEnd(piece.index), piece.index).split(SENT).pop();
+    const lblB = cleanLabel(before);
     if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
     if (lblA && BREAK_LABEL_RE.test(lblA)) return lblA;
     if (lblB && BREAK_LABEL_RE.test(lblB)) return lblB;
@@ -6600,7 +6614,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-q4xqzH/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-80fTGZ/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -6632,7 +6646,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-q4xqzH/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-80fTGZ/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

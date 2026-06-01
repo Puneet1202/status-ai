@@ -42,6 +42,12 @@ function resolveTime(hour, minute, meridiem, minBound) {
   if (meridiem === "pm") return ((hour % 12) + 12) * 60 + min;
   if (hour >= 13 && hour <= 23) return hour * 60 + min; // explicit 24h
   if (hour === 0) return min;
+  if (hour === 12) {
+    // bare "12" = noon by default (work logs almost never mean midnight); roll
+    // to midnight next day only if the day has already moved past noon.
+    const noon = 720 + min;
+    return noon >= minBound ? noon : 1440 + min;
+  }
   const am = (hour % 12) * 60 + min;
   const pm = ((hour % 12) + 12) * 60 + min;
   const cands = [am, pm].sort((a, b) => a - b);
@@ -205,28 +211,40 @@ export function parseWorkBlocks(message) {
   }
   pieces = pieces.filter((p) => p.end > p.start);
 
-  // 6) Labels: prefer the task text right AFTER the range up to the next clause;
-  // if that's empty or a break phrase, fall back to the text BEFORE the range.
-  // Clause boundaries — also cut before the NEXT time range so a block's label
-  // doesn't swallow the following block's text ("bug fixing and 11 to 1 ...").
-  const CLAUSE = /[,.;]| then | followed by | shifted | moved to | spent | after that |\bthen\b|\s+\d{1,2}(?::\d{2})?\s*(?:baje|bje|am|pm)?\s*(?:-|–|—|to|till|se)\b/i;
+  // 6) Labels: a block's description runs from the END of its range to the START
+  // of the NEXT range (the real block edge — robust to spacing/punctuation), so
+  // full multi-word descriptions are kept. We stop only at a sentence boundary
+  // (. ; newline) or a strong connector — NEVER at a comma (commas are part of
+  // the description). A capped window guards against runaway length.
+  const nextStart = (idx) => {
+    let best = text.length;
+    for (const r of ranges) if (r.index > idx && r.index < best) best = r.index;
+    return best;
+  };
+  const prevEnd = (idx) => {
+    let e = 0;
+    for (const r of ranges) if (r.end <= idx && r.end > e) e = r.end;
+    return e;
+  };
+  const SENT = /[.;\n]| then | followed by | shifted to | moved to | after that |\bthen\b/i;
+  const MAX_DESC = 400;
+
   function labelFor(piece) {
-    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 250)).split(CLAUSE)[0];
+    // AFTER: text until the next time range ("TIME description" format).
+    const after = text
+      .slice(piece.endIdx, Math.min(nextStart(piece.index), piece.endIdx + MAX_DESC))
+      .split(SENT)[0];
     const lblA = cleanLabel(after);
-    // If this block's OWN trailing label is PURELY a break ("1 to 2 lunch",
-    // "TIME: Lunch Break"), it IS a break — surface it so the filter drops it,
-    // and do NOT let the previous block's text (before) rescue it as work.
+    // This block's OWN label is purely a break ("1 to 2 lunch") → drop it; do
+    // NOT let the previous block's text rescue it as work.
     if (lblA && PURE_BREAK_RE.test(lblA)) return lblA;
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
 
-    let before = text.slice(Math.max(0, piece.index - 90), piece.index);
-    if (piece.index - 90 > 0) before = before.replace(/^\S+\s/, ""); // drop a cut-off leading word
-    const lblB = cleanLabel(before.split(CLAUSE).pop());
+    // BEFORE: prose "description from TIME" — text since the previous range.
+    const before = text.slice(prevEnd(piece.index), piece.index).split(SENT).pop();
+    const lblB = cleanLabel(before);
     if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
 
-    // No clean WORK label found. If the only candidate is a break phrase
-    // ("Lunch Break"), surface it AS-IS (do NOT mask to "Work") so the
-    // downstream break filter can DROP this block instead of saving it.
     if (lblA && BREAK_LABEL_RE.test(lblA)) return lblA;
     if (lblB && BREAK_LABEL_RE.test(lblB)) return lblB;
     return "Work";
