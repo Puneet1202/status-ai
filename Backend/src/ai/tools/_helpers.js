@@ -71,3 +71,33 @@ export function isValidEntryDate(s) {
 export function todayISO() {
   return new Date().toISOString().split("T")[0];
 }
+
+// =========================================================================
+// Deterministic overlap detection (overnight-aware).
+// Sorts work blocks by start minute-of-day and returns the first pair whose
+// ranges intersect. Returns null when everything is clean.
+// A block that rolls past midnight (end <= start) is treated as ending at
+// start + its real duration so night shifts are compared on a single axis.
+// =========================================================================
+export function detectOverlap(entries) {
+  const toRange = (e) => {
+    const [sh, sm] = e.start_time.split(":").map(Number);
+    const start = sh * 60 + sm;
+    const dur = calcMinutesFromTimes(e.start_time, e.end_time); // overnight-aware
+    return { start, end: start + dur, raw: e };
+  };
+
+  const ranges = entries
+    .filter((e) => isValidTime(e.start_time) && isValidTime(e.end_time))
+    .map(toRange)
+    .sort((a, b) => a.start - b.start);
+
+  for (let i = 1; i < ranges.length; i++) {
+    const prev = ranges[i - 1];
+    const cur = ranges[i];
+    if (cur.start < prev.end) {
+      return [prev.raw, cur.raw]; // first overlapping pair
+    }
+  }
+  return null;
+}

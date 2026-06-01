@@ -9,9 +9,10 @@
 
 import addTimesheet from "./addTimesheet.tool.js";
 import getTimesheet from "./getTimesheet.tool.js";
+import updateTimesheet from "./updateTimesheet.tool.js";
 import deleteTimesheet from "./deleteTimesheet.tool.js";
 
-const MODULES = [addTimesheet, getTimesheet, deleteTimesheet];
+const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet];
 
 // name -> module
 export const REGISTRY = Object.fromEntries(MODULES.map((m) => [m.name, m]));

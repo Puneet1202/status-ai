@@ -7,6 +7,7 @@ import {
   calcMinutesFromTimes,
   isValidTime,
   isValidEntryDate,
+  detectOverlap,
   todayISO,
 } from "./_helpers.js";
 
@@ -74,7 +75,7 @@ const schema = {
 // ctx = { db, user, env, selectedProject, today }
 async function handler(ctx, data) {
   const { db, user, selectedProject, today } = ctx;
-
+  try {
   const targetProjectName = selectedProject || data.project_name;
   if (!targetProjectName) {
     return { reply: "Please select a project first! Type '@' to choose." };
@@ -115,38 +116,65 @@ async function handler(ctx, data) {
     };
   }
 
-  // Guardrail: max 2 hours (120 min) per single block.
-  const exceeding = entriesToBatch.find((e) => {
-    const mins =
-      e.duration_minutes ||
-      (isValidTime(e.start_time) && isValidTime(e.end_time)
-        ? calcMinutesFromTimes(e.start_time, e.end_time)
-        : 0);
-    return mins > 120;
-  });
-  if (exceeding) {
+  // ── Partition blocks: parseable & within cap (valid) vs. problematic ──
+  // Product decision: SAVE the valid blocks and only FLAG the bad ones, so a
+  // single bad block never forces the user to re-enter the whole day.
+  const problems = [];
+  const seen = new Set();
+  const valid = [];
+
+  for (const e of entriesToBatch) {
+    // Derive an end time from duration if the legacy single-entry path supplied one.
+    const startTime = e.start_time;
+    const endTime =
+      e.end_time ||
+      (e.duration_minutes ? calcEndTime(startTime, e.duration_minutes) : null);
+
+    if (!isValidTime(startTime) || !isValidTime(endTime)) {
+      problems.push(
+        `• "${e.task_description || "one block"}" — couldn't read the time (give a clear start & end, e.g. "9 to 11").`
+      );
+      continue;
+    }
+
+    const mins = calcMinutesFromTimes(startTime, endTime);
+    if (mins > 120) {
+      problems.push(
+        `• ${startTime}–${endTime} ("${e.task_description || "work"}") — ${(mins / 60).toFixed(
+          1
+        )} hrs exceeds the 2-hour limit; please split it into blocks of max 2 hours.`
+      );
+      continue;
+    }
+
+    // Drop exact duplicates within this single message.
+    const key = `${startTime}|${endTime}|${(e.task_description || "").trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    valid.push({ ...e, start_time: startTime, end_time: endTime, _mins: mins });
+  }
+
+  // Overlap is relational — if the would-be-saved blocks clash we can't pick a
+  // winner, so block the write and ask the user to adjust (nothing saved here).
+  const overlap = detectOverlap(valid);
+  if (overlap) {
+    const [a, b] = overlap;
     return {
-      reply: `Entry from ${exceeding.start_time} to ${exceeding.end_time} exceeds 2 hours. Please split into separate slots of max 2 hours each.`,
+      reply: `These blocks overlap: ${a.start_time}–${a.end_time} and ${b.start_time}–${b.end_time}. Please adjust so they don't clash.`,
     };
+  }
+
+  // Nothing valid to save → report only the problems.
+  if (valid.length === 0) {
+    return { reply: `I couldn't save those entries:\n${problems.join("\n")}` };
   }
 
   const projectId = await getOrCreateProjectId(db, targetProjectName);
 
-  // Parameterized batch insert — no slot snapping, no raw SQL.
-  const statements = entriesToBatch.map((entry) => {
-    const startTime = entry.start_time;
-    const endTime =
-      entry.end_time ||
-      (entry.duration_minutes ? calcEndTime(startTime, entry.duration_minutes) : null);
-
-    if (!isValidTime(startTime) || !isValidTime(endTime)) {
-      throw new Error(`Invalid time format for entry: ${JSON.stringify(entry)}`);
-    }
-
-    const minutes = entry.duration_minutes || calcMinutesFromTimes(startTime, endTime);
-    const modName = (entry.module_name || "GENERAL").toUpperCase().trim();
-
-    return db
+  // Parameterized batch insert — atomic over the VALID blocks only.
+  const statements = valid.map((entry) =>
+    db
       .prepare(
         `INSERT INTO daily_status_entries
          (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description)
@@ -156,38 +184,49 @@ async function handler(ctx, data) {
         user.id,
         projectId,
         entryDate,
-        startTime,
-        endTime,
-        minutes,
-        modName,
+        entry.start_time,
+        entry.end_time,
+        entry._mins,
+        (entry.module_name || "GENERAL").toUpperCase().trim(),
         entry.task_description?.trim() || "Work update"
-      );
-  });
+      )
+  );
 
   await db.batch(statements);
 
   // Deterministic receipt — no extra LLM call.
-  const summaryLines = entriesToBatch
-    .map((e) => {
-      const mins = e.duration_minutes || calcMinutesFromTimes(e.start_time, e.end_time);
-      return `• ${e.start_time} → ${e.end_time} (${(mins / 60).toFixed(1)} hrs) — ${e.task_description}`;
-    })
+  const summaryLines = valid
+    .map(
+      (e) => `• ${e.start_time} → ${e.end_time} (${(e._mins / 60).toFixed(1)} hrs) — ${e.task_description}`
+    )
     .join("\n");
 
-  const totalMins = entriesToBatch.reduce(
-    (sum, e) => sum + (e.duration_minutes || calcMinutesFromTimes(e.start_time, e.end_time)),
-    0
-  );
+  const totalMins = valid.reduce((sum, e) => sum + e._mins, 0);
+
+  let reply = `✅ ${valid.length} ${
+    valid.length === 1 ? "entry" : "entries"
+  } saved under "${targetProjectName}" for ${entryDate}.\n\n${summaryLines}\n\nTotal: ${(
+    totalMins / 60
+  ).toFixed(1)} hrs`;
+
+  if (problems.length > 0) {
+    reply += `\n\n⚠️ Not saved — please fix and resend just these:\n${problems.join("\n")}`;
+  }
 
   return {
     success: true,
     action: "ADD_MULTIPLE_TIMESHEETS",
-    reply: `✅ ${entriesToBatch.length} ${
-      entriesToBatch.length === 1 ? "entry" : "entries"
-    } saved under "${targetProjectName}" for ${entryDate}.\n\n${summaryLines}\n\nTotal: ${(
-      totalMins / 60
-    ).toFixed(1)} hrs`,
+    reply,
   };
+  } catch (err) {
+    // A single malformed block (e.g. unparseable time deep in the batch)
+    // must never 500 the whole request — degrade to a friendly reply.
+    console.error("[add_timesheet_entries] handler error:", err?.message || err);
+    return {
+      reply:
+        "I couldn't save those entries — one of the time blocks looked off. Please re-send with clear start and end times for each block.",
+    };
+  }
 }
 
 export default { name, schema, handler };

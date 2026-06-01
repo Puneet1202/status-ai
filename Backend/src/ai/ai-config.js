@@ -21,4 +21,10 @@ export const MAX_HISTORY_MESSAGES = 10;
 // Hard ceiling for a single env.AI.run call. If the edge model stalls past
 // this, we reject fast and return a graceful retry message instead of hanging
 // the request until the platform kills it.
-export const AI_TIMEOUT_MS = 12000;
+//
+// NOTE: 12s was too tight for heavy batch extraction — a single 70B call that
+// must parse a long, multilingual, multi-block message (6+ entries with breaks)
+// routinely needs 15-22s. Raised to 25s. The frontend AbortController MUST stay
+// strictly above this (see AIChatbot.jsx) so the backend's graceful timeout
+// reply wins the race instead of the client aborting first.
+export const AI_TIMEOUT_MS = 25000;

@@ -1,18 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  X, 
-  Send, 
-  Database, 
-  Cpu, 
-  ShieldCheck, 
-  Sparkles, 
-  Loader2
+  X,
+  Send,
+  Database,
+  Cpu,
+  ShieldCheck,
+  Sparkles,
+  Loader2,
+  Trash2
 } from 'lucide-react';
+
+const CHAT_HISTORY_KEY = 'keyss_chat_history';
+const MAX_PERSISTED_MESSAGES = 50; // caps localStorage + in-session state growth
 
 export default function AIChatbot() {
   // --- UI Layout Controllers ---
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
+  // 🧠 Restore prior conversation so it survives a refresh/close.
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CHAT_HISTORY_KEY);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
@@ -34,6 +47,30 @@ export default function AIChatbot() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isLoading]);
+
+  // 🧠 Persist a capped tail of the conversation so it survives a refresh.
+  // The cap also bounds the otherwise-unbounded in-session messages[] array.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CHAT_HISTORY_KEY,
+        JSON.stringify(messages.slice(-MAX_PERSISTED_MESSAGES))
+      );
+    } catch {
+      /* quota / private-mode — non-fatal, chat still works in-memory */
+    }
+  }, [messages]);
+
+  // Wipe the conversation from both state and storage.
+  const clearChat = () => {
+    setMessages([]);
+    setPendingAction(null);
+    try {
+      localStorage.removeItem(CHAT_HISTORY_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
 
   // --- Fetch Dynamic Projects from DB ---
   useEffect(() => {
@@ -154,8 +191,11 @@ export default function AIChatbot() {
       .map(m => ({ role: m.role, content: m.content }));
 
     // ⏱️ Client-side timeout so the spinner can never hang forever.
+    // MUST stay strictly above the backend AI_TIMEOUT_MS (25s) so the server's
+    // graceful "try again" reply wins the race instead of the client aborting
+    // mid-flight on heavy multi-block requests.
     const controller = new AbortController();
-    const abortTimer = setTimeout(() => controller.abort(), 15000);
+    const abortTimer = setTimeout(() => controller.abort(), 30000);
 
     try {
       const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
@@ -237,12 +277,23 @@ export default function AIChatbot() {
                 <p className="text-[11px] text-slate-400">Intelligence Node Active</p>
               </div>
             </div>
-            <button 
-              onClick={() => setIsOpen(false)}
-              className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
-            >
-              <X size={20} />
-            </button>
+            <div className="flex items-center gap-1">
+              {messages.length > 0 && (
+                <button
+                  onClick={clearChat}
+                  title="Clear chat"
+                  className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-red-300"
+                >
+                  <Trash2 size={18} />
+                </button>
+              )}
+              <button
+                onClick={() => setIsOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-100"
+              >
+                <X size={20} />
+              </button>
+            </div>
           </div>
 
           {/* Chat Content Window Pane */}

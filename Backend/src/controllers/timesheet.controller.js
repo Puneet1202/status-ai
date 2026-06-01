@@ -4,6 +4,7 @@
 import { aiChat } from '../ai/chat.js';
 import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
+import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
 import {
     getOrCreateProjectId,
     calcEndTime,
@@ -148,10 +149,14 @@ export const aiChatHandler = async (c) => {
 
         const ctx = { db, user, env: c.env, selectedProject, today: todayISO() };
 
-        // ── Confirm-intercept: a pending destructive action + a yes/confirm ──
+        // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
-        if (pendingAction?.action === "DELETE_TIMESHEET" && isConfirming) {
+        if (isConfirming && pendingAction?.action === "DELETE_TIMESHEET") {
             const out = await executeDelete(ctx, pendingAction);
+            return c.json(out, 200);
+        }
+        if (isConfirming && pendingAction?.action === "UPDATE_TIMESHEET") {
+            const out = await executeUpdate(ctx, pendingAction);
             return c.json(out, 200);
         }
 

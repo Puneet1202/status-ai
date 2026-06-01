@@ -1,0 +1,250 @@
+// FILE: backend/src/ai/timeParser.js
+// =========================================================================
+// DETERMINISTIC WORK-BLOCK EXTRACTION
+// =========================================================================
+// The 70B model was unreliable at emitting a structured entries[] array
+// (sometimes perfect, sometimes empty for the same kind of input). Time
+// parsing is mechanical, so we do it in code — 100% repeatable, unit-tested.
+// This is PARSING, not business policy: no fixed hours/lunch/timezone here.
+//
+// Handles:
+//   • bare ranges with day-ascending AM/PM inference  ("9-11, 11-1, 2-5")
+//   • 24h ranges                                       ("09:00 to 11:00")
+//   • explicit AM/PM                                   ("8 AM to 7 PM")
+//   • break/lunch subtraction (splits the work block)  ("lunch 1 to 2")
+//   • point breaks                                     ("15 min break at 10:30")
+// Returns { entries: [{ start_time, end_time, module_name, task_description }] }.
+
+const pad = (n) => String(n).padStart(2, "0");
+const toHHMM = (min) => {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+};
+
+// A clock token: 1-2 digit hour, optional :mm, optional "baje"/"o'clock",
+// optional am/pm. The baje/o'clock group is NON-capturing so group indices
+// (hour, minute, meridiem) stay stable for every regex built from TIME.
+const TIME = String.raw`(\d{1,2})(?::(\d{2}))?\s*(?:baje|bje|o'?clock)?\s*(a\.?m\.?|p\.?m\.?)?`;
+const CONN = String.raw`(?:-|–|—|to|till|until|through|thru|upto|up to|se)`;
+const RANGE_RE = new RegExp(`${TIME}\\s*${CONN}\\s*${TIME}`, "gi");
+
+// Point break: "15 min break at 10:30"  OR  "break at 4:30 for 20 minutes".
+const BREAK_PT_A = new RegExp(String.raw`(\d{1,3})\s*min(?:ute)?s?\s*(?:break|rest)\s*(?:at|@|from)?\s*${TIME}`, "gi");
+const BREAK_PT_B = new RegExp(String.raw`(?:break|rest)\s*(?:at|@)\s*${TIME}\s*for\s*(\d{1,3})\s*min`, "gi");
+
+const mer = (s) => (!s ? null : /p/i.test(s) ? "pm" : "am");
+
+// Resolve (hour, minute, meridiem) to minutes-of-day. For bare numbers, pick
+// the smallest interpretation that is >= minBound so a day reads left-to-right.
+function resolveTime(hour, minute, meridiem, minBound) {
+  const min = minute || 0;
+  if (meridiem === "am") return (hour % 12) * 60 + min;
+  if (meridiem === "pm") return ((hour % 12) + 12) * 60 + min;
+  if (hour >= 13 && hour <= 23) return hour * 60 + min; // explicit 24h
+  if (hour === 0) return min;
+  const am = (hour % 12) * 60 + min;
+  const pm = ((hour % 12) + 12) * 60 + min;
+  const cands = [am, pm].sort((a, b) => a - b);
+  for (const c of cands) if (c >= minBound) return c;
+  return cands[0];
+}
+
+// Resolve a break time to land inside the work-day window [dayStart, dayEnd].
+function resolveWithin(hour, minute, meridiem, dayStart, dayEnd) {
+  const min = minute || 0;
+  if (meridiem) return resolveTime(hour, min, meridiem, 0);
+  if (hour >= 13 && hour <= 23) return hour * 60 + min;
+  const am = (hour % 12) * 60 + min;
+  const pm = ((hour % 12) + 12) * 60 + min;
+  const inWin = [am, pm].filter((c) => c >= dayStart && c <= dayEnd);
+  if (inWin.length) return Math.min(...inWin);
+  return am >= dayStart ? am : pm;
+}
+
+const MODULE_RULES = [
+  [/\btest|qa|scenario\b/i, "TESTING"],
+  [/\bbug|fix|defect|issue\b/i, "BUG_FIXING"],
+  [/\bmeet|sync|standup|stand-up|call|1:1|catch ?up\b/i, "MEETING"],
+  [/\breview|pr\b/i, "CODE_REVIEW"],
+  [/\bdeploy|release|ship\b/i, "DEPLOYMENT"],
+  [/\bresearch|investigat|explore|spike\b/i, "RESEARCH"],
+  [/\bdoc|documentation|write-?up\b/i, "DOCUMENTATION"],
+  [/\bdesign|architect\b/i, "DESIGN"],
+  [/\bapi|backend|server\b/i, "API_DEVELOPMENT"],
+  [/\bui|ux|frontend|front-end\b/i, "UI_DEVELOPMENT"],
+  [/\bdb|database|migration|sql\b/i, "DATABASE"],
+  [/\bsupport|on-?call\b/i, "SUPPORT"],
+];
+
+function deriveModule(label) {
+  for (const [re, mod] of MODULE_RULES) if (re.test(label)) return mod;
+  return "GENERAL";
+}
+
+// Clean a raw label fragment into a short, readable task description.
+function cleanLabel(raw) {
+  let s = (raw || "").replace(/\s+/g, " ").trim();
+  // Drop leading connectors/fillers (whole words only — never cut mid-word).
+  s = s.replace(/^(?:and|then|also|so|now|next|ok|okay|to|followed by|shifted to|moved to|spent|did|i|worked on|work on|working on|on|for|the|a|an|,|-|–|—)\b[\s,]*/i, "");
+  // Strip Hinglish clock filler tokens that aren't part of the task.
+  s = s.replace(/\b(?:baje|bje|tak)\b/gi, " ").replace(/\s+/g, " ").trim();
+  // Drop a dangling trailing preposition/connector (e.g. "... AI module from", "... and").
+  s = s.replace(/\b(?:from|at|for|to|on|in|and|then)\s*$/i, "").trim();
+  s = s.replace(/[,;:.\-]+$/g, "").trim();
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\b/i;
+
+export function parseWorkBlocks(message) {
+  const text = String(message || "");
+  if (!text.trim()) return { entries: [] };
+
+  // 1) Collect every range with its position.
+  const ranges = [];
+  let m;
+  RANGE_RE.lastIndex = 0;
+  while ((m = RANGE_RE.exec(text))) {
+    ranges.push({
+      index: m.index,
+      end: m.index + m[0].length,
+      sh: +m[1], sm: +(m[2] || 0), sMer: mer(m[3]),
+      eh: +m[4], em: +(m[5] || 0), eMer: mer(m[6]),
+    });
+  }
+  if (ranges.length === 0) return { entries: [] };
+
+  // 2) Classify break-ranges (preceded by lunch/break/rest/tea within ~16 chars).
+  const breaks = [];
+  for (const r of ranges) {
+    const pre = text.slice(Math.max(0, r.index - 18), r.index).toLowerCase();
+    r.isBreak = /\b(lunch|break|rest|tea)\b[^.]*$/.test(pre);
+  }
+  const workRanges = ranges.filter((r) => !r.isBreak);
+
+  // 3) Resolve work ranges left-to-right (ascending pointer).
+  let pointer = 0;
+  const work = [];
+  for (const r of workRanges) {
+    const start = resolveTime(r.sh, r.sm, r.sMer, pointer);
+    let end = resolveTime(r.eh, r.em, r.eMer, start);
+    if (end <= start) end += 1440; // overnight shift (e.g. 23:00 → 02:00 next day)
+    pointer = end;
+    work.push({ start, end, index: r.index, endIdx: r.end });
+  }
+  if (work.length === 0) return { entries: [] };
+
+  const dayStart = Math.min(...work.map((w) => w.start));
+  const dayEnd = Math.max(...work.map((w) => w.end));
+
+  // 4) Break intervals: break-ranges resolved within the day window.
+  for (const r of ranges.filter((r) => r.isBreak)) {
+    const bs = resolveWithin(r.sh, r.sm, r.sMer, dayStart, dayEnd);
+    let be = resolveWithin(r.eh, r.em, r.eMer, dayStart, dayEnd);
+    if (be <= bs) be += 60;
+    breaks.push([bs, be]);
+  }
+  // point breaks
+  let pm2;
+  BREAK_PT_A.lastIndex = 0;
+  while ((pm2 = BREAK_PT_A.exec(text))) {
+    const dur = +pm2[1];
+    const t = resolveWithin(+pm2[2], +(pm2[3] || 0), mer(pm2[4]), dayStart, dayEnd);
+    breaks.push([t, t + dur]);
+  }
+  BREAK_PT_B.lastIndex = 0;
+  while ((pm2 = BREAK_PT_B.exec(text))) {
+    const t = resolveWithin(+pm2[1], +(pm2[2] || 0), mer(pm2[3]), dayStart, dayEnd);
+    const dur = +pm2[4];
+    breaks.push([t, t + dur]);
+  }
+
+  // 5) Subtract breaks from each work block (splitting as needed).
+  let pieces = work.map((w) => ({ start: w.start, end: w.end, index: w.index, endIdx: w.endIdx }));
+  for (const [bs, be] of breaks) {
+    const next = [];
+    for (const p of pieces) {
+      if (be <= p.start || bs >= p.end) {
+        next.push(p); // break outside this piece
+      } else {
+        if (bs > p.start) next.push({ ...p, end: bs });
+        if (be < p.end) next.push({ ...p, start: be });
+      }
+    }
+    pieces = next;
+  }
+  pieces = pieces.filter((p) => p.end > p.start);
+
+  // 6) Labels: prefer the task text right AFTER the range up to the next clause;
+  // if that's empty or a break phrase, fall back to the text BEFORE the range.
+  // Clause boundaries — also cut before the NEXT time range so a block's label
+  // doesn't swallow the following block's text ("bug fixing and 11 to 1 ...").
+  const CLAUSE = /[,.;]| then | followed by | shifted | moved to | spent | after that |\bthen\b|\s+\d{1,2}(?::\d{2})?\s*(?:baje|bje|am|pm)?\s*(?:-|–|—|to|till|se)\b/i;
+  function labelFor(piece) {
+    let after = text.slice(piece.endIdx, Math.min(text.length, piece.endIdx + 70)).split(CLAUSE)[0];
+    const lblA = cleanLabel(after);
+    if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
+
+    let before = text.slice(Math.max(0, piece.index - 90), piece.index);
+    if (piece.index - 90 > 0) before = before.replace(/^\S+\s/, ""); // drop a cut-off leading word
+    const lblB = cleanLabel(before.split(CLAUSE).pop());
+    if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
+    return lblA && !BREAK_LABEL_RE.test(lblA) ? lblA : "Work";
+  }
+
+  const entries = pieces
+    .map((p) => {
+      const label = labelFor(p);
+      return {
+        start_time: toHHMM(p.start),
+        end_time: toHHMM(p.end),
+        module_name: deriveModule(label),
+        task_description: label,
+        is_lunch: false,
+      };
+    })
+    // Drop any block whose only description is a break phrase (e.g. trailing "tea break").
+    .filter((e) => !BREAK_LABEL_RE.test(e.task_description) || e.task_description === "Work");
+
+  return { entries };
+}
+
+// Lightweight intent hints so chat.js can route deterministically.
+export function hasWorkTime(message) {
+  RANGE_RE.lastIndex = 0;
+  return RANGE_RE.test(String(message || ""));
+}
+
+// Best-effort entry-date extraction for the deterministic add path. Returns an
+// ISO date string, or undefined (caller then defaults to today). Relative words
+// are resolved against `now` (UTC), matching the backend's todayISO().
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+export function parseEntryDate(message, now = new Date()) {
+  const m = String(message || "").toLowerCase();
+  const iso = (dt) => dt.toISOString().slice(0, 10);
+  const shift = (days) => { const x = new Date(now); x.setUTCDate(x.getUTCDate() + days); return iso(x); };
+
+  const explicit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (explicit) return explicit[1];
+  if (/\b(day before yesterday|parso)\b/.test(m)) return shift(-2);
+  if (/\b(yesterday|kal|kl)\b/.test(m)) return shift(-1);
+  if (/\b(today|aaj|abhi)\b/.test(m)) return iso(now);
+
+  // "15 may" / "15th may" / "may 15"
+  let dm = m.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/);
+  let day, mon;
+  if (dm) { day = +dm[1]; mon = MONTHS[dm[2]]; }
+  else {
+    dm = m.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b/);
+    if (dm) { mon = MONTHS[dm[1]]; day = +dm[2]; }
+  }
+  if (day != null && mon != null && day >= 1 && day <= 31) {
+    const y = now.getUTCFullYear();
+    const cand = new Date(Date.UTC(y, mon, day));
+    // If that date is in the future, assume last year (logged work is past).
+    if (cand > now) cand.setUTCFullYear(y - 1);
+    return iso(cand);
+  }
+  return undefined;
+}
