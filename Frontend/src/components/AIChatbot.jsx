@@ -299,7 +299,8 @@ export default function AIChatbot() {
           {/* Chat Content Window Pane */}
           <div 
             ref={scrollRef}
-            className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800"
+            // className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 selection:bg-indigo-500/40 text-slate-300"
+            className="flex-1 overflow-y-auto bg-[#0b0f19] p-5 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 select-text selection:bg-red-600 selection:text-white text-slate-300"
           >
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center">
