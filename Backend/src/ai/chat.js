@@ -200,6 +200,19 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             // dead-ending with "no workable entries". The user just replies with
             // a time next, which the deterministic parser then logs.
             if (selectedProject) {
+                // A comma-separated list of several tasks needs a time for EACH —
+                // guide the user to the "time task, time task" format the parser
+                // logs in one go. A single task just needs one time.
+                const looksMultiTask = (cleanMessage.match(/,/g) || []).length >= 2;
+                if (looksMultiTask) {
+                    return {
+                        reply:
+                            `Got it — these will go under "${selectedProject}". I just need a time for each task. ` +
+                            `Re-send them with times, e.g.:\n` +
+                            `"8:30-10:30 dataset cleanup, 10:30-12 model training, 1-2 lunch, 2-4 chatbot work"\n` +
+                            `(Each block max 2 hours; "lunch" is skipped automatically.)`,
+                    };
+                }
                 return {
                     reply: `Got it — I'll log this under "${selectedProject}". What time did you work on it? e.g. "9 to 11" or "2pm to 4pm".`,
                 };

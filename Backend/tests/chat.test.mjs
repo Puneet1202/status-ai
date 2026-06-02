@@ -19,6 +19,12 @@ test('missing-time + project selected → asks for time (no dead-end)', async ()
   assert.match(r.reply, /AI Project/);
 });
 
+test('multi-task list without time → asks for a time per task (with example)', async () => {
+  const r = await aiChat(noAI, 1, 'dataset cleanup, model training, lunch, chatbot work', [], 'AI Project');
+  assert.match(r.reply, /time for each/i);
+  assert.match(r.reply, /max 2 hours/i);
+});
+
 test('multi-turn: thin follow-up borrows description from previous message', async () => {
   const history = [{ role: 'user', content: 'today i worked on the dashboard' }];
   const r = await aiChat(noAI, 1, '9 to 11', history, 'AI Project');
