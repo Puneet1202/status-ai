@@ -30,6 +30,40 @@ const STRONG_GET = /\b(show|list|view|fetch|display|history|report|summary|how m
 const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
 
 // =========================================================================
+// 🔗 MULTI-TURN DESCRIPTION CARRY
+// When a follow-up message is basically just a time ("9 to 11"), the parsed
+// description is thin ("Work"). Borrow the real description from the user's
+// previous intent message ("today I worked on the dashboard" → "9 to 11").
+// =========================================================================
+const THIN_DESC = /^(work|work update|task|stuff)$/i;
+const isThinDesc = (d) => !d || THIN_DESC.test(d.trim()) || d.trim().split(/\s+/).length < 2;
+
+function cleanPrevDesc(text) {
+    const s = String(text || '')
+        .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)?\s*(?:to|till|-|–|—|→|se)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, ' ')
+        .replace(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/gi, ' ')
+        .replace(/\b(today|yesterday|aaj|kal|abhi|now)\b/gi, ' ')
+        .replace(/^\s*(i have|i've|i|so|and|then|maine|me ne)\b/i, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return s.split(/\s+/).filter(Boolean).length >= 2 ? s.charAt(0).toUpperCase() + s.slice(1) : null;
+}
+
+function enrichThinDescriptions(entries, history) {
+    if (!entries.length || !entries.every((e) => isThinDesc(e.task_description))) return;
+    // most recent prior USER message that's a description (no leading time, ≥3 words, not a question)
+    const prev = [...history].reverse().find(
+        (h) => h && h.role === 'user' && typeof h.content === 'string'
+            && !/^\s*\d/.test(h.content.trim())
+            && h.content.trim().split(/\s+/).length >= 3
+            && !/\?\s*$/.test(h.content.trim())
+    );
+    if (!prev) return;
+    const desc = cleanPrevDesc(prev.content);
+    if (desc) entries.forEach((e) => { if (isThinDesc(e.task_description)) e.task_description = desc; });
+}
+
+// =========================================================================
 // 🛡️ Stack-based deterministic JSON parser — defense-in-depth for the rare
 // case where tool-call arguments come back truncated/with trailing noise.
 // =========================================================================
@@ -99,7 +133,7 @@ function buildSlidingWindow(history) {
     }));
 }
 
-export async function aiChat(env, userId, message, history = []) {
+export async function aiChat(env, userId, message, history = [], selectedProject = null) {
     try {
         const cleanMessage = (message || '').trim();
 
@@ -134,6 +168,9 @@ export async function aiChat(env, userId, message, history = []) {
             // HYBRID: LLM understands any format → regex fallback → handler validates.
             const { entries, source } = await extractWorkBlocks(cleanMessage, env);
             if (entries.length > 0) {
+                // Multi-turn: borrow a real description from the previous message
+                // when this one was basically just a time.
+                enrichThinDescriptions(entries, history);
                 const entry_date = parseEntryDate(cleanMessage);
                 console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
                 return {
@@ -155,6 +192,16 @@ export async function aiChat(env, userId, message, history = []) {
                 return {
                     reply:
                         "I couldn't read the time blocks in that one. Could you re-send in a clearer format? e.g. \"9-11 API work\" or \"9 to 11 fixed login bug; 2 to 4 testing\".",
+                };
+            }
+
+            // Work intent but NO time given AND a project is selected → ask for
+            // the time conversationally (natural multi-turn flow) instead of
+            // dead-ending with "no workable entries". The user just replies with
+            // a time next, which the deterministic parser then logs.
+            if (selectedProject) {
+                return {
+                    reply: `Got it — I'll log this under "${selectedProject}". What time did you work on it? e.g. "9 to 11" or "2pm to 4pm".`,
                 };
             }
         }

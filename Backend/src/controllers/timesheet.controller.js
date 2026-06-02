@@ -163,7 +163,7 @@ export const aiChatHandler = async (c) => {
         }
 
         // ── Single AI round-trip → tool call or conversational reply ──
-        const result = await aiChat(c.env, user.id, message, history);
+        const result = await aiChat(c.env, user.id, message, history, selectedProject);
 
         if (result.action) {
             const out = await dispatchTool(result.action.name, result.action.data, ctx);

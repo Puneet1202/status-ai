@@ -116,12 +116,12 @@ export default function AIChatbot() {
     const val = e.target.value;
     setInputValue(val);
 
-    // Backspace se clean check
+    // Emptying the input only closes the dropdowns — the selected project/tasks
+    // stay (sticky) so a follow-up like "9 to 11" still has its context.
     if (val.trim() === '') {
-      setActiveContext(null);       
-      setShowContextDropdown(false); 
-      setShowTaskDropdown(false);    
-      return; 
+      setShowContextDropdown(false);
+      setShowTaskDropdown(false);
+      return;
     }
 
     const cursorPos = e.target.selectionStart; 
@@ -263,8 +263,8 @@ export default function AIChatbot() {
     setMessages(prev => [...prev, userPayload]);
     setInputValue('');
     setIsLoading(true);
-    setActiveContext(null); 
-    
+    // Project (+tasks) stay STICKY across messages so multi-turn logging works
+    // ("today dashboard work" → "9 to 11"). User switches via @ or the pill's X.
     setShowContextDropdown(false);
     setShowTaskDropdown(false);
 
