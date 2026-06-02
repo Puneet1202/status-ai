@@ -189,3 +189,46 @@ export const getProjects = async (c) => {
         return c.json({ success: false, message: "Failed to fetch projects" }, 500);
     }
 };
+
+
+
+// =========================================================================
+// ⭐ NEW CONTROLLER ACTION: Fetch Project Specific Tasks Dynamically
+// =========================================================================
+// Yeh function tab chalega jab frontend se request aayegi. 
+// 'c' ka matlab hai Hono ka Context, jisme Request aur Environment variables hote hain.
+export const getProjectTasksController = async (c) => {
+  
+  // 👉 LINE 1: Frontend jo URL bhejega (like /projects/2/tasks), usme se hum 'id' (Project ID) nikaal rahe hain
+  const projectId = c.req.param('id'); 
+  
+  // Telemetry: Server ke console mein print karega ki kis project ke liye request aayi hai
+  console.log("==> Controller Triggered for Project ID:", projectId);
+
+  try {
+    // 👉 LINE 2: Cloudflare D1 Remote Database se connect karke query taiyaar kar rahe hain
+    // Hum bol rahe hain: "project_tasks table se id aur task_name nikaalo jahan project_id matches"
+    const queryPrepare = c.env.DB.prepare(
+      "SELECT id, task_name FROM project_tasks WHERE project_id = ?"
+    );
+
+    // 👉 LINE 3: Query ke andar actual projectId ko bind (fit) kar rahe hain aur saara data (.all()) nikaal rahe hain
+    const { results } = await queryPrepare.bind(projectId).all();
+    
+    // 👉 LINE 4: Agar sab sahi raha, toh frontend ko 200 OK status ke sath ekdum saaf JSON data bhej rahe hain
+    return c.json({ 
+      success: true, 
+      tasks: results // Isme saare tasks ki array hogi (like ['UI Design', 'Bug Fix'])
+    }, 200);
+
+  } catch (error) {
+    // 👉 LINE 5: Agar database fail hota hai ya koi crash hota hai, toh error yahan pakda jayega
+    console.error("❌ CLOUD D1 ERROR OCCURRED:", error);
+    
+    // 👉 LINE 6: Frontend ko safe error response bhejenge taaki user ki screen freeze na ho
+    return c.json({ 
+      success: false, 
+      error: "Database se tasks fetch karne mein koi dikkat aayi hai." 
+    }, 500);
+  }
+};
