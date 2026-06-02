@@ -292,9 +292,15 @@ export default function AIChatbot() {
         signal: controller.signal,
       });
 
-      if (!response.ok) throw new Error('Data payload tracking error');
+      // Parse body FIRST (works for both ok and error responses)
+      const data = await response.json().catch(() => ({}));
 
-      const data = await response.json();
+      if (!response.ok) {
+        // Show the actual backend error message, not a generic string
+        const errMsg = data?.message || data?.reply || `Server error (${response.status}). Please try again.`;
+        throw new Error(errMsg);
+      }
+
       setPendingAction(data.pendingAction ?? null);
 
       setMessages(prev => [...prev, {
@@ -308,7 +314,9 @@ export default function AIChatbot() {
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         role: 'assistant',
-        content: aborted ? "Request timed out. Please try again." : "Telemetry processing failed. Ensure your backend is operational.",
+        content: aborted
+          ? "Request timed out. Please try again."
+          : (error?.message || "Something went wrong. Please try again."),
         error: true,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }]);
@@ -470,13 +478,13 @@ export default function AIChatbot() {
               {activeContext && (
                 <div className="flex shrink-0 items-center gap-2 w-full overflow-x-auto style-scrollbar-none pb-1">
                   
-                  {/* 1. PROJECT PILL (Yeh udane par sab udd jayega) */}
+                  {/* 1. PROJECT PILL (Yeh udane par sab udd jayega + task dropdown band hoga) */}
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-3 py-1.5 text-[11px] font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20 whitespace-nowrap">
                     <Database size={12} className="text-indigo-500" />
                     {activeContext.name}
                     <button 
                       type="button" 
-                      onClick={() => setActiveContext(null)} 
+                      onClick={() => { setActiveContext(null); setShowTaskDropdown(false); }} 
                       className="ml-1 rounded-full hover:bg-indigo-500/20 p-0.5 hover:text-white shrink-0 transition-colors"
                     >
                       <X size={12} />

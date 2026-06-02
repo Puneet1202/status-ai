@@ -7,7 +7,7 @@ const name = "delete_timesheet";
 const schema = {
   name,
   description:
-    "Delete a timesheet entry. Locates the target by id, or by project/task description, or falls back to the user's most recent entry. Always confirms before deleting.",
+    "Delete a timesheet entry. Locates the target by id, or by project/task/date, or falls back to the user's most recent entry. Always confirms before deleting.",
   parameters: {
     type: "object",
     properties: {
@@ -22,6 +22,10 @@ const schema = {
       task_description: {
         type: "string",
         description: "Optional. Task text to match the entry to delete.",
+      },
+      match_date: {
+        type: "string",
+        description: "Optional. Date (YYYY-MM-DD) of the entry to delete. Use this when user mentions a specific date like 'yesterday', 'Monday', etc.",
       },
     },
   },
@@ -44,7 +48,7 @@ async function handler(ctx, data) {
       .first();
   }
 
-  if (!matchLog && (data.project_name?.trim() || data.task_description?.trim())) {
+  if (!matchLog && (data.project_name?.trim() || data.task_description?.trim() || data.match_date?.trim())) {
     let q = `SELECT ${SELECT_COLS} FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = ?`;
     const b = [user.id];
     if (data.project_name?.trim()) {
@@ -54,6 +58,10 @@ async function handler(ctx, data) {
     if (data.task_description?.trim()) {
       q += ` AND d.task_description LIKE ?`;
       b.push(`%${data.task_description.trim()}%`);
+    }
+    if (data.match_date?.trim()) {
+      q += ` AND d.entry_date = ?`;
+      b.push(data.match_date.trim());
     }
     q += ` ORDER BY d.created_at DESC LIMIT 1`;
     matchLog = await db.prepare(q).bind(...b).first();

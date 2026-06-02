@@ -5,10 +5,12 @@ import { aiChat } from '../ai/chat.js';
 import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
 import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
+import { logInteraction, getAnalyticsSummary } from '../ai/analytics.js';
 import {
     getOrCreateProjectId,
     calcEndTime,
     calcMinutesFromTimes,
+    detectOverlap,
     todayISO,
 } from '../ai/tools/_helpers.js';
 
@@ -42,6 +44,22 @@ export const addTimesheetEntry = async (c) => {
         if (parseInt(duration_minutes, 10) > 120) {
             return c.json({
                 message: "Validation Error: You cannot log a manual entry exceeding 2 hours (120 mins) at once. Please split your work into smaller slots.",
+                success: false
+            }, 400);
+        }
+
+        // ⛔ OVERLAP CHECK: Same employee, same date — no overlapping entries allowed
+        const existing = await db
+            .prepare(`SELECT start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?`)
+            .bind(employeeId, entry_date)
+            .all();
+        const existingEntries = (existing.results || []).map(r => ({ start_time: r.start_time, end_time: r.end_time }));
+        const newEntry = { start_time, end_time };
+        const overlap = detectOverlap([...existingEntries, newEntry]);
+        if (overlap) {
+            const [a, b] = overlap;
+            return c.json({
+                message: `Time conflict: ${a.start_time}–${a.end_time} overlaps with ${b.start_time}–${b.end_time}. Please adjust your times.`,
                 success: false
             }, 400);
         }
@@ -154,10 +172,27 @@ export const aiChatHandler = async (c) => {
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
         if (isConfirming && pendingAction?.action === "DELETE_TIMESHEET") {
+            // 🔒 Security: Re-verify the entry still belongs to THIS user before deleting.
+            // The pendingAction.matchId came from the client — always re-check ownership.
+            const ownerCheck = await db
+                .prepare("SELECT id FROM daily_status_entries WHERE id = ? AND employee_id = ?")
+                .bind(pendingAction.matchId, user.id)
+                .first();
+            if (!ownerCheck) {
+                return c.json({ reply: "That entry was not found or you don't have permission to delete it.", success: false }, 403);
+            }
             const out = await executeDelete(ctx, pendingAction);
             return c.json(out, 200);
         }
         if (isConfirming && pendingAction?.action === "UPDATE_TIMESHEET") {
+            // 🔒 Security: Re-verify ownership before updating.
+            const ownerCheck = await db
+                .prepare("SELECT id FROM daily_status_entries WHERE id = ? AND employee_id = ?")
+                .bind(pendingAction.matchId, user.id)
+                .first();
+            if (!ownerCheck) {
+                return c.json({ reply: "That entry was not found or you don't have permission to update it.", success: false }, 403);
+            }
             const out = await executeUpdate(ctx, pendingAction);
             return c.json(out, 200);
         }
@@ -167,9 +202,13 @@ export const aiChatHandler = async (c) => {
 
         if (result.action) {
             const out = await dispatchTool(result.action.name, result.action.data, ctx);
+            // Log the interaction for analytics (non-blocking, best-effort)
+            logInteraction(db, user.id, message, out, result.action.name);
             return c.json(out, 200);
         }
 
+        // Log conversational / no-action turns too
+        logInteraction(db, user.id, message, result, null);
         return c.json(result, 200);
 
     } catch (error) {
@@ -232,5 +271,27 @@ export const getProjectTasksController = async (c) => {
       success: false, 
       error: "Could not fetch tasks for this project. Please try again."
     }, 500);
+  }
+};
+
+// =========================================================================
+// ⭐ ANALYTICS — Admin dashboard ke liye AI interaction stats
+// GET /api/timesheet/admin/analytics?days=7
+// =========================================================================
+export const getAnalyticsHandler = async (c) => {
+  try {
+    const currentUser = c.get('user');
+    if (currentUser.role !== 'admin') {
+      return c.json({ message: 'Access denied: Admin only', success: false }, 403);
+    }
+
+    const days = parseInt(c.req.query('days') || '7', 10);
+    const db = c.env.DB;
+    const summary = await getAnalyticsSummary(db, days);
+
+    return c.json({ success: true, days, ...summary }, 200);
+  } catch (error) {
+    console.error('[Analytics Handler Error]:', error);
+    return c.json({ success: false, message: 'Failed to fetch analytics' }, 500);
   }
 };

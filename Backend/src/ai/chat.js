@@ -17,17 +17,38 @@ import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-c
 // Used to decide when we can settle a turn in code (reliable) vs. hand it to
 // the flaky model. Add is the hot path → parsed deterministically below.
 // =========================================================================
-const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
-// Conservative on purpose: only fire on phrases that clearly mean "edit an
-// EXISTING logged entry" — NOT common work verbs like "fix"/"change" which
-// appear in normal descriptions ("9-10 fix the ui bugs" is an ADD, not an edit).
-const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)/i;
-// STRONG_GET = read verbs only (NOT date words) — used to keep an obvious
-// history query from being parsed as an add. "log yesterday 9-11" has a date
-// word but no read verb, so it stays an ADD.
-const STRONG_GET = /\b(show|list|view|fetch|display|history|report|summary|how many|how much|kitne|kitna|total hours|fetch my|my logs)\b/i;
+const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do|hatao|mita|delete karo|remove karo)\b/i;
+
+// UPDATE_INTENT: fires on phrases that clearly mean editing an ALREADY SAVED entry.
+// Intentionally broad to catch natural Hinglish variants.
+// Excluded: work verbs like "fix"/"change" used inside task descriptions
+// (e.g. "9-10 fix the ui bugs" = ADD, not UPDATE) — these are caught by the
+// leading \d guard: if a digit precedes the word, it's a task desc, not an edit intent.
+const UPDATE_INTENT = new RegExp(
+  // English edit verbs + optional target noun
+  '\\b(?:update|edit|correct|modify|change|fix|adjust)\\s+(?:the |my |that |this |previous |last |woh |us )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot|block)\\b' +
+  // "actually it was", "made a mistake", "wrong time/entry"
+  '|\\bactually(?:\\s+it)?\\s+was\\b' +
+  '|\\bmade\\s+a\\s+mistake\\b' +
+  '|\\bwrong\\s+(?:time|entry|slot|log|task|project)\\b' +
+  // Hinglish galti/mistake phrases
+  '|\\bgalti\\s+(?:se|ho\\s+gayi|tha|thi)\\b' +
+  '|\\bgalat\\s+(?:time|entry|log|daal|daala|daali|kar\\s+diya|tha|thi)\\b' +
+  // "woh badlo", "badal do", "sahi karo", "theek karo"
+  '|\\b(?:badlo|badal\\s+do|sahi\\s+karo|theek\\s+karo|sahi\\s+kar|theek\\s+kar|change\\s+kar|change\\s+karo)\\b' +
+  // "entry fix karo", "entry sahi karo"
+  '|\\bentry\\s+(?:fix|sahi|theek|badal|change)\\b' +
+  // "galti se add/log kiya"
+  '|\\bgalti\\s+se\\s+(?:add|log|likh|daal)\\b',
+  'i'
+);
+
+// STRONG_GET = read verbs only — used to keep an obvious history query from
+// being parsed as an add. "log yesterday 9-11" has a date word but no read verb,
+// so it stays an ADD.
+const STRONG_GET = /\b(show|list|view|fetch|display|history|report|summary|how many|how much|kitne|kitna|total hours|fetch my|my logs|dikhao|batao|dekh|dekho)\b/i;
 // Broad signal — used only to gate the model's get_timesheet call (anti-hallucination).
-const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
+const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|dikhao|batao|\d{4}-\d{2}-\d{2})\b/i;
 
 // =========================================================================
 // 🔗 MULTI-TURN DESCRIPTION CARRY

@@ -2,7 +2,7 @@
 // KAAM: Clean Route Mapping for Timesheet Infrastructure Pipeline
 
 import { Hono } from 'hono';
-import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler, getProjects,getProjectTasksController } from '../controllers/timesheet.controller.js';
+import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler, getProjects, getProjectTasksController, getAnalyticsHandler } from '../controllers/timesheet.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const timesheetRouter = new Hono();
@@ -23,5 +23,7 @@ timesheetRouter.get('/projects', authMiddleware, getProjects);
 // Route sirf url map karega, asli kaam controller karega
 timesheetRouter.get('/projects/:id/tasks', authMiddleware, getProjectTasksController);
 
+// Admin: AI interaction analytics — GET /api/timesheet/admin/analytics?days=7
+timesheetRouter.get('/admin/analytics', authMiddleware, getAnalyticsHandler);
 
 export default timesheetRouter;

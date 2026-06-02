@@ -68,18 +68,41 @@ function resolveWithin(hour, minute, meridiem, dayStart, dayEnd) {
 }
 
 const MODULE_RULES = [
-  [/\btest|qa|scenario\b/i, "TESTING"],
-  [/\bbug|fix|defect|issue\b/i, "BUG_FIXING"],
-  [/\bmeet|sync|standup|stand-up|call|1:1|catch ?up\b/i, "MEETING"],
-  [/\breview|pr\b/i, "CODE_REVIEW"],
-  [/\bdeploy|release|ship\b/i, "DEPLOYMENT"],
-  [/\bresearch|investigat|explore|spike\b/i, "RESEARCH"],
-  [/\bdoc|documentation|write-?up\b/i, "DOCUMENTATION"],
-  [/\bdesign|architect\b/i, "DESIGN"],
-  [/\bapi|backend|server\b/i, "API_DEVELOPMENT"],
-  [/\bui|ux|frontend|front-end\b/i, "UI_DEVELOPMENT"],
-  [/\bdb|database|migration|sql\b/i, "DATABASE"],
-  [/\bsupport|on-?call\b/i, "SUPPORT"],
+  // Testing & QA
+  [/\btest(?:ing|s|ed)?|qa|quality\s+assurance|scenario|e2e|regression|unit\s+test\b/i, "TESTING"],
+  // Bug work
+  [/\bbug|fix(?:ing|ed)?|defect|issue|hotfix|patch\b/i, "BUG_FIXING"],
+  // Meetings — subdivided for richer data
+  [/\bstandup|stand-?up|daily\s+sync|scrum\s+call\b/i, "STANDUP_MEETING"],
+  [/\bretro(?:spective)?\b/i, "RETROSPECTIVE"],
+  [/\bsprint\s+(?:planning|review|grooming|kickoff)\b/i, "SPRINT_PLANNING"],
+  [/\b1:1|one.on.one|1-on-1|manager\s+(?:call|sync|meeting)\b/i, "MANAGER_MEETING"],
+  [/\bclient\s+(?:call|meeting|demo|presentation|sync)\b/i, "CLIENT_MEETING"],
+  [/\bdemo\b|\bpresent(?:ation|ing)?\b/i, "DEMO"],
+  [/\bmeet(?:ing|ings)?|sync|call\b/i, "MEETING"],
+  [/\bcatch\s*up\b/i, "MEETING"],
+  // Code work
+  [/\breview|pr\b|pull\s+request\b/i, "CODE_REVIEW"],
+  // DevOps — BEFORE deployment: 'kubernetes deployment' should be DEVOPS not DEPLOYMENT
+  [/\bci\b|\bcd\b|pipeline|docker|kubernetes|k8s|infra\b/i, "DEVOPS"],
+  [/\bdeploy|release|ship(?:ping|ped)?\b/i, "DEPLOYMENT"],
+  [/\brefactor(?:ing)?\b/i, "REFACTORING"],
+  [/\bintegrat(?:ion|ing|e)\b/i, "INTEGRATION"],
+  // Research & Learning
+  [/\bresearch|investigat|explore|spike|poc\b/i, "RESEARCH"],
+  [/\blearn(?:ing)?|training|onboard(?:ing)?\b/i, "LEARNING"],
+  // Documentation
+  [/\bdoc(?:ument(?:ation|ing|ed)?)?|write-?up|readme\b/i, "DOCUMENTATION"],
+  // Design
+  [/\bdesign|architect(?:ure)?|wireframe|figma|mockup\b/i, "DESIGN"],
+  // Backend / API
+  [/\bapi|backend|server|endpoint|microservice\b/i, "API_DEVELOPMENT"],
+  // Frontend / UI
+  [/\bui|ux|frontend|front-end|component|css|html|react\b/i, "UI_DEVELOPMENT"],
+  // Database
+  [/\bdb|database|migration|sql|query\b/i, "DATABASE"],
+  // Support
+  [/\bsupport|on-?call|helpdesk|ticket\b/i, "SUPPORT"],
 ];
 
 export function deriveModule(label) {
@@ -275,18 +298,34 @@ export function hasWorkTime(message) {
 
 // Best-effort entry-date extraction for the deterministic add path. Returns an
 // ISO date string, or undefined (caller then defaults to today). Relative words
-// are resolved against `now` (UTC), matching the backend's todayISO().
+// are resolved against the IST-local date (UTC+5:30) so Indian users logging
+// work at 11:30 PM IST correctly get TODAY's date, not yesterday's UTC date.
+//
+// WHY IST: Cloudflare Workers run in UTC. At 11:30 PM IST, UTC is 6:00 PM the
+// SAME day, so UTC gives the correct date in that case. But at 00:30 AM IST
+// (just after midnight), UTC is 7:00 PM the PREVIOUS day — so "aaj" would map
+// to yesterday's UTC date. IST-offset fixes this for the 00:00–05:29 IST window.
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
+
 export function parseEntryDate(message, now = new Date()) {
+  // Shift `now` to IST-local time for relative date resolution.
+  const nowIST = new Date(now.getTime() + IST_OFFSET_MS);
   const m = String(message || "").toLowerCase();
+  // iso() always outputs YYYY-MM-DD from a UTC-perspective Date object.
   const iso = (dt) => dt.toISOString().slice(0, 10);
-  const shift = (days) => { const x = new Date(now); x.setUTCDate(x.getUTCDate() + days); return iso(x); };
+  // shift() moves days relative to the IST date, not UTC.
+  const shift = (days) => {
+    const x = new Date(nowIST);
+    x.setUTCDate(x.getUTCDate() + days);
+    return iso(x);
+  };
 
   const explicit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (explicit) return explicit[1];
   if (/\b(day before yesterday|parso)\b/.test(m)) return shift(-2);
   if (/\b(yesterday|kal|kl)\b/.test(m)) return shift(-1);
-  if (/\b(today|aaj|abhi)\b/.test(m)) return iso(now);
+  if (/\b(today|aaj|abhi)\b/.test(m)) return iso(nowIST); // IST-local today
 
   // "15 may" / "15th may" / "may 15"
   let dm = m.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/);
@@ -297,10 +336,10 @@ export function parseEntryDate(message, now = new Date()) {
     if (dm) { mon = MONTHS[dm[1]]; day = +dm[2]; }
   }
   if (day != null && mon != null && day >= 1 && day <= 31) {
-    const y = now.getUTCFullYear();
+    const y = nowIST.getUTCFullYear(); // use IST-local year
     const cand = new Date(Date.UTC(y, mon, day));
     // If that date is in the future, assume last year (logged work is past).
-    if (cand > now) cand.setUTCFullYear(y - 1);
+    if (cand > nowIST) cand.setUTCFullYear(y - 1);
     return iso(cand);
   }
   return undefined;
