@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS daily_status_entries (
     end_time TEXT NOT NULL,
     duration_minutes INTEGER,
     task_description TEXT NOT NULL,
-    module_name TEXT DEFAULT NULL, -- ⭐ Selected task string isi mein save hogi
+    task_name TEXT DEFAULT NULL,   -- ⭐ User-selected predefined project task(s) — joined with " | "
+    module_name TEXT DEFAULT NULL, -- AI auto-derived work category (e.g. BUG_FIXING)
     is_email_sent TEXT CHECK(is_email_sent IN ('true', 'false')) DEFAULT 'false',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),

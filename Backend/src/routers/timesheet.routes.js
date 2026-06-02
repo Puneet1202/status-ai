@@ -21,7 +21,7 @@ timesheetRouter.get('/projects', authMiddleware, getProjects);
 
 
 // Route sirf url map karega, asli kaam controller karega
-timesheetRouter.get('/projects/:id/tasks', getProjectTasksController);
+timesheetRouter.get('/projects/:id/tasks', authMiddleware, getProjectTasksController);
 
 
 export default timesheetRouter;

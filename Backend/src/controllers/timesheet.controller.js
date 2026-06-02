@@ -143,11 +143,13 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [] } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
-        const ctx = { db, user, env: c.env, selectedProject, today: todayISO() };
+        // selectedTasks: the predefined project tasks the user ticked in the UI.
+        // These become each saved entry's module_name (see addTimesheet handler).
+        const ctx = { db, user, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO() };
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -228,7 +230,7 @@ export const getProjectTasksController = async (c) => {
     // 👉 LINE 6: Frontend ko safe error response bhejenge taaki user ki screen freeze na ho
     return c.json({ 
       success: false, 
-      error: "Database se tasks fetch karne mein koi dikkat aayi hai." 
+      error: "Could not fetch tasks for this project. Please try again."
     }, 500);
   }
 };

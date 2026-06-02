@@ -49,10 +49,10 @@ var require_crypto = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-VGz0II/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-opeRsl/middleware-loader.entry.ts
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-VGz0II/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-opeRsl/middleware-insertion-facade.js
 init_modules_watch_stub();
 
 // src/index.js
@@ -5278,12 +5278,13 @@ var schema = {
   }
 };
 async function handler(ctx, data) {
-  const { db, user, selectedProject, today } = ctx;
+  const { db, user, selectedProject, selectedTasks, today } = ctx;
   try {
     const targetProjectName = selectedProject || data.project_name;
     if (!targetProjectName) {
       return { reply: "Please select a project first! Type '@' to choose." };
     }
+    const taskModule = Array.isArray(selectedTasks) && selectedTasks.length > 0 ? selectedTasks.map((t) => String(t).trim()).filter(Boolean).join(" | ") : null;
     const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
     if (!hasEntries && !data.task_description) {
       return { reply: "Please describe what you worked on." };
@@ -5346,8 +5347,8 @@ ${problems.join("\n")}` };
     const statements = valid.map(
       (entry) => db.prepare(
         `INSERT INTO daily_status_entries
-         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         user.id,
         projectId,
@@ -5356,7 +5357,10 @@ ${problems.join("\n")}` };
         entry.end_time,
         entry._mins,
         (entry.module_name || "GENERAL").toUpperCase().trim(),
-        entry.task_description?.trim() || "Work update"
+        // module = AI auto-derived (unchanged)
+        entry.task_description?.trim() || "Work update",
+        taskModule
+        // task_name = user-ticked task(s), or null when none selected
       )
     );
     await db.batch(statements);
@@ -5364,7 +5368,7 @@ ${problems.join("\n")}` };
       (e) => `\u2022 ${e.start_time} \u2192 ${e.end_time} (${(e._mins / 60).toFixed(1)} hrs) \u2014 ${e.task_description}`
     ).join("\n");
     const totalMins = valid.reduce((sum, e) => sum + e._mins, 0);
-    let reply = `\u2705 ${valid.length} ${valid.length === 1 ? "entry" : "entries"} saved under "${targetProjectName}" for ${entryDate}.
+    let reply = `\u2705 ${valid.length} ${valid.length === 1 ? "entry" : "entries"} saved under "${targetProjectName}"${taskModule ? ` \xB7 \u{1F3F7}\uFE0F ${taskModule}` : ""} for ${entryDate}.
 
 ${summaryLines}
 
@@ -6419,7 +6423,20 @@ async function aiChat(env, userId, message, history = []) {
       const args = safeParseArgs(toolCall.arguments);
       return { action: { name: toolCall.name, data: args } };
     }
-    const reply = typeof toolResponse === "string" ? toolResponse : toolResponse?.response || "Could you clarify your request? e.g. 'Log 9 to 11 on Project-X' or 'Show my hours this week'.";
+    const textOut = typeof toolResponse === "string" ? toolResponse : toolResponse?.response || "";
+    if (/add_timesheet_entries|"type"\s*:\s*"function"/i.test(textOut)) {
+      try {
+        const parsed = safeParseArgs(textOut);
+        const data = parsed?.parameters || parsed;
+        if (data && Array.isArray(data.entries) && data.entries.length > 0) {
+          console.log("[salvaged text tool-call]", JSON.stringify(data.entries));
+          return { action: { name: "add_timesheet_entries", data } };
+        }
+      } catch {
+      }
+      return { reply: 'Got it \u2014 just tell me the time and what you worked on, e.g. "9-11 fixed the login bug".' };
+    }
+    const reply = textOut || "Could you clarify your request? e.g. 'Log 9 to 11 on Project-X' or 'Show my hours this week'.";
     return { reply };
   } catch (err) {
     if (String(err?.message).includes("_TIMEOUT")) {
@@ -6530,9 +6547,9 @@ var aiChatHandler = /* @__PURE__ */ __name(async (c) => {
   try {
     const user = c.get("user");
     const db = c.env.DB;
-    const { message, history = [], pendingAction = null, selectedProject = null } = await c.req.json();
+    const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [] } = await c.req.json();
     if (!message) return c.json({ success: false, message: "Message required" }, 400);
-    const ctx = { db, user, env: c.env, selectedProject, today: todayISO() };
+    const ctx = { db, user, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO() };
     const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
     if (isConfirming && pendingAction?.action === "DELETE_TIMESHEET") {
       const out = await executeDelete(ctx, pendingAction);
@@ -6580,7 +6597,7 @@ var getProjectTasksController = /* @__PURE__ */ __name(async (c) => {
     console.error("\u274C CLOUD D1 ERROR OCCURRED:", error);
     return c.json({
       success: false,
-      error: "Database se tasks fetch karne mein koi dikkat aayi hai."
+      error: "Could not fetch tasks for this project. Please try again."
     }, 500);
   }
 }, "getProjectTasksController");
@@ -6592,7 +6609,7 @@ timesheetRouter.get("/admin/all-logs", authMiddleware, getAllTimesheetsAdmin);
 timesheetRouter.delete("/delete/:id", authMiddleware, deleteTimesheetEntry);
 timesheetRouter.post("/ai/chat", authMiddleware, aiChatHandler);
 timesheetRouter.get("/projects", authMiddleware, getProjects);
-timesheetRouter.get("/projects/:id/tasks", getProjectTasksController);
+timesheetRouter.get("/projects/:id/tasks", authMiddleware, getProjectTasksController);
 var timesheet_routes_default = timesheetRouter;
 
 // src/index.js
@@ -6636,7 +6653,7 @@ var drainBody = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "drainBody");
 var middleware_ensure_req_body_drained_default = drainBody;
 
-// .wrangler/tmp/bundle-VGz0II/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-opeRsl/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default
 ];
@@ -6668,7 +6685,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-VGz0II/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-opeRsl/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class ___Facade_ScheduledController__ {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

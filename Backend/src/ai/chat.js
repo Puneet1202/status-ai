@@ -191,10 +191,27 @@ export async function aiChat(env, userId, message, history = []) {
             return { action: { name: toolCall.name, data: args } };
         }
 
-        // No tool matched → conversational reply (already a trimmed string).
-        const reply = typeof toolResponse === 'string'
+        // No structured tool_call. Some models DESCRIBE the call in plain text
+        // (it leaks as raw JSON to the user AND nothing gets saved). Detect that
+        // and SALVAGE: pull the add args out and run them; otherwise show a clean
+        // hint. The raw function JSON is NEVER surfaced to the user.
+        const textOut = typeof toolResponse === 'string'
             ? toolResponse
-            : (toolResponse?.response || "Could you clarify your request? e.g. 'Log 9 to 11 on Project-X' or 'Show my hours this week'.");
+            : (toolResponse?.response || '');
+
+        if (/add_timesheet_entries|"type"\s*:\s*"function"/i.test(textOut)) {
+            try {
+                const parsed = safeParseArgs(textOut);
+                const data = parsed?.parameters || parsed;
+                if (data && Array.isArray(data.entries) && data.entries.length > 0) {
+                    console.log('[salvaged text tool-call]', JSON.stringify(data.entries));
+                    return { action: { name: 'add_timesheet_entries', data } };
+                }
+            } catch { /* fall through to a clean hint */ }
+            return { reply: "Got it — just tell me the time and what you worked on, e.g. \"9-11 fixed the login bug\"." };
+        }
+
+        const reply = textOut || "Could you clarify your request? e.g. 'Log 9 to 11 on Project-X' or 'Show my hours this week'.";
         return { reply };
 
     } catch (err) {

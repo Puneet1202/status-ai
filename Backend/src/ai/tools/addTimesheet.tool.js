@@ -72,14 +72,22 @@ const schema = {
   },
 };
 
-// ctx = { db, user, env, selectedProject, today }
+// ctx = { db, user, env, selectedProject, selectedTasks, today }
 async function handler(ctx, data) {
-  const { db, user, selectedProject, today } = ctx;
+  const { db, user, selectedProject, selectedTasks, today } = ctx;
   try {
   const targetProjectName = selectedProject || data.project_name;
   if (!targetProjectName) {
     return { reply: "Please select a project first! Type '@' to choose." };
   }
+
+  // If the user ticked predefined project tasks in the UI, those become the
+  // module_name for every saved block (joined when multiple). Otherwise fall
+  // back to the auto-derived module from the block's description.
+  const taskModule =
+    Array.isArray(selectedTasks) && selectedTasks.length > 0
+      ? selectedTasks.map((t) => String(t).trim()).filter(Boolean).join(" | ")
+      : null;
 
   const hasEntries = Array.isArray(data.entries) && data.entries.length > 0;
   if (!hasEntries && !data.task_description) {
@@ -177,8 +185,8 @@ async function handler(ctx, data) {
     db
       .prepare(
         `INSERT INTO daily_status_entries
-         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         user.id,
@@ -187,8 +195,9 @@ async function handler(ctx, data) {
         entry.start_time,
         entry.end_time,
         entry._mins,
-        (entry.module_name || "GENERAL").toUpperCase().trim(),
-        entry.task_description?.trim() || "Work update"
+        (entry.module_name || "GENERAL").toUpperCase().trim(), // module = AI auto-derived (unchanged)
+        entry.task_description?.trim() || "Work update",
+        taskModule // task_name = user-ticked task(s), or null when none selected
       )
   );
 
@@ -205,9 +214,9 @@ async function handler(ctx, data) {
 
   let reply = `✅ ${valid.length} ${
     valid.length === 1 ? "entry" : "entries"
-  } saved under "${targetProjectName}" for ${entryDate}.\n\n${summaryLines}\n\nTotal: ${(
-    totalMins / 60
-  ).toFixed(1)} hrs`;
+  } saved under "${targetProjectName}"${
+    taskModule ? ` · 🏷️ ${taskModule}` : ""
+  } for ${entryDate}.\n\n${summaryLines}\n\nTotal: ${(totalMins / 60).toFixed(1)} hrs`;
 
   if (problems.length > 0) {
     reply += `\n\n⚠️ Not saved — please fix and resend just these:\n${problems.join("\n")}`;
