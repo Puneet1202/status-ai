@@ -2,10 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseWorkBlocks } from '../src/ai/timeParser.js';
+import { matchProjectTask } from '../src/ai/tools/_helpers.js';
 import addTool from '../src/ai/tools/addTimesheet.tool.js';
 
 // Mock D1: records the bound values of every batched INSERT.
-function mockDb() {
+function mockDb(projectTasks = []) {
   const saved = [];
   return {
     saved,
@@ -15,6 +16,11 @@ function mockDb() {
         _args: null,
         bind(...a) { this._args = a; return this; },
         async first() { return /SELECT id FROM projects/.test(this._sql) ? { id: 1 } : null; },
+        async all() {
+          return /FROM project_tasks/.test(this._sql)
+            ? { results: projectTasks.map((t) => ({ task_name: t })) }
+            : { results: [] };
+        },
         async run() { return { meta: { changes: 1, last_row_id: 1 } }; },
       };
     },
@@ -26,7 +32,9 @@ function mockDb() {
     },
   };
 }
-const ctx = (over = {}) => ({ db: mockDb(), user: { id: 1 }, selectedProject: 'AI Project', selectedTasks: [], today: '2026-06-01', ...over });
+const ctx = ({ projectTasks = [], ...over } = {}) => ({
+  db: mockDb(projectTasks), user: { id: 1 }, selectedProject: 'AI Project', selectedTasks: [], today: '2026-06-01', ...over,
+});
 
 test('partial save: valid blocks saved, >2h block flagged', async () => {
   const c = ctx();
@@ -79,4 +87,27 @@ test('overlapping blocks are blocked (relational, nothing saved)', async () => {
   });
   assert.equal(c.db.saved.length, 0);
   assert.match(out.reply, /overlap/i);
+});
+
+test('matchProjectTask: confident keyword match, else null', () => {
+  const tasks = ['State Bug Fixes', 'UI Layout Refactoring', 'Prompt Tuning'];
+  assert.equal(matchProjectTask('fixed the state bug', tasks), 'State Bug Fixes');
+  assert.equal(matchProjectTask('refactored the ui layout', tasks), 'UI Layout Refactoring');
+  assert.equal(matchProjectTask('random unrelated thing', tasks), null);
+  assert.equal(matchProjectTask('9 to 11', []), null);
+});
+
+test('per-block task auto-assigned from project tasks (different task per slot)', async () => {
+  const c = ctx({ projectTasks: ['State Bug Fixes', 'UI Layout Refactoring'] });
+  await addTool.handler(c, { entries: parseWorkBlocks('9-10 fixed the state bug, 11-12 refactored the ui layout').entries });
+  assert.equal(c.db.saved.length, 2);
+  assert.equal(c.db.saved[0].task, 'State Bug Fixes');
+  assert.equal(c.db.saved[1].task, 'UI Layout Refactoring');
+});
+
+test('UI-ticked tasks override per-block matching (apply to all blocks)', async () => {
+  const c = ctx({ projectTasks: ['State Bug Fixes'], selectedTasks: ['Prompt Tuning'] });
+  await addTool.handler(c, { entries: parseWorkBlocks('9-10 fixed the state bug, 11-12 misc work').entries });
+  assert.equal(c.db.saved[0].task, 'Prompt Tuning');
+  assert.equal(c.db.saved[1].task, 'Prompt Tuning');
 });

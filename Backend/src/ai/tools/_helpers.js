@@ -101,3 +101,37 @@ export function detectOverlap(entries) {
   }
   return null;
 }
+
+// =========================================================================
+// Match a block's free-text description to the closest PREDEFINED project task.
+// Keyword-overlap based (no fuzzy/AI) — returns a task only on a confident match
+// (≥ half the task's significant words present), else null. This lets a per-slot
+// description ("9-10 fixed the state bug") map to a known task ("State Bug Fixes")
+// reliably, without ambiguous free-form parsing.
+// =========================================================================
+const TASK_STOP = new Set([
+  "the", "and", "for", "with", "was", "were", "this", "that", "some", "work",
+  "worked", "working", "did", "done", "on", "in", "to", "of", "a", "an", "my", "is",
+]);
+const sigWords = (s) =>
+  String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !TASK_STOP.has(w));
+
+export function matchProjectTask(description, tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return null;
+  const descWords = new Set(sigWords(description));
+  if (descWords.size === 0) return null;
+
+  let best = null;
+  let bestScore = 0;
+  for (const t of tasks) {
+    const tw = sigWords(t);
+    if (!tw.length) continue;
+    const overlap = tw.filter((w) => descWords.has(w)).length;
+    const score = overlap / tw.length; // fraction of the task's keywords present
+    if (overlap > 0 && score > bestScore) {
+      bestScore = score;
+      best = t;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}

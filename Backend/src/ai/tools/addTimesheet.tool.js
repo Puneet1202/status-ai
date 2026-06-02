@@ -8,6 +8,7 @@ import {
   isValidTime,
   isValidEntryDate,
   detectOverlap,
+  matchProjectTask,
   todayISO,
 } from "./_helpers.js";
 
@@ -180,9 +181,28 @@ async function handler(ctx, data) {
 
   const projectId = await getOrCreateProjectId(db, targetProjectName);
 
+  // Predefined tasks for this project — used to auto-assign a PER-BLOCK task from
+  // each slot's description when the user didn't explicitly tick tasks in the UI.
+  // (Boss's ask: "9-10 ye task, 11-12 wo task" — different task per time slot.)
+  let projectTasks = [];
+  if (!taskModule) {
+    try {
+      const res = await db
+        .prepare("SELECT task_name FROM project_tasks WHERE project_id = ?")
+        .bind(projectId)
+        .all();
+      projectTasks = (res.results || []).map((r) => r.task_name);
+    } catch {
+      projectTasks = [];
+    }
+  }
+
   // Parameterized batch insert — atomic over the VALID blocks only.
-  const statements = valid.map((entry) =>
-    db
+  const statements = valid.map((entry) => {
+    // task_name priority: UI-ticked tasks (apply to all blocks) → per-block match
+    // from this slot's description → null.
+    const taskName = taskModule || matchProjectTask(entry.task_description, projectTasks) || null;
+    return db
       .prepare(
         `INSERT INTO daily_status_entries
          (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name)
@@ -197,9 +217,9 @@ async function handler(ctx, data) {
         entry._mins,
         (entry.module_name || "GENERAL").toUpperCase().trim(), // module = AI auto-derived (unchanged)
         entry.task_description?.trim() || "Work update",
-        taskModule // task_name = user-ticked task(s), or null when none selected
-      )
-  );
+        taskName
+      );
+  });
 
   await db.batch(statements);
 
