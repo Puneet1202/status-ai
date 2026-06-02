@@ -8,7 +8,7 @@ import {
   Sparkles,
   Loader2,
   Trash2,
-  ListChecks // ⭐ NAYA CODE: Task ki list mein icon dikhane ke liye import kiya
+  ListChecks 
 } from 'lucide-react';
 
 const CHAT_HISTORY_KEY = 'keyss_chat_history';
@@ -35,10 +35,13 @@ export default function AIChatbot() {
   const [showContextDropdown, setShowContextDropdown] = useState(false);
   const [filteredProjects, setFilteredProjects] = useState([]);
 
-  // ⭐ NAYA CODE: Naye Task Popup ke States
+  // --- Naye Task Popup ke States ---
   const [showTaskDropdown, setShowTaskDropdown] = useState(false);
   const [availableTasks, setAvailableTasks] = useState([]);
   const [isFetchingTasks, setIsFetchingTasks] = useState(false);
+
+  // ⭐ SUPER FAST CACHE FIX: Yeh tere browser ki local dictionary hai jo tasks yaad rakhegi
+  const taskCache = useRef({});
 
   // --- Agent State ---
   const [pendingAction, setPendingAction] = useState(null);
@@ -99,8 +102,15 @@ export default function AIChatbot() {
     const val = e.target.value;
     setInputValue(val);
 
-    const cursorPos = e.target.selectionStart; 
+    // Agar input box ekdum khali ho gaya hai (backspace se)
+    if (val.trim() === '') {
+      setActiveContext(null);       
+      setShowContextDropdown(false); 
+      setShowTaskDropdown(false);    
+      return; 
+    }
 
+    const cursorPos = e.target.selectionStart; 
     const textBeforeCursor = val.slice(0, cursorPos);
     const words = textBeforeCursor.split(' ');
     const currentWord = words[words.length - 1]; 
@@ -112,13 +122,12 @@ export default function AIChatbot() {
       );
       setFilteredProjects(filtered);
       setShowContextDropdown(true);
-      setShowTaskDropdown(false); // ⭐ NAYA CODE: Naya @ type karne par task popup band ho jana chahiye
+      setShowTaskDropdown(false); 
     } else {
       setShowContextDropdown(false);
     }
   };
 
-  // ⭐ NAYA CODE: Async banaya taaki project select hote hi Task API call ho
   const selectContext = async (projectId, projectName) => {
     const textarea = inputRef.current;
     if (!textarea) return;
@@ -137,28 +146,36 @@ export default function AIChatbot() {
     setActiveContext({ id: projectId, name: projectName }); 
     setShowContextDropdown(false);
 
-    // ⭐ NAYA CODE: Project select hote hi Task API Fetch shuru karo
     setShowTaskDropdown(true);
-    setIsFetchingTasks(true);
 
-    try {
-      const token = localStorage.getItem('keyss_token');
-      // Hamara naya Hono backend route yahan call ho raha hai
-      const response = await fetch(`http://localhost:8787/api/timesheet/projects/${projectId}/tasks`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await response.json();
-      
-      if(data.success) {
-        setAvailableTasks(data.tasks);
-      } else {
-        setAvailableTasks([]);
-      }
-    } catch (error) {
-      console.error("D1 Task Fetch Error:", error);
-      setAvailableTasks([]);
-    } finally {
+    // ⭐ SUPER FAST CACHE FIX: Check karo ki kya data pehle se memory mein hai?
+    if (taskCache.current[projectId]) {
+      // Agar hai, toh instantly bina loader dikhaye render kar do (0ms delay)
+      setAvailableTasks(taskCache.current[projectId]);
       setIsFetchingTasks(false);
+    } else {
+      // Agar nahi hai, tabhi internet par jao aur loader dikhao
+      setIsFetchingTasks(true);
+      try {
+        const token = localStorage.getItem('keyss_token');
+        const response = await fetch(`http://localhost:8787/api/timesheet/projects/${projectId}/tasks`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await response.json();
+        
+        if(data.success) {
+          setAvailableTasks(data.tasks);
+          // ⭐ DATA SAVE: Naye data ko local memory mein save kar lo agli baar ke liye
+          taskCache.current[projectId] = data.tasks;
+        } else {
+          setAvailableTasks([]);
+        }
+      } catch (error) {
+        console.error("D1 Task Fetch Error:", error);
+        setAvailableTasks([]);
+      } finally {
+        setIsFetchingTasks(false);
+      }
     }
 
     setTimeout(() => {
@@ -168,19 +185,15 @@ export default function AIChatbot() {
     }, 10);
   };
 
-  // ⭐ NAYA CODE: Yeh naya function Task par click handle karega
   const selectTask = (taskName) => {
     const textarea = inputRef.current;
     if (!textarea) return;
 
-    // Purane text ke aage task ka naam jod do
     const newText = inputValue + taskName + " ";
     setInputValue(newText);
     
-    // Popup band kar do
     setShowTaskDropdown(false); 
 
-    // Focus wapas textarea par laao
     setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(newText.length, newText.length);
@@ -204,7 +217,6 @@ export default function AIChatbot() {
     setIsLoading(true);
     setActiveContext(null); 
     
-    // ⭐ NAYA CODE: Submit hone par sab popups safe reset karo
     setShowContextDropdown(false);
     setShowTaskDropdown(false);
 
@@ -384,7 +396,7 @@ export default function AIChatbot() {
               </div>
             )}
 
-            {/* ⭐ NAYA CODE: Context Floating Dropdown Panel (TASKS) */}
+            {/* Context Floating Dropdown Panel (TASKS) */}
             {showTaskDropdown && (
               <div className="absolute bottom-full left-4 right-4 mb-2 max-h-48 overflow-y-auto rounded-xl border border-emerald-700/50 bg-slate-900 shadow-[0_0_20px_rgba(16,185,129,0.15)] scrollbar-thin">
                 <div className="bg-emerald-900/30 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-emerald-400 sticky top-0 flex justify-between items-center border-b border-emerald-800/30">
