@@ -6,11 +6,62 @@
 // All reads/writes flow through parameterized tools in ./tools/*.
 
 import { askCloudflareAI } from './providers/cloudflare.js';
+import { askOpenAI } from './providers/openai.js';
+import { askGroq } from './providers/groq.js';
 import { getSystemPrompt, getCasualPrompt } from './tools.js';
 import { getToolSchemas } from './tools/index.js';
 import { parseEntryDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
-import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-config.js';
+import { AI_PROVIDER, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-config.js';
+
+// =========================================================================
+// 🔀 PROVIDER ROUTER — auto fallback chain: openai → groq → cloudflare
+// =========================================================================
+// Priority is set by AI_PROVIDER in ai-config.js:
+//   'openai'     → always use OpenAI (best accuracy)
+//   'groq'       → always use Groq (fastest, free)
+//   'cloudflare' → always use CF Workers AI (no extra key needed)
+//   'auto'       → pick the best available based on which keys exist in env
+// =========================================================================
+async function callAI(systemPrompt, message, history, env, tools) {
+    const provider = (AI_PROVIDER || 'auto').toLowerCase();
+
+    // Helper: try a provider and return result or null on failure
+    const tryProvider = async (name, fn) => {
+        try {
+            const result = await fn();
+            console.log(`[AI] Provider: ${name} ✓`);
+            return result;
+        } catch (err) {
+            console.warn(`[AI] Provider ${name} failed: ${err.message} — trying next...`);
+            return null;
+        }
+    };
+
+    // Explicit provider selection
+    if (provider === 'openai') {
+        return askOpenAI(systemPrompt, message, history, env, tools);
+    }
+    if (provider === 'groq') {
+        return askGroq(systemPrompt, message, history, env, tools);
+    }
+    if (provider === 'cloudflare') {
+        return askCloudflareAI(systemPrompt, message, history, env, tools);
+    }
+
+    // Auto mode: try best available
+    if (env?.OPENAI_API_KEY) {
+        const r = await tryProvider('openai', () => askOpenAI(systemPrompt, message, history, env, tools));
+        if (r !== null) return r;
+    }
+    if (env?.GROQ_API_KEY) {
+        const r = await tryProvider('groq', () => askGroq(systemPrompt, message, history, env, tools));
+        if (r !== null) return r;
+    }
+    // Always-available fallback
+    console.log('[AI] Provider: cloudflare (fallback)');
+    return askCloudflareAI(systemPrompt, message, history, env, tools);
+}
 
 // =========================================================================
 // 🎯 DETERMINISTIC INTENT HINTS
@@ -165,10 +216,9 @@ export async function aiChat(env, userId, message, history = [], selectedProject
 
         const window = buildSlidingWindow(history);
 
-        // ── Social turn: the model writes a natural reply, but with NO tools
-        // attached so it physically cannot hallucinate a get/add/delete call. ──
+        // ── Social turn: natural reply, NO tools attached (can't hallucinate) ──
         if (isSmallTalk(cleanMessage)) {
-            const casual = await askCloudflareAI(getCasualPrompt(), cleanMessage, window, env, null);
+            const casual = await callAI(getCasualPrompt(), cleanMessage, window, env, null);
             const reply =
                 typeof casual === 'string' && casual.trim()
                     ? casual.trim()
@@ -241,7 +291,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         }
 
         // ── Otherwise: LLM round-trip for get/update/delete or ambiguous text ──
-        const toolResponse = await askCloudflareAI(
+        const toolResponse = await callAI(
             getSystemPrompt(),
             cleanMessage,
             window,

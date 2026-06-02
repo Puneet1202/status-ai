@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KEYSS AI Widget — Integration Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0f172a; color: #cbd5e1; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+
+    .hero { max-width: 760px; margin: 0 auto; padding: 80px 24px 48px; text-align: center; }
+    .badge { display: inline-block; background: #6366f111; border: 1px solid #6366f133; color: #818cf8; border-radius: 99px; padding: 6px 16px; font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 24px; }
+    h1 { font-size: clamp(28px, 5vw, 48px); font-weight: 800; line-height: 1.15; color: #f1f5f9; margin-bottom: 16px; }
+    h1 span { color: #6366f1; }
+    .subtitle { font-size: 18px; color: #64748b; line-height: 1.6; margin-bottom: 48px; }
+
+    .code-block {
+      background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+      padding: 24px 28px; text-align: left; margin-bottom: 32px;
+      font-family: 'Fira Code', 'Cascadia Code', monospace; font-size: 14px; line-height: 1.7;
+      position: relative; overflow-x: auto;
+    }
+    .code-block .comment { color: #64748b; }
+    .code-block .tag { color: #7dd3fc; }
+    .code-block .attr { color: #86efac; }
+    .code-block .val { color: #fbbf24; }
+
+    .copy-btn {
+      position: absolute; top: 16px; right: 16px;
+      background: #334155; border: none; color: #94a3b8;
+      border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .copy-btn:hover { background: #6366f1; color: #fff; }
+
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 48px 0; text-align: left; }
+    .feature { background: #1e293b; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; }
+    .feature-icon { font-size: 24px; margin-bottom: 12px; }
+    .feature-title { font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 6px; }
+    .feature-desc { font-size: 12px; color: #64748b; line-height: 1.5; }
+
+    .section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 12px; }
+
+    footer { text-align: center; padding: 40px; color: #475569; font-size: 12px; }
+    footer a { color: #6366f1; text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="badge">🚀 KEYSS AI Embed SDK</div>
+  <h1>Add AI to <span>any website</span><br>in one line</h1>
+  <p class="subtitle">
+    Drop KEYSS AI into your company's website with a single script tag.<br>
+    No build tools. No frameworks. No backend code.
+  </p>
+
+  <div class="section-title">Integration code</div>
+  <div class="code-block">
+    <button class="copy-btn" onclick="copyCode()">Copy</button>
+    <span class="comment">&lt;!-- Paste this before &lt;/body&gt; on your website --&gt;</span><br><br>
+    <span class="tag">&lt;script</span><br>
+    &nbsp;&nbsp;<span class="attr">src</span>=<span class="val">"https://your-worker.workers.dev/widget.js"</span><br>
+    &nbsp;&nbsp;<span class="attr">data-api-key</span>=<span class="val">"keyss_live_YOUR_KEY"</span><br>
+    &nbsp;&nbsp;<span class="attr">data-title</span>=<span class="val">"Work Tracker AI"</span><br>
+    &nbsp;&nbsp;<span class="attr">data-theme</span>=<span class="val">"dark"</span><br>
+    <span class="tag">&gt;&lt;/script&gt;</span>
+  </div>
+
+  <div class="features">
+    <div class="feature">
+      <div class="feature-icon">⚡</div>
+      <div class="feature-title">Zero dependencies</div>
+      <div class="feature-desc">Vanilla JS + CSS. Works in React, Vue, plain HTML — anything.</div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🔑</div>
+      <div class="feature-title">API Key auth</div>
+      <div class="feature-desc">Each company gets their own key. Rate limited. Revokable instantly.</div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🤖</div>
+      <div class="feature-title">GPT-4o powered</div>
+      <div class="feature-desc">Natural language: "9 se 11 tak API kaam kiya" just works.</div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">📊</div>
+      <div class="feature-title">Admin analytics</div>
+      <div class="feature-desc">See how 1000+ users interact. Intent breakdown, failure rates, DAU.</div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🌙</div>
+      <div class="feature-title">Dark + Light themes</div>
+      <div class="feature-desc">Matches your site's design. Custom accent color support.</div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🔒</div>
+      <div class="feature-title">Privacy first</div>
+      <div class="feature-desc">Raw keys never stored. SHA-256 hashed. GDPR-safe analytics.</div>
+    </div>
+  </div>
+
+  <div class="section-title">Live widget demo (bottom-right) ↘</div>
+  <p style="color:#475569;font-size:13px;">The widget below connects to localhost:8787. Click it to try!</p>
+</div>
+
+<footer>
+  Built with ❤️ · <a href="/v1/status">API Status</a> · <a href="#">Docs</a>
+</footer>
+
+<!-- KEYSS Widget — change the api-key and src to your deployed URL -->
+<script
+  src="/widget.js"
+  data-api-key="keyss_live_DEMO00000000"
+  data-api-url="http://localhost:8787"
+  data-title="KEYSS AI Demo"
+  data-theme="dark"
+></script>
+
+<script>
+  function copyCode() {
+    const code = `<script\n  src="https://your-worker.workers.dev/widget.js"\n  data-api-key="keyss_live_YOUR_KEY"\n  data-title="Work Tracker AI"\n  data-theme="dark"\n><\/script>`;
+    navigator.clipboard.writeText(code).then(() => {
+      const btn = document.querySelector('.copy-btn');
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 2000);
+    });
+  }
+</script>
+</body>
+</html>
