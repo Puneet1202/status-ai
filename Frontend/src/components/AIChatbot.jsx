@@ -11,6 +11,7 @@ import {
   ListChecks,
   CheckSquare // ⭐ NAYA ICON: Selected task dikhane ke liye
 } from 'lucide-react';
+import { API_BASE_URL } from '../lib/api';
 
 const CHAT_HISTORY_KEY = 'keyss_chat_history';
 const MAX_PERSISTED_MESSAGES = 50; 
@@ -77,7 +78,7 @@ export default function AIChatbot() {
     const token = localStorage.getItem('keyss_token');
     if (!token) return;
 
-    fetch('http://localhost:8787/api/timesheet/projects', {
+    fetch(API_BASE_URL + '/api/timesheet/projects', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(res => {
@@ -94,7 +95,7 @@ export default function AIChatbot() {
       // Falls back to on-demand fetch in selectContext if a select beats this.
       projs.forEach(p => {
         if (taskCache.current[p.id]) return;
-        fetch(`http://localhost:8787/api/timesheet/projects/${p.id}/tasks`, {
+        fetch(`${API_BASE_URL}/api/timesheet/projects/${p.id}/tasks`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
           .then(r => r.json())
@@ -169,7 +170,7 @@ export default function AIChatbot() {
       setIsFetchingTasks(true);
       try {
         const token = localStorage.getItem('keyss_token');
-        const response = await fetch(`http://localhost:8787/api/timesheet/projects/${projectId}/tasks`, {
+        const response = await fetch(`${API_BASE_URL}/api/timesheet/projects/${projectId}/tasks`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await response.json();
@@ -275,7 +276,7 @@ export default function AIChatbot() {
     const abortTimer = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const response = await fetch('http://localhost:8787/api/timesheet/ai/chat', {
+      const response = await fetch(`${API_BASE_URL}/api/timesheet/ai/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

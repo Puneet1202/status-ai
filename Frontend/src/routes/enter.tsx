@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAppState } from '../lib/app-state';
+import { API_BASE_URL } from '../lib/api';
 import { Clock, Briefcase, AlertTriangle, Send, Trash2 } from 'lucide-react';
 
 interface TimesheetLog {
@@ -97,7 +98,7 @@ return Math.max(logStart, currentStart) < Math.min(logEnd, currentEnd);
   const fetchTodaysLogs = async () => {
     if (!token) return;
     try {
-      const res = await fetch(`http://localhost:8787/api/timesheet/admin/all-logs`, {
+      const res = await fetch(`${API_BASE_URL}/api/timesheet/admin/all-logs`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -123,7 +124,7 @@ return Math.max(logStart, currentStart) < Math.min(logEnd, currentEnd);
     setErrorAlert('');
     try {
       // Direct call to backend deletion pipeline
-      const res = await fetch(`http://localhost:8787/api/timesheet/delete/${id}`, {
+      const res = await fetch(`${API_BASE_URL}/api/timesheet/delete/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -170,7 +171,7 @@ return Math.max(logStart, currentStart) < Math.min(logEnd, currentEnd);
     };
 
     try {
-      const res = await fetch('http://localhost:8787/api/timesheet/submit', {
+      const res = await fetch(API_BASE_URL + '/api/timesheet/submit', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

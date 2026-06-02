@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAppState } from '../lib/app-state';
+import { API_BASE_URL } from '../lib/api';
 
 export const AuthScreen: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -17,7 +18,7 @@ export const AuthScreen: React.FC = () => {
     setLoading(true);
 
     const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-    const url = `http://localhost:8787${endpoint}`;
+    const url = `${API_BASE_URL}${endpoint}`;
     
     const payload = isLogin ? { email, password } : { name, email, password };
 

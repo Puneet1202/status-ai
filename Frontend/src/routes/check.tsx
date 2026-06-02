@@ -3,6 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useAppState } from '../lib/app-state';
+import { API_BASE_URL } from '../lib/api';
 import { Filter, ChevronDown, Download } from 'lucide-react';
 
 interface TimesheetLog {
@@ -69,7 +70,7 @@ export const CheckStatus: React.FC = () => {
       if (dateFrom) queryParams.append('dateFrom', dateFrom);
       if (dateTo) queryParams.append('dateTo', dateTo);
 
-      const res = await fetch(`http://localhost:8787/api/timesheet/admin/all-logs?${queryParams.toString()}`, {
+      const res = await fetch(`${API_BASE_URL}/api/timesheet/admin/all-logs?${queryParams.toString()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
