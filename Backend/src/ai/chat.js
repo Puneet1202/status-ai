@@ -258,46 +258,47 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             (SOFT_GET.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage));
 
         if (!wantsOther) {
-            // HYBRID: LLM understands any format → regex fallback → handler validates.
-            const { entries, source } = await extractWorkBlocks(cleanMessage, env);
-            if (entries.length > 0) {
-                // Multi-turn: borrow a real description from the previous message
-                // when this one was basically just a time.
-                enrichThinDescriptions(entries, history);
-                const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
-                console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
-                return {
-                    action: {
-                        name: 'add_timesheet_entries',
-                        data: { entries, ...(entry_date ? { entry_date } : {}) },
-                    },
-                };
-            }
-
-            // Extraction found nothing. If the message LOOKED like a time-log
-            // (has a digit), the regex couldn't parse it AND the LLM rescue
-            // failed/timed-out. Fail FAST with an actionable message instead of
-            // burning a second LLM round-trip — the user just re-sends in a
-            // clearer format (which the instant regex then handles). The user's
-            // text is never lost; nothing bad is saved.
-            // Only treat this as a FAILED time-log when the text actually looks
-            // like it carried a time. A digit GLUED to letters — a project name
-            // like "Core Infra V2", or "v2 done" — must NOT trigger the "couldn't
-            // read the time blocks" reply; that false positive made selecting a
-            // project feel broken. Genuine garbled times ("25ish oclock", "9 to x")
-            // still match via a standalone number or an explicit clock word.
+            // 🛡️ BULLETPROOF GATE — does the message contain ANY time signal?
+            // Computed deterministically BEFORE touching the model. A time block,
+            // a standalone hour number, or a clock word (am/pm/baje/o'clock/HH:MM)
+            // all count. A digit glued to letters ("Core Infra V2") does NOT.
             const hasStandaloneNumber = /(?:^|[^a-z0-9])\d{1,2}\b/i.test(cleanMessage);
             const hasClockWord =
                 /\bo.?clock\b|\bbaje\b|\bnoon\b|\bmidnight\b/i.test(cleanMessage) ||
                 /\d\s*[ap]\.?m\b/i.test(cleanMessage) ||
                 /:\d{2}\b/.test(cleanMessage);
-            if (hasStandaloneNumber || hasClockWord) {
+            const hasTime = looksLikeTimeBlock(cleanMessage) || hasStandaloneNumber || hasClockWord;
+
+            if (hasTime) {
+                // There IS a time → parse it. Regex first; LLM only to read a format
+                // regex can't. The model CANNOT invent a time here — one already
+                // exists in the text, it just reads what's there.
+                const { entries, source } = await extractWorkBlocks(cleanMessage, env);
+                if (entries.length > 0) {
+                    // Multi-turn: borrow a real description from the previous message
+                    // when this one was basically just a time.
+                    enrichThinDescriptions(entries, history);
+                    const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
+                    console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
+                    return {
+                        action: {
+                            name: 'add_timesheet_entries',
+                            data: { entries, ...(entry_date ? { entry_date } : {}) },
+                        },
+                    };
+                }
+                // A time-ish token was present but unparseable → fast, clear hint.
                 console.warn('[hybrid add] no blocks extracted (regex + LLM) for:', cleanMessage);
                 return {
                     reply:
                         "I couldn't read the time blocks in that one. Could you re-send in a clearer format? e.g. \"9-11 API work\" or \"9 to 11 fixed login bug; 2 to 4 testing\".",
                 };
             }
+
+            // ⛔ NO time signal at all → the user listed work but gave NO time. We
+            // must NEVER let the model invent one (that hallucination saved 5 bogus
+            // entries with made-up times). So we DON'T call the model — this is
+            // instant AND bulletproof — and just ask for the time below.
 
             // Work intent but NO time given AND a project is selected → ask for
             // the time conversationally (natural multi-turn flow) instead of

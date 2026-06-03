@@ -25,6 +25,15 @@ test('multi-task list without time → asks for a time per task (with example)',
   assert.match(r.reply, /max 2 hours/i);
 });
 
+// BULLETPROOF: tasks with NO time must NEVER be saved — even if the model tries to
+// HALLUCINATE times. The deterministic gate stops the model from being called.
+test('tasks with no time → never invents/saves, asks for time (even if model would hallucinate)', async () => {
+  const env = { AI: { run: async () => ({ response: '[{"start_time":"09:00","end_time":"11:00","task":"AI model training","is_lunch":false}]' }) } };
+  const r = await aiChat(env, 1, 'AI model training, output review and fixes, lunch, chatbot development, testing and code review', [], 'AI Project');
+  assert.equal(r.action, undefined);            // nothing saved
+  assert.match(r.reply, /time for each task/i); // asks for the time instead
+});
+
 test('multi-turn: thin follow-up borrows description from previous message', async () => {
   const history = [{ role: 'user', content: 'today i worked on the dashboard' }];
   const r = await aiChat(noAI, 1, '9 to 11', history, 'AI Project');
