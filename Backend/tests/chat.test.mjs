@@ -51,10 +51,51 @@ test('time-log containing the word "report" still logs (not treated as a GET)', 
   assert.equal(r.action.data.entries.length, 1);
 });
 
-// The same word WITHOUT a time block stays a query (does not become an add).
+// The same word WITHOUT a time block stays a query (a read), never an add.
 test('"report" with no time is NOT parsed as an add', async () => {
   const r = await aiChat(noAI, 1, 'show me my report', [], 'AI Project');
-  assert.equal(r.action, undefined);
+  assert.notEqual(r.action?.name, 'add_timesheet_entries');
+});
+
+// GET reliability: "show my last entries" is handled deterministically as a READ
+// (was a generic "want me to log or show?" reply before).
+test('"show me my last entry" → deterministic recent GET (no LLM)', async () => {
+  const r = await aiChat(noAI, 1, 'show me my last entry', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.recent, true);
+});
+
+test('"mera last log dikhao" (Hindi) → recent GET', async () => {
+  const r = await aiChat(noAI, 1, 'mera last log dikhao', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.recent, true);
+});
+
+// SAFETY: a real time-log that merely contains "last" must NOT be hijacked into a
+// GET — the time block keeps it an ADD.
+test('a time-log containing "last" still logs (ADD not broken)', async () => {
+  const r = await aiChat(noAI, 1, '9 to 11 last minute bug fixes', [], 'AI Project');
+  assert.equal(r.action?.name, 'add_timesheet_entries');
+});
+
+// Deterministic date-range reads (bulletproof — no LLM on the hot path).
+test('"how many hours today" → deterministic GET for a single day', async () => {
+  const r = await aiChat(noAI, 1, 'how many hours today', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.from_date, r.action.data.to_date); // exactly one day
+});
+
+test('"show this week" → deterministic GET range ending today', async () => {
+  const r = await aiChat(noAI, 1, 'show this week', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.ok(!r.action.data.recent);
+  assert.ok(r.action.data.from_date <= r.action.data.to_date);
+});
+
+test('"kitne ghante kaam kiya aaj" (Hindi today) → deterministic GET', async () => {
+  const r = await aiChat(noAI, 1, 'kitne ghante kaam kiya aaj', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.from_date, r.action.data.to_date);
 });
 
 test('garbled time → clear hint (not the time-ask)', async () => {

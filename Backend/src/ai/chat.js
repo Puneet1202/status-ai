@@ -32,7 +32,24 @@ const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |prev
 const HARD_GET = /\b(show|list|view|fetch|display|history|how many|how much|kitne|kitna|total hours|fetch my|my logs)\b/i;
 const SOFT_GET = /\b(report|summary)\b/i;
 // Broad signal — used only to gate the model's get_timesheet call (anti-hallucination).
-const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
+const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|dikhao|dikhana|dikhaiye|batao|recent|latest|aakhri|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
+
+// Deterministic "show my recent/last entries" read — reliable, no LLM. Fires only
+// for a clear recent-history phrase that has NO time block (so it can never catch
+// an ADD) and isn't a delete/update. Handles "last entry", "last log dikhao",
+// "aakhri entries", "recent kaam", "last enter".
+const RECENT_WORD = /\b(last|recent|latest|aakhri|akhri|pichl[ae]|previous)\b/i;
+const ENTRY_WORD = /\b(entr(?:y|ies)|logs?|enter(?:ed)?|timesheet|status|kaam|work)\b/i;
+// Read verbs/nouns + period words for the deterministic date-range read below.
+const GET_VERB = /\b(show|list|view|display|fetch|dikhao|dikhana|dikhaiye|batao|how many|how much|kitne|kitna)\b/i;
+const GET_NOUN = /\b(logs?|entr(?:y|ies)|timesheet|hours|ghante|total)\b/i;
+const PERIOD = /\b(today|aaj|yesterday|kal|kl|this week|last week|this month|last month|weekly|monthly)\b|\bis haft|\bpichl[ae] haft|\bis mah|\bpichl[ae] mah|\d{4}-\d{2}-\d{2}/i;
+
+// A specific time block ("9 se 11", "9-11", "9am") signals LOGGING, not a query.
+function looksLikeTimeBlock(text) {
+    return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(text)
+        || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(text);
+}
 
 // =========================================================================
 // 🔗 MULTI-TURN DESCRIPTION CARRY
@@ -146,6 +163,45 @@ function nowInTz(timeZone) {
     return new Date(`${todayISO(timeZone)}T12:00:00Z`);
 }
 
+// Resolve a natural-language period ("today"/"aaj", "this week"/"is hafte",
+// "last month", an ISO date) into a {from_date, to_date} range. No period found →
+// {recent:true} so the caller shows the most recent entries. `base` is noon-UTC of
+// the user's LOCAL date (see nowInTz) so ±day/week/month math never rolls across a
+// timezone edge. This is what makes the common GET queries as reliable as ADD.
+function isoDate(d) { return d.toISOString().slice(0, 10); }
+function addDays(d, n) { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; }
+
+function parseGetRange(message, base) {
+    const m = String(message || '').toLowerCase();
+    const today = isoDate(base);
+
+    const isoHit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+    if (isoHit) return { from_date: isoHit[1], to_date: isoHit[1] };
+
+    if (/\byesterday\b|\bkal\b|\bkl\b/.test(m)) { const y = isoDate(addDays(base, -1)); return { from_date: y, to_date: y }; }
+    if (/\btoday\b|\baaj\b|\babhi\b/.test(m)) return { from_date: today, to_date: today };
+
+    const monThisWeek = addDays(base, -((base.getUTCDay() + 6) % 7)); // Monday of this week
+    if (/\blast week\b|\bpichl[ae] haft/.test(m)) {
+        return { from_date: isoDate(addDays(monThisWeek, -7)), to_date: isoDate(addDays(monThisWeek, -1)) };
+    }
+    if (/\bthis week\b|\bis haft|\bweekly\b/.test(m)) {
+        return { from_date: isoDate(monThisWeek), to_date: today };
+    }
+
+    const firstThisMonth = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1, 12));
+    if (/\blast month\b|\bpichl[ae] mah/.test(m)) {
+        const end = addDays(firstThisMonth, -1);
+        const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1, 12));
+        return { from_date: isoDate(start), to_date: isoDate(end) };
+    }
+    if (/\bthis month\b|\bis mah|\bmonthly\b/.test(m)) {
+        return { from_date: isoDate(firstThisMonth), to_date: today };
+    }
+
+    return { recent: true };
+}
+
 export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null) {
     try {
         const cleanMessage = (message || '').trim();
@@ -168,6 +224,25 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             return { reply };
         }
 
+        // ── DETERMINISTIC READ (reliable, no LLM) — recent entries OR a date range.
+        // Fires on a clear read signal (a get-verb; OR a period word + a log/entry
+        // noun; OR "last/recent" + an entry word) with NO time block — so it can
+        // NEVER catch an ADD — and never on a delete/update. parseGetRange turns the
+        // phrase into {from_date,to_date} (or {recent:true}). This makes the common
+        // GET queries as bulletproof as ADD — no flaky model on the hot path.
+        const isReadIntent =
+            GET_VERB.test(cleanMessage) ||
+            (PERIOD.test(cleanMessage) && GET_NOUN.test(cleanMessage)) ||
+            (RECENT_WORD.test(cleanMessage) && ENTRY_WORD.test(cleanMessage));
+        if (
+            isReadIntent &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage)
+        ) {
+            return { action: { name: 'get_timesheet_logs', data: parseGetRange(cleanMessage, nowInTz(timeZone)) } };
+        }
+
         // ── DETERMINISTIC ADD (the hot path) — parse work blocks in code. ──
         // The model was flaky at emitting the entries[] array; parsing is
         // mechanical, so we do it ourselves: 100% repeatable, fast, no timeout.
@@ -176,14 +251,11 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // queries say "today"/"this week", never a precise range. So SOFT_GET words
         // ("report"/"summary") next to a time block stay an ADD (fixes "9 se 11
         // report banayi", which used to misfire on the word "report").
-        const hasTimeBlock =
-            /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(cleanMessage) ||
-            /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(cleanMessage);
         const wantsOther =
             DELETE_INTENT.test(cleanMessage) ||
             UPDATE_INTENT.test(cleanMessage) ||
             HARD_GET.test(cleanMessage) ||
-            (SOFT_GET.test(cleanMessage) && !hasTimeBlock);
+            (SOFT_GET.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage));
 
         if (!wantsOther) {
             // HYBRID: LLM understands any format → regex fallback → handler validates.

@@ -5,7 +5,8 @@ import { Sidebar } from './components/Sidebar';
 import { EnterStatus } from './routes/enter';
 import { CheckStatus } from './routes/check';
 // 1. Import the AI Chatbot component here (adjust path if needed)
-import AIChatbot from './components/AIChatbot'; 
+import AIChatbot from './components/AIChatbot';
+import { API_BASE_URL } from './lib/api';
 
 const AppLayout = () => {
   const { token } = useAppState();
@@ -22,7 +23,7 @@ const AppLayout = () => {
         {activeTab === 'enter' ? <EnterStatus /> : <CheckStatus />}
         
         {/* 2. Injected globally so it floats neatly over your views */}
-        <AIChatbot />
+        <AIChatbot apiBaseUrl={API_BASE_URL} />
       </main>
     </div>
   );

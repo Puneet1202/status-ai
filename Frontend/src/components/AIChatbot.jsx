@@ -1,3 +1,4 @@
+'use client'; // Needed for Next.js App Router; harmless in Vite/CRA.
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   X,
@@ -12,13 +13,32 @@ import {
   CheckSquare, // ⭐ NAYA ICON: Selected task dikhane ke liye
   Flag // 🚩 Report a wrong AI reply
 } from 'lucide-react';
-import { API_BASE_URL } from '../lib/api';
+// ── PORTABLE / DROP-IN ──────────────────────────────────────────────────────
+// This chatbot is self-contained: it only needs React + lucide-react. To use it
+// in ANOTHER website, copy this file and render it with two props:
+//
+//   <AIChatbot apiBaseUrl="http://localhost:8787" token={yourLoginToken} />
+//
+// • apiBaseUrl — where THIS timesheet backend runs (default: http://localhost:8787)
+// • token      — the login JWT. If omitted, it's read from localStorage[tokenKey].
+// • tokenKey   — localStorage key holding the token (default: 'keyss_token').
+// Nothing else inside this file needs changing between projects.
+// ────────────────────────────────────────────────────────────────────────────
 
 const CHAT_HISTORY_KEY = 'keyss_chat_history';
 const PENDING_ACTION_KEY = 'keyss_pending_action';
 const MAX_PERSISTED_MESSAGES = 50;
 
-export default function AIChatbot() {
+export default function AIChatbot({
+  apiBaseUrl = 'http://localhost:8787',
+  token = null,
+  tokenKey = 'keyss_token',
+} = {}) {
+  // Resolve the auth token: an explicit `token` prop wins, otherwise read it from
+  // localStorage[tokenKey]. The typeof guard keeps it safe during SSR.
+  const getToken = () =>
+    token || (typeof localStorage !== 'undefined' ? localStorage.getItem(tokenKey) : null);
+
   // --- UI Layout Controllers ---
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState(() => {
@@ -102,8 +122,8 @@ export default function AIChatbot() {
     if (messages.length === 0 || isReporting) return;
     setIsReporting(true);
     try {
-      const token = localStorage.getItem('keyss_token');
-      const res = await fetch(`${API_BASE_URL}/api/timesheet/ai/report`, {
+      const token = getToken();
+      const res = await fetch(`${apiBaseUrl}/api/timesheet/ai/report`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({
@@ -122,10 +142,10 @@ export default function AIChatbot() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem('keyss_token');
+    const token = getToken();
     if (!token) return;
 
-    fetch(API_BASE_URL + '/api/timesheet/projects', {
+    fetch(apiBaseUrl + '/api/timesheet/projects', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
     .then(res => {
@@ -142,7 +162,7 @@ export default function AIChatbot() {
       // Falls back to on-demand fetch in selectContext if a select beats this.
       projs.forEach(p => {
         if (taskCache.current[p.id]) return;
-        fetch(`${API_BASE_URL}/api/timesheet/projects/${p.id}/tasks`, {
+        fetch(`${apiBaseUrl}/api/timesheet/projects/${p.id}/tasks`, {
           headers: { 'Authorization': `Bearer ${token}` }
         })
           .then(r => r.json())
@@ -221,8 +241,8 @@ export default function AIChatbot() {
     } else {
       setIsFetchingTasks(true);
       try {
-        const token = localStorage.getItem('keyss_token');
-        const response = await fetch(`${API_BASE_URL}/api/timesheet/projects/${projectId}/tasks`, {
+        const token = getToken();
+        const response = await fetch(`${apiBaseUrl}/api/timesheet/projects/${projectId}/tasks`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const data = await response.json();
@@ -328,11 +348,11 @@ export default function AIChatbot() {
     const abortTimer = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/timesheet/ai/chat`, {
+      const response = await fetch(`${apiBaseUrl}/api/timesheet/ai/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('keyss_token')}`
+          'Authorization': `Bearer ${getToken()}`
         },
         body: JSON.stringify({
           message: userPayload.content,
