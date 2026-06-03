@@ -62,10 +62,24 @@ ON daily_status_entries (employee_id, entry_date);
 CREATE TRIGGER IF NOT EXISTS update_daily_status_entries_timestamp
 AFTER UPDATE ON daily_status_entries
 BEGIN
-    UPDATE daily_status_entries 
-    SET updated_at = datetime('now') 
+    UPDATE daily_status_entries
+    SET updated_at = datetime('now')
     WHERE id = NEW.id;
 END;
+
+-- 4. AI Feedback / "Report" Table — snapshot of recent chat when a user taps
+--    "Report" in the chatbot, so wrong AI replies can be reviewed and turned
+--    into test cases / prompt examples. (See migrations/0002_add_ai_feedback.sql)
+CREATE TABLE IF NOT EXISTS ai_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL,
+    note TEXT DEFAULT NULL,
+    selected_project TEXT DEFAULT NULL,
+    messages TEXT NOT NULL,            -- JSON: the last N {role, content, context} turns
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (employee_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ai_feedback_user ON ai_feedback (employee_id, created_at);
 
 -- =========================================================================
 -- FRESH SEED DATA (Remote database mein automatic load ke liye)

@@ -10,6 +10,7 @@ import { getSystemPrompt, getCasualPrompt } from './tools.js';
 import { getToolSchemas } from './tools/index.js';
 import { parseEntryDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
+import { todayISO } from './tools/_helpers.js';
 import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES } from './ai-config.js';
 
 // =========================================================================
@@ -21,7 +22,7 @@ const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
 // Conservative on purpose: only fire on phrases that clearly mean "edit an
 // EXISTING logged entry" — NOT common work verbs like "fix"/"change" which
 // appear in normal descriptions ("9-10 fix the ui bugs" is an ADD, not an edit).
-const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)/i;
+const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)|\bsahi kar ?do\b|\bsahi karo\b|\bchange (?:that|it|this) to\b|\bcorrect (?:it|that|this)\b|\bthat(?:'s| was| is)? wrong\b|\bbadal ?do\b|\bupdate kar ?do\b/i;
 // STRONG_GET = read verbs only (NOT date words) — used to keep an obvious
 // history query from being parsed as an add. "log yesterday 9-11" has a date
 // word but no read verb, so it stays an ADD.
@@ -133,7 +134,15 @@ function buildSlidingWindow(history) {
     }));
 }
 
-export async function aiChat(env, userId, message, history = [], selectedProject = null) {
+// A Date anchored to NOON UTC of the user's LOCAL date. Anchoring at noon (not
+// midnight) keeps ±1-day relative math (yesterday/parso) free of any rollover,
+// and iso(thisDate) still equals the user's real local date. This is what makes
+// "kal"/"yesterday" resolve correctly for a night-shift user in any timezone.
+function nowInTz(timeZone) {
+    return new Date(`${todayISO(timeZone)}T12:00:00Z`);
+}
+
+export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null) {
     try {
         const cleanMessage = (message || '').trim();
 
@@ -171,7 +180,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 // Multi-turn: borrow a real description from the previous message
                 // when this one was basically just a time.
                 enrichThinDescriptions(entries, history);
-                const entry_date = parseEntryDate(cleanMessage);
+                const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
                 console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
                 return {
                     action: {
@@ -221,7 +230,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
 
         // ── Otherwise: LLM round-trip for get/update/delete or ambiguous text ──
         const toolResponse = await askCloudflareAI(
-            getSystemPrompt(),
+            getSystemPrompt(todayISO(timeZone)),
             cleanMessage,
             window,
             env,

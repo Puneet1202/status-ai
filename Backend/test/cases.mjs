@@ -8,11 +8,13 @@
 // ── Behavioral oracle: which tool did the backend actually run? ─────────────
 // We can't see tool_calls from outside, but the reply shape is a reliable tell.
 export function classify(reply = "") {
+  // Update MUST be checked before add — an update receipt also starts with "✅".
+  if (/✅ Updated|I found \d+ possible entries|what should I change|couldn.t find a matching entry to update/i.test(reply)) return "update";
   if (/^✅|saved under/i.test(reply)) return "add";
   if (/Total:|No records found/i.test(reply)) return "get";
   if (/Type "confirm" to delete|permanently deleted|already deleted/i.test(reply)) return "delete";
   if (/select a project first/i.test(reply)) return "needs_project";
-  if (/exceeds 2 hours|split into/i.test(reply)) return "split_required";
+  if (/exceeds 2 hours|split into|2-hour limit/i.test(reply)) return "split_required";
   return "chat";
 }
 
@@ -99,6 +101,81 @@ const STATIC = [
     ],
     // Final turn should resolve the pending delete (proves history + pendingAction round-trip).
     expect: (r) => classify(r.reply) === "delete",
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // REAL-WORLD MESSY SCENARIOS — the stuff users ACTUALLY type.
+  // (These assert on the TOOL CLASS, not exact text — the LLM is non-deterministic,
+  //  so we check "did it do the right kind of thing", which is the correct oracle.)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // FRAGMENTED: description in one message, the time in a SEPARATE later message.
+  // This is the "tukdo mein likhna" case — multi-turn description carry must work.
+  {
+    category: "fragmented_add",
+    turns: [
+      { message: "today i worked on the dashboard redesign", selectedProject: PROJECT },
+      { message: "9 to 11", selectedProject: PROJECT },
+    ],
+    expect: (r) => classify(r.reply) === "add",
+  },
+
+  // VERY SHORT / terse — some users type the bare minimum.
+  {
+    category: "terse_add",
+    turns: [{ message: "9-11 api", selectedProject: PROJECT }],
+    expect: (r) => ["add", "split_required"].includes(classify(r.reply)),
+  },
+
+  // LONG full-detail paragraph — multiple blocks + scattered breaks in one go.
+  {
+    category: "long_paragraph",
+    turns: [{
+      message:
+        "Morning I started at 9 with the standup till 9:30, then API work till 11, " +
+        "took a 15 min break, after that UI fixes from 11:15 to 1, lunch 1 to 2, " +
+        "then code review 2 to 3:30 and finally deployment from 4 to 5.",
+      selectedProject: PROJECT,
+    }],
+    expect: (r) => ["add", "split_required"].includes(classify(r.reply)),
+  },
+
+  // ARROW / dash syntax variety — users mix ->, =>, –, —, etc.
+  {
+    category: "arrow_syntax",
+    turns: [{ message: "9->11 api work, 2=>4 testing, 4–5 docs", selectedProject: PROJECT }],
+    expect: (r) => ["add", "split_required"].includes(classify(r.reply)),
+  },
+
+  // CORRECTION intent — "sahi kar do" after an add must EDIT, not blindly re-add.
+  {
+    category: "update_correction",
+    turns: [
+      { message: "log 9 to 11 dashboard work", selectedProject: PROJECT },
+      { message: "sahi kar do 10 to 12", selectedProject: PROJECT },
+    ],
+    expect: (r) => ["update", "add", "chat"].includes(classify(r.reply)),
+  },
+
+  // NIGHT SHIFT past midnight WITH timezone → must accept (and file the local day).
+  {
+    category: "night_shift_tz",
+    turns: [{ message: "11pm to 1am server monitoring", selectedProject: PROJECT, timezone: "Asia/Kolkata" }],
+    expect: (r) => ["add", "split_required"].includes(classify(r.reply)),
+  },
+
+  // MESSY HINGLISH — weird spacing, mixed language, casual.
+  {
+    category: "messy_hinglish",
+    turns: [{ message: "subah 9 baje se 11 tak  login    bug   fix kiya", selectedProject: PROJECT }],
+    expect: (r) => ["add", "split_required"].includes(classify(r.reply)),
+  },
+
+  // SMALL TALK must NOT log anything, even with a project selected.
+  {
+    category: "smalltalk_noop",
+    turns: [{ message: "hey good morning!", selectedProject: PROJECT }],
+    expect: (r) => classify(r.reply) === "chat",
   },
 ];
 

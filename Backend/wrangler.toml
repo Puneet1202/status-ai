@@ -8,6 +8,10 @@ compatibility_date = "2026-05-01"
 [vars]
 AI_PROVIDER = "cloudflare" # Shifted from local to high-speed native edge models
 PORT = 8787 # Standard Cloudflare worker port mapping
+# Comma-separated list of the REAL website origins allowed to call this API.
+# localhost is always allowed automatically — only add your deployed domains here.
+# Example: ALLOWED_ORIGINS = "https://app.yourcompany.com,https://www.yourcompany.com"
+ALLOWED_ORIGINS = ""
 
 # =========================================================================
 # CLOUDFLARE D1 SQL DATABASE BINDING
@@ -20,3 +24,16 @@ database_id = "6b62c00b-66b3-4483-9e2e-e5f5aa791003"
 
 [ai]
 binding = "AI"
+
+# =========================================================================
+# PER-USER RATE LIMIT for the AI chat endpoint (abuse / cost protection)
+# =========================================================================
+# Currently OFF. The code (timesheet.controller.js → aiRateLimitOk) auto-skips
+# when this binding is absent, so local dev works untouched. To turn it ON for
+# production: UNCOMMENT the block below, then `wrangler deploy`. Adjust limit/
+# period to taste (20 messages per 60s per user is a sane chat default).
+# [[unsafe.bindings]]
+# name = "AI_RATE_LIMITER"
+# type = "ratelimit"
+# namespace_id = "2001"          # any unique number for this worker
+# simple = { limit = 20, period = 60 }

@@ -55,6 +55,7 @@ async function runCase(testCase, token) {
         history: history.slice(-10),
         pendingAction,
         selectedProject: turn.selectedProject ?? null,
+        timezone: turn.timezone ?? null, // exercises the night-shift date fix
       }),
     });
 

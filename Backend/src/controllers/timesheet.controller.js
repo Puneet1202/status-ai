@@ -136,6 +136,22 @@ export const deleteTimesheetEntry = async (c) => {
     }
 };
 
+// Best-effort per-user throttle for the EXPENSIVE AI endpoint. Uses Cloudflare's
+// native rate-limit binding (env.AI_RATE_LIMITER) when configured; if the binding
+// is absent (e.g. plain local dev) it silently no-ops so nothing ever breaks.
+// To turn it ON: uncomment the [[unsafe.bindings]] block in wrangler.toml.
+async function aiRateLimitOk(c, user) {
+    const limiter = c.env.AI_RATE_LIMITER;
+    if (!limiter || typeof limiter.limit !== 'function') return true; // not configured → skip
+    const key = user?.id ? `user:${user.id}` : `ip:${c.req.header('cf-connecting-ip') || 'anon'}`;
+    try {
+        const { success } = await limiter.limit({ key: String(key) });
+        return success;
+    } catch {
+        return true; // never block real users on a limiter fault
+    }
+}
+
 // =========================================================================
 // 4. AI CHAT HANDLER — thin orchestrator over the tool registry
 // =========================================================================
@@ -143,13 +159,23 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [] } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
+        // Throttle abusive bursts before spending an AI call (429 = too many).
+        if (!(await aiRateLimitOk(c, user))) {
+            return c.json({
+                reply: "You're sending messages a bit too fast — please wait a few seconds and try again.",
+                success: false,
+            }, 429);
+        }
+
         // selectedTasks: the predefined project tasks the user ticked in the UI.
         // These become each saved entry's module_name (see addTimesheet handler).
-        const ctx = { db, user, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO() };
+        // timezone: the user's IANA zone (sent by the frontend) so "today"/"kal"
+        // resolve to the user's real local date, not UTC (fixes night-shift logs).
+        const ctx = { db, user, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -163,7 +189,7 @@ export const aiChatHandler = async (c) => {
         }
 
         // ── Single AI round-trip → tool call or conversational reply ──
-        const result = await aiChat(c.env, user.id, message, history, selectedProject);
+        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone);
 
         if (result.action) {
             const out = await dispatchTool(result.action.name, result.action.data, ctx);
@@ -175,6 +201,45 @@ export const aiChatHandler = async (c) => {
     } catch (error) {
         console.error("[AI Handler Error]:", error);
         return c.json({ reply: 'Internal server error. Please try again.', success: false }, 500);
+    }
+};
+
+// =========================================================================
+// 4b. AI FEEDBACK / "REPORT" — user taps Report in the chatbot when the AI
+//     replied wrong. We snapshot the last ~10 messages so you can review the
+//     failure later and turn it into a test case / prompt example.
+// =========================================================================
+export const submitAiFeedback = async (c) => {
+    try {
+        const db = c.env.DB;
+        const user = c.get('user');
+        const { messages = [], note = null, selectedProject = null } = await c.req.json();
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return c.json({ success: false, message: 'Nothing to report — the chat is empty.' }, 400);
+        }
+
+        // Keep only the last 10 turns, and only the fields we need (no bloat).
+        const trimmed = messages.slice(-10).map((m) => ({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: String(m.content || '').slice(0, 4000),
+            context: m.context ? String(m.context).slice(0, 200) : null,
+        }));
+
+        await db
+            .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages) VALUES (?, ?, ?, ?)')
+            .bind(
+                user.id,
+                note ? String(note).slice(0, 500) : null,
+                selectedProject ? String(selectedProject).slice(0, 200) : null,
+                JSON.stringify(trimmed)
+            )
+            .run();
+
+        return c.json({ success: true, message: 'Thanks! Your report was saved.' }, 201);
+    } catch (error) {
+        console.error('[AI Feedback Error]:', error);
+        return c.json({ success: false, message: 'Could not save the report. Please try again.' }, 500);
     }
 };
 

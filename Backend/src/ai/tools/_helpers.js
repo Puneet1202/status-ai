@@ -68,8 +68,24 @@ export function isValidEntryDate(s) {
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
-export function todayISO() {
-  return new Date().toISOString().split("T")[0];
+// Default business timezone — used ONLY as a fallback when the caller passes
+// no zone. Real requests carry the browser's IANA zone (see AIChatbot.jsx), so
+// this default only affects direct API calls / tests. Change to suit your team.
+export const DEFAULT_TZ = "Asia/Kolkata";
+
+// "Today" as YYYY-MM-DD IN THE USER'S TIMEZONE — NOT UTC.
+// The old UTC version made a night-shift Indian user (e.g. 01:00 IST) log the
+// PREVIOUS day, because 01:00 IST is still the prior calendar date in UTC.
+// 'en-CA' is the locale that formats as YYYY-MM-DD; Workers' V8 ships full ICU
+// so timeZone formatting is reliable. Falls back to UTC if the zone is invalid.
+// `now` is injectable purely so the timezone behaviour can be unit-tested with a
+// fixed instant; production always uses the real current time.
+export function todayISO(timeZone = DEFAULT_TZ, now = new Date()) {
+  try {
+    return now.toLocaleDateString("en-CA", { timeZone: timeZone || DEFAULT_TZ });
+  } catch {
+    return now.toISOString().split("T")[0];
+  }
 }
 
 // =========================================================================

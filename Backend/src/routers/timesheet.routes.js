@@ -2,7 +2,7 @@
 // KAAM: Clean Route Mapping for Timesheet Infrastructure Pipeline
 
 import { Hono } from 'hono';
-import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler, getProjects,getProjectTasksController } from '../controllers/timesheet.controller.js';
+import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler, getProjects, getProjectTasksController, submitAiFeedback } from '../controllers/timesheet.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const timesheetRouter = new Hono();
@@ -16,6 +16,9 @@ timesheetRouter.delete('/delete/:id', authMiddleware, deleteTimesheetEntry);
 
 // AI-INTEGRATED TIMESHEET ENDPOINT
 timesheetRouter.post('/ai/chat', authMiddleware, aiChatHandler);
+
+// "Report" — save a snapshot of the recent chat when the AI replied wrong
+timesheetRouter.post('/ai/report', authMiddleware, submitAiFeedback);
 
 timesheetRouter.get('/projects', authMiddleware, getProjects);
 

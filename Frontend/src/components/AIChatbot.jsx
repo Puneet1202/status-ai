@@ -9,12 +9,14 @@ import {
   Loader2,
   Trash2,
   ListChecks,
-  CheckSquare // ⭐ NAYA ICON: Selected task dikhane ke liye
+  CheckSquare, // ⭐ NAYA ICON: Selected task dikhane ke liye
+  Flag // 🚩 Report a wrong AI reply
 } from 'lucide-react';
 import { API_BASE_URL } from '../lib/api';
 
 const CHAT_HISTORY_KEY = 'keyss_chat_history';
-const MAX_PERSISTED_MESSAGES = 50; 
+const PENDING_ACTION_KEY = 'keyss_pending_action';
+const MAX_PERSISTED_MESSAGES = 50;
 
 export default function AIChatbot() {
   // --- UI Layout Controllers ---
@@ -45,7 +47,17 @@ export default function AIChatbot() {
   // ⭐ SUPER FAST CACHE FIX
   const taskCache = useRef({});
 
-  const [pendingAction, setPendingAction] = useState(null);
+  // Lazy-init from localStorage so a page refresh mid-confirm (delete/update)
+  // doesn't lose the pending action — otherwise the next "confirm" hits the
+  // backend with pendingAction=null and the flow silently breaks.
+  const [pendingAction, setPendingAction] = useState(() => {
+    try {
+      const saved = localStorage.getItem(PENDING_ACTION_KEY);
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -68,10 +80,45 @@ export default function AIChatbot() {
     } catch { }
   }, [messages]);
 
+  // Keep the pending confirm action across refreshes (and clear it when done).
+  useEffect(() => {
+    try {
+      if (pendingAction) localStorage.setItem(PENDING_ACTION_KEY, JSON.stringify(pendingAction));
+      else localStorage.removeItem(PENDING_ACTION_KEY);
+    } catch { }
+  }, [pendingAction]);
+
   const clearChat = () => {
     setMessages([]);
     setPendingAction(null);
     try { localStorage.removeItem(CHAT_HISTORY_KEY); } catch { }
+  };
+
+  // 🚩 Report a wrong AI reply — snapshots the last 10 messages to the backend
+  // (ai_feedback table) so the developer can review the mistake and turn it into
+  // a test case / prompt fix. This is the "AI learning" feedback loop.
+  const [isReporting, setIsReporting] = useState(false);
+  const reportIssue = async () => {
+    if (messages.length === 0 || isReporting) return;
+    setIsReporting(true);
+    try {
+      const token = localStorage.getItem('keyss_token');
+      const res = await fetch(`${API_BASE_URL}/api/timesheet/ai/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          messages: messages.slice(-10).map(m => ({ role: m.role, content: m.content, context: m.context || null })),
+          selectedProject: activeContext?.name || null,
+          note: null,
+        }),
+      });
+      if (!res.ok) throw new Error('report failed');
+      flashToast('✅ Report bhej diya — shukriya!');
+    } catch {
+      flashToast("Report nahi bhej paye — dobara try karo");
+    } finally {
+      setIsReporting(false);
+    }
   };
 
   useEffect(() => {
@@ -287,7 +334,10 @@ export default function AIChatbot() {
           history,
           pendingAction,
           selectedProject: projName,      // clean project name → project_id
-          selectedTasks: projTasks        // ticked tasks → module_name
+          selectedTasks: projTasks,       // ticked tasks → module_name
+          // The user's real IANA timezone so the backend resolves "today"/"kal"
+          // to THEIR local date — a night-shift user at 1 AM must not log yesterday.
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
         }),
         signal: controller.signal,
       });
@@ -347,6 +397,9 @@ export default function AIChatbot() {
               </div>
             </div>
             <div className="flex items-center gap-1">
+              {messages.length > 0 && (
+                <button onClick={reportIssue} disabled={isReporting} title="Report a wrong reply" className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-300 disabled:opacity-50"><Flag size={18} /></button>
+              )}
               {messages.length > 0 && (
                 <button onClick={clearChat} title="Clear chat" className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-red-300"><Trash2 size={18} /></button>
               )}

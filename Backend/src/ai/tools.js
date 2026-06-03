@@ -20,9 +20,11 @@ A single emoji is fine. Do NOT ask for task details and do NOT list instructions
 When it fits naturally, gently invite them to log hours (e.g. "Want me to log some hours?").`;
 }
 
-export function getSystemPrompt() {
-  const today = new Date().toISOString().split('T')[0];
-  const year = new Date().getFullYear();
+// `today` is the user's timezone-correct date (YYYY-MM-DD), passed in by aiChat
+// so the prompt's "TODAY"/date examples match the user's real local day — not
+// UTC. Defaults to UTC only for safety if a caller forgets to pass it.
+export function getSystemPrompt(today = new Date().toISOString().split('T')[0]) {
+  const year = new Date(`${today}T00:00:00Z`).getFullYear();
 
   return `You are an intelligent enterprise timesheet assistant. You understand natural language from any timezone, any language, any work schedule.
 

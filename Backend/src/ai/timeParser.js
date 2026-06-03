@@ -70,7 +70,7 @@ function resolveWithin(hour, minute, meridiem, dayStart, dayEnd) {
 const MODULE_RULES = [
   [/\btest|qa|scenario\b/i, "TESTING"],
   [/\bbug|fix|defect|issue\b/i, "BUG_FIXING"],
-  [/\bmeet|sync|standup|stand-up|call|1:1|catch ?up\b/i, "MEETING"],
+  [/\bmeet|sync|standup|stand-up|scrum|sprint|demo|retro|grooming|huddle|call|1:1|catch ?up\b/i, "MEETING"],
   [/\breview|pr\b/i, "CODE_REVIEW"],
   [/\bdeploy|release|ship\b/i, "DEPLOYMENT"],
   [/\bresearch|investigat|explore|spike\b/i, "RESEARCH"],
