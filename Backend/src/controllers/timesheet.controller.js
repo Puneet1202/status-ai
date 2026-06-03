@@ -226,15 +226,40 @@ export const submitAiFeedback = async (c) => {
             context: m.context ? String(m.context).slice(0, 200) : null,
         }));
 
-        await db
-            .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages) VALUES (?, ?, ?, ?)')
-            .bind(
-                user.id,
-                note ? String(note).slice(0, 500) : null,
-                selectedProject ? String(selectedProject).slice(0, 200) : null,
-                JSON.stringify(trimmed)
-            )
-            .run();
+        // Human-readable transcript so you can open a feedback row and instantly
+        // see what the user said and what the AI replied — no JSON parsing needed:
+        //   [1] USER (project: AI Project): 9 se 11 bug fix
+        //   [2] AI: I couldn't read the time blocks...
+        const transcript = trimmed
+            .map((m, i) => {
+                const who = m.role === 'assistant' ? 'AI' : 'USER';
+                const ctx = m.context ? ` (project: ${m.context})` : '';
+                return `[${i + 1}] ${who}${ctx}: ${m.content}`;
+            })
+            .join('\n');
+
+        const noteVal = note ? String(note).slice(0, 500) : null;
+        const projVal = selectedProject ? String(selectedProject).slice(0, 200) : null;
+        const messagesJson = JSON.stringify(trimmed);
+
+        // Prefer the readable `transcript` column. If migration 0003 hasn't been
+        // applied yet (older DB), gracefully fall back to the original insert so
+        // reporting never breaks mid-deploy.
+        try {
+            await db
+                .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages, transcript) VALUES (?, ?, ?, ?, ?)')
+                .bind(user.id, noteVal, projVal, messagesJson, transcript)
+                .run();
+        } catch (e) {
+            if (/no column named transcript|has no column|no such column/i.test(String(e?.message))) {
+                await db
+                    .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages) VALUES (?, ?, ?, ?)')
+                    .bind(user.id, noteVal, projVal, messagesJson)
+                    .run();
+            } else {
+                throw e;
+            }
+        }
 
         return c.json({ success: true, message: 'Thanks! Your report was saved.' }, 201);
     } catch (error) {

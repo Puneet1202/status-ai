@@ -23,10 +23,14 @@ const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
 // EXISTING logged entry" — NOT common work verbs like "fix"/"change" which
 // appear in normal descriptions ("9-10 fix the ui bugs" is an ADD, not an edit).
 const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)|\bsahi kar ?do\b|\bsahi karo\b|\bchange (?:that|it|this) to\b|\bcorrect (?:it|that|this)\b|\bthat(?:'s| was| is)? wrong\b|\bbadal ?do\b|\bupdate kar ?do\b/i;
-// STRONG_GET = read verbs only (NOT date words) — used to keep an obvious
-// history query from being parsed as an add. "log yesterday 9-11" has a date
-// word but no read verb, so it stays an ADD.
-const STRONG_GET = /\b(show|list|view|fetch|display|history|report|summary|how many|how much|kitne|kitna|total hours|fetch my|my logs)\b/i;
+// Read-intent signals that keep an obvious history query from being parsed as an
+// add. Split in two so a work NOUN never hijacks a time-log:
+//  • HARD_GET — explicit query verbs that never appear inside a work description.
+//  • SOFT_GET — words that DOUBLE as work nouns ("9 se 11 report banayi"). These
+//    mean "show me" ONLY when there's no time block; with a time block present
+//    they're part of the logged work. (They still gate the model via GET_INTENT.)
+const HARD_GET = /\b(show|list|view|fetch|display|history|how many|how much|kitne|kitna|total hours|fetch my|my logs)\b/i;
+const SOFT_GET = /\b(report|summary)\b/i;
 // Broad signal — used only to gate the model's get_timesheet call (anti-hallucination).
 const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
 
@@ -168,10 +172,18 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // The model was flaky at emitting the entries[] array; parsing is
         // mechanical, so we do it ourselves: 100% repeatable, fast, no timeout.
         // Skip only when the user clearly wants delete/update or an explicit read.
+        // A specific time block ("9 se 11", "9-11", "9am") means LOGGING — history
+        // queries say "today"/"this week", never a precise range. So SOFT_GET words
+        // ("report"/"summary") next to a time block stay an ADD (fixes "9 se 11
+        // report banayi", which used to misfire on the word "report").
+        const hasTimeBlock =
+            /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(cleanMessage) ||
+            /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(cleanMessage);
         const wantsOther =
             DELETE_INTENT.test(cleanMessage) ||
             UPDATE_INTENT.test(cleanMessage) ||
-            STRONG_GET.test(cleanMessage);
+            HARD_GET.test(cleanMessage) ||
+            (SOFT_GET.test(cleanMessage) && !hasTimeBlock);
 
         if (!wantsOther) {
             // HYBRID: LLM understands any format → regex fallback → handler validates.
@@ -196,7 +208,18 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             // burning a second LLM round-trip — the user just re-sends in a
             // clearer format (which the instant regex then handles). The user's
             // text is never lost; nothing bad is saved.
-            if (/\d/.test(cleanMessage)) {
+            // Only treat this as a FAILED time-log when the text actually looks
+            // like it carried a time. A digit GLUED to letters — a project name
+            // like "Core Infra V2", or "v2 done" — must NOT trigger the "couldn't
+            // read the time blocks" reply; that false positive made selecting a
+            // project feel broken. Genuine garbled times ("25ish oclock", "9 to x")
+            // still match via a standalone number or an explicit clock word.
+            const hasStandaloneNumber = /(?:^|[^a-z0-9])\d{1,2}\b/i.test(cleanMessage);
+            const hasClockWord =
+                /\bo.?clock\b|\bbaje\b|\bnoon\b|\bmidnight\b/i.test(cleanMessage) ||
+                /\d\s*[ap]\.?m\b/i.test(cleanMessage) ||
+                /:\d{2}\b/.test(cleanMessage);
+            if (hasStandaloneNumber || hasClockWord) {
                 console.warn('[hybrid add] no blocks extracted (regex + LLM) for:', cleanMessage);
                 return {
                     reply:

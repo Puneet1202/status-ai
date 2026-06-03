@@ -113,9 +113,9 @@ export default function AIChatbot() {
         }),
       });
       if (!res.ok) throw new Error('report failed');
-      flashToast('✅ Report bhej diya — shukriya!');
+      flashToast('✅ Report sent — thank you!');
     } catch {
-      flashToast("Report nahi bhej paye — dobara try karo");
+      flashToast("Couldn't send the report — please try again.");
     } finally {
       setIsReporting(false);
     }
@@ -196,11 +196,16 @@ export default function AIChatbot() {
     const textBeforeCursor = inputValue.slice(0, cursorPos);
     const textAfterCursor = inputValue.slice(cursorPos);
 
+    // Strip ONLY the "@query" token the user was typing. The project is captured
+    // as the pill (activeContext) below — we no longer inject "ProjectName: " into
+    // the message. That old injection put the project in TWO places (text + pill),
+    // polluted the logged message ("Core Infra V2:"), and made selecting a project
+    // feel like it "left the chat". Now the user's real words stay intact and the
+    // pill is the single source of truth for which project this logs under.
     const words = textBeforeCursor.split(' ');
-    words.pop(); 
-    
-    // Project select hone par text append hoga
-    const updatedTextBeforeCursor = words.join(' ') + (words.length > 0 ? ' ' : '') + `${projectName}: `;
+    words.pop(); // drop the trailing "@..." token being typed
+    const cleanedBefore = words.join(' ');
+    const updatedTextBeforeCursor = cleanedBefore.length > 0 ? cleanedBefore + ' ' : '';
     const newText = updatedTextBeforeCursor + textAfterCursor;
 
     setInputValue(newText);
@@ -274,7 +279,7 @@ export default function AIChatbot() {
     // at least one ticked task. Greetings/queries (no time pattern) pass freely.
     // Projects with NO predefined tasks (e.g. Internal Tools) are exempt from the
     // task check, otherwise they could never be logged.
-    const looksLikeLog = /\d{1,2}\s*(?::\d{2}|[-–—]|→|to\b|am\b|pm\b|baje)/i.test(inputValue);
+    const looksLikeLog = /\d{1,2}\s*(?::\d{2}|[-–—]|→|to\b|se\b|till\b|am\b|pm\b|baje)/i.test(inputValue);
     if (looksLikeLog) {
       if (!activeContext) {
         flashToast("Select a project first — type '@'");
@@ -346,6 +351,16 @@ export default function AIChatbot() {
 
       const data = await response.json();
       setPendingAction(data.pendingAction ?? null);
+
+      // A COMPLETED save/delete/update returns success:true → clear the project +
+      // task pills so the next entry starts fresh (user feedback: pills should not
+      // linger after Enter). A mid-conversation reply ("what time?", "select a
+      // project") has NO success flag, so the pills stay and multi-turn logging
+      // for a SINGLE entry still works.
+      if (data.success) {
+        setActiveContext(null);
+        setShowTaskDropdown(false);
+      }
 
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
@@ -436,11 +451,16 @@ export default function AIChatbot() {
             
             {isLoading && (
               <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 border border-slate-800"><Loader2 size={16} className="animate-spin text-indigo-500" /></div>
-                <div className="flex gap-1">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-700"></span>
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-700 [animation-delay:0.2s]"></span>
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-700 [animation-delay:0.4s]"></span>
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 border border-slate-800"><Loader2 size={16} className="animate-spin text-indigo-500" /></div>
+                <div className="flex flex-col gap-1.5">
+                  {/* Reassure the user the AI is working — not stuck/about to stop */}
+                  <span className="text-xs font-medium text-slate-300">KEYSS AI is thinking…</span>
+                  <span className="text-[10px] text-slate-500">Reading your message — this can take a few seconds.</span>
+                  <div className="flex gap-1 pt-0.5">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500/70"></span>
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500/70 [animation-delay:0.2s]"></span>
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500/70 [animation-delay:0.4s]"></span>
+                  </div>
                 </div>
               </div>
             )}

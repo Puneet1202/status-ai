@@ -1,0 +1,21 @@
+-- Migration 0003 — add a human-readable `transcript` column to `ai_feedback`.
+--
+-- WHY: the `messages` column stores the chat as a JSON blob (one object), which
+-- is hard to read when you open the row in the DB. `transcript` stores the SAME
+-- conversation as plain text — one line per turn — so you can see at a glance
+-- what the user said and what the AI replied:
+--
+--   [1] USER: how many hours did I work today?
+--   [2] AI: Got it — just tell me the time and what you worked on...
+--   [3] USER (project: AI Project): 9 se 11 bug fix
+--   [4] AI: I couldn't read the time blocks...
+--
+-- SAFE: only ADDS a nullable column — it never touches existing rows or data,
+-- so it cannot break anything. Old rows simply have transcript = NULL.
+--
+-- Apply to the LIVE D1:
+--   npx wrangler d1 execute keyss-timesheet-db --remote --file=migrations/0003_add_feedback_transcript.sql
+-- Apply to the LOCAL dev D1 (for `wrangler dev`):
+--   npx wrangler d1 execute keyss-timesheet-db --local  --file=migrations/0003_add_feedback_transcript.sql
+
+ALTER TABLE ai_feedback ADD COLUMN transcript TEXT DEFAULT NULL;

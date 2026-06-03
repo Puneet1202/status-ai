@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS ai_feedback (
     note TEXT DEFAULT NULL,
     selected_project TEXT DEFAULT NULL,
     messages TEXT NOT NULL,            -- JSON: the last N {role, content, context} turns
+    transcript TEXT DEFAULT NULL,      -- human-readable rendering of `messages` (one line per turn)
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (employee_id) REFERENCES users(id) ON DELETE CASCADE
 );
