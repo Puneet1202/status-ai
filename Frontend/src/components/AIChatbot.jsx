@@ -156,19 +156,11 @@ export default function AIChatbot({
       const projs = data.projects || [];
       setProjects(projs);
       setFilteredProjects(projs);
-
-      // 🔥 PRE-WARM: fetch every project's tasks in the background so the task
-      // dropdown opens INSTANTLY on first select (no per-project network wait).
-      // Falls back to on-demand fetch in selectContext if a select beats this.
-      projs.forEach(p => {
-        if (taskCache.current[p.id]) return;
-        fetch(`${apiBaseUrl}/api/timesheet/projects/${p.id}/tasks`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        })
-          .then(r => r.json())
-          .then(d => { if (d?.success) taskCache.current[p.id] = d.tasks || []; })
-          .catch(() => {});
-      });
+      // Tasks are fetched ON-DEMAND when a project is actually selected
+      // (see selectContext — it fetches once and caches per project). We do NOT
+      // pre-fetch every project's tasks here: that fired one request PER project
+      // on every mount (the repeated "Controller Triggered for Project ID ..."
+      // spam + needless DB load). On-demand is plenty fast.
     })
     .catch(err => console.error("Error loading chat contexts:", err));
   }, []);

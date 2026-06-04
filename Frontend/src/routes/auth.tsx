@@ -17,7 +17,7 @@ export const AuthScreen: React.FC = () => {
     setError('');
     setLoading(true);
 
-    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
+    const endpoint = isLogin ? '/api/auth/login' : '/api/auth/signup';
     const url = `${API_BASE_URL}${endpoint}`;
     
     const payload = isLogin ? { email, password } : { name, email, password };

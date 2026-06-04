@@ -3,11 +3,19 @@
 
 import { Hono } from 'hono';
 import { cors } from 'hono/cors'; // Inbuilt CORS package import kiya
+import { logger } from 'hono/logger'; // har request terminal pe dikhane ke liye
 import authRouter from './routers/auth.routes.js';
 import timesheetRouter from './routers/timesheet.routes.js';
 
 
 const app = new Hono();
+
+// ── REQUEST LOGGER ───────────────────────────────────────────────────────────
+// Har incoming request terminal pe dikhata hai:
+//   <-- POST /api/auth/login          (request aayi)
+//   --> POST /api/auth/login 200 12ms (response gaya, status + time)
+// Isse turant pata chalta hai konsi request hit hui aur kya status mila.
+app.use('*', logger());
 
 
 
@@ -49,5 +57,19 @@ app.route('/api/timesheet', timesheetRouter);
 
 
 app.get('/', (c) => c.text('KEYSS Timesheet Engine - Serverless Core Live'));
+
+// ── GLOBAL ERROR + 404 LOGGING ───────────────────────────────────────────────
+// Koi bhi unhandled error → terminal pe method/path + poora message + stack.
+app.onError((err, c) => {
+  console.error(`❌ [ERROR] ${c.req.method} ${c.req.path} →`, err?.message || err);
+  if (err?.stack) console.error(err.stack);
+  return c.json({ success: false, message: 'Internal Server Error' }, 500);
+});
+
+// Jo route match na ho (jaise galat URL) → terminal pe saaf dikhe.
+app.notFound((c) => {
+  console.warn(`⚠️  [404] ${c.req.method} ${c.req.path} — koi route match nahi hua`);
+  return c.json({ success: false, message: 'Not found' }, 404);
+});
 
 export default app;

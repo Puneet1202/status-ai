@@ -22,7 +22,7 @@ export const addTimesheetEntry = async (c) => {
         const employeeId = currentUser.id;
         const body = await c.req.json();
 
-        let { entry_date, start_time, end_time, module_name, task_description, project_name, duration_minutes, duration_hours } = body;
+        let { entry_date, start_time, end_time, module_name, task_description, project_name, duration_minutes, duration_hours, task_name } = body;
 
         // Duration normalization — no hardcoded fallback
         if (!duration_minutes && duration_hours) {
@@ -48,8 +48,8 @@ export const addTimesheetEntry = async (c) => {
 
         const projectId = await getOrCreateProjectId(db, project_name);
         const result = await db
-            .prepare(`INSERT INTO daily_status_entries (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(employeeId, projectId, entry_date, start_time, end_time, parseInt(duration_minutes, 10), (module_name || "GENERAL").toUpperCase().trim(), task_description)
+            .prepare(`INSERT INTO daily_status_entries (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(employeeId, projectId, entry_date, start_time, end_time, parseInt(duration_minutes, 10), (module_name || "GENERAL").toUpperCase().trim(), task_description, task_name || null)
             .run();
 
         if (result.meta.changes === 0) throw new Error("Insert failed.");
@@ -75,7 +75,7 @@ export const getAllTimesheetsAdmin = async (c) => {
 
         let sqlQuery = `
             SELECT t.id, t.employee_id, t.project_id, t.entry_date, t.start_time, t.end_time,
-                   t.duration_minutes, t.task_description, t.module_name, t.is_email_sent, t.created_at,
+                   t.duration_minutes, t.task_description, t.module_name, t.task_name, t.is_email_sent, t.created_at,
                    u.name as employee_name, u.email as employee_email, p.name as project_name
             FROM daily_status_entries t
             JOIN users u ON t.employee_id = u.id
@@ -274,14 +274,32 @@ export const submitAiFeedback = async (c) => {
 export const getProjects = async (c) => {
     try {
         const db = c.env.DB;
-        const { results } = await db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all();
+        const currentUser = c.get('user');
+
+        // EMPLOYEE → sirf apne assigned projects (users.employee_id → employee → project_assignments).
+        // ADMIN / HR / SUPERADMIN → poori company ke saare projects (woh manage karte hain).
+        let results;
+        if (currentUser.role === 'employee') {
+            ({ results } = await db
+                .prepare(`SELECT DISTINCT p.id, p.name
+                            FROM projects p
+                            JOIN project_assignments pa ON pa.project_id = p.id
+                            JOIN employee e             ON e.id = pa.employee_id
+                            JOIN users u                ON u.employee_id = e.id
+                           WHERE u.id = ?
+                           ORDER BY p.name ASC`)
+                .bind(currentUser.id)
+                .all());
+        } else {
+            ({ results } = await db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all());
+        }
+
         return c.json({ projects: results, success: true }, 200);
     } catch (error) {
         console.error("[Projects Error]:", error);
         return c.json({ success: false, message: "Failed to fetch projects" }, 500);
     }
 };
-
 
 
 // =========================================================================
@@ -292,10 +310,7 @@ export const getProjects = async (c) => {
 export const getProjectTasksController = async (c) => {
   
   // 👉 LINE 1: Frontend jo URL bhejega (like /projects/2/tasks), usme se hum 'id' (Project ID) nikaal rahe hain
-  const projectId = c.req.param('id'); 
-  
-  // Telemetry: Server ke console mein print karega ki kis project ke liye request aayi hai
-  console.log("==> Controller Triggered for Project ID:", projectId);
+  const projectId = c.req.param('id');
 
   try {
     // 👉 LINE 2: Cloudflare D1 Remote Database se connect karke query taiyaar kar rahe hain

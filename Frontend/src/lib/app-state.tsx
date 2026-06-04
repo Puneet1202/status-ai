@@ -32,7 +32,16 @@ export const AppStateProvider: React.FC<{ children: ReactNode }> = ({ children }
     }
   }, []);
 
+  // Chat history + any half-finished AI action are per-browser. They MUST be
+  // wiped whenever the logged-in identity changes, otherwise a new/different user
+  // on the same browser would see the previous user's chat (privacy bug).
+  const clearChatState = () => {
+    localStorage.removeItem('keyss_chat_history');
+    localStorage.removeItem('keyss_pending_action');
+  };
+
   const login = (userData: User, tokenData: string) => {
+    clearChatState(); // fresh session → never inherit a prior user's chat
     setUser(userData);
     setToken(tokenData);
     localStorage.setItem('keyss_user', JSON.stringify(userData));
@@ -44,6 +53,7 @@ export const AppStateProvider: React.FC<{ children: ReactNode }> = ({ children }
     setToken(null);
     localStorage.removeItem('keyss_user');
     localStorage.removeItem('keyss_token');
+    clearChatState(); // so the next user on this browser can't see this chat
   };
 
   return (

@@ -1,370 +1,529 @@
-// FILE: Frontend/src/routes/enter-status.tsx
-// KAAM: Secure Status Entry + Live Record Deletion Engine
+// FILE: Frontend/src/routes/enter.tsx
+// KAAM: Add Work Status + Today's Entries — blue/dark theme
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAppState } from '../lib/app-state';
 import { API_BASE_URL } from '../lib/api';
-import { Clock, Briefcase, AlertTriangle, Send, Trash2 } from 'lucide-react';
+import { Send, Trash2, AlertTriangle, Clock, CheckCircle2 } from 'lucide-react';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface ProjectOption { id: number; name: string; }
+interface TaskOption    { id: number; task_name: string; }
 interface TimesheetLog {
   id?: string;
   employee_id?: string;
+  employee_name?: string;
   entry_date?: string;
   start_time?: string;
   end_time?: string;
-  duration_hours?: number;
+  duration_minutes?: number;
   module_name?: string;
+  task_name?: string;
   task_description?: string;
   project_name?: string;
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const getLocalDateStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+const toMinutes = (t: string) => {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+};
+
+const fmt12 = (t: string | undefined) => {
+  if (!t) return '—';
+  const [hStr, mStr] = t.split(':');
+  let h = parseInt(hStr, 10);
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${String(h).padStart(2,'0')}:${mStr} ${ap}`;
+};
+
+const MAX_DESC = 300;
+
+// ─── Component ────────────────────────────────────────────────────────────────
 export const EnterStatus: React.FC = () => {
-  const { user, token } = useAppState();
+  const { token } = useAppState();
 
-  const [client, setClient] = useState('');
-  const [project, setProject] = useState('');
-  const [startTime, setStartTime] = useState('09:00');
-  const [endTime, setEndTime] = useState('11:00');
-  const [module, setModule] = useState('');
-  const [description, setDescription] = useState('');
+  // Form state
+  const [projects,           setProjects]           = useState<ProjectOption[]>([]);
+  const [selectedProjectId,  setSelectedProjectId]  = useState<number | null>(null);
+  const [selectedProjectName,setSelectedProjectName]= useState('');
+  const [tasks,              setTasks]              = useState<TaskOption[]>([]);
+  const [selectedTaskName,   setSelectedTaskName]   = useState('');
+  const [tasksLoading,       setTasksLoading]       = useState(false);
+  const [startTime,          setStartTime]          = useState('09:00');
+  const [endTime,            setEndTime]            = useState('11:00');
+  const [description,        setDescription]        = useState('');
+  const [submitError,        setSubmitError]        = useState('');
+  const [submitSuccess,      setSubmitSuccess]      = useState(false);
+  const [loading,            setLoading]            = useState(false);
 
+  // Right-panel state
   const [todaysLogs, setTodaysLogs] = useState<TimesheetLog[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [errorAlert, setErrorAlert] = useState('');
+  const [deletingId,  setDeletingId] = useState<string | null>(null);
+  const [logsError,  setLogsError]  = useState('');
 
-  const getLocalDateStr = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
+  // ── Duration validation ──────────────────────────────────────────────────
+  const durationMins = (() => {
+    if (!startTime || !endTime) return 0;
+    const diff = toMinutes(endTime) - toMinutes(startTime);
+    return diff > 0 ? diff : 0;           // negative = end < start → invalid
+  })();
+  const durationHours = Number((durationMins / 60).toFixed(2));
+  const endBeforeStart = startTime && endTime && toMinutes(endTime) <= toMinutes(startTime);
+  const overTwoHours   = durationMins > 120;
+  const zeroDuration   = durationMins === 0;
+  const timeError = endBeforeStart
+    ? 'End time must be after start time.'
+    : overTwoHours
+    ? `Duration ${durationHours}h exceeds the 2-hour limit. Please split into shorter slots.`
+    : zeroDuration && startTime && endTime
+    ? 'Duration must be greater than 0.'
+    : '';
 
-  const handleStartTimeChange = (val: string) => {
-    setStartTime(val);
-    setErrorAlert('');
-    if (!val) return;
+  const taskRequired  = tasks.length > 0 && !selectedTaskName;
+  const canSubmit     = !loading
+    && !!selectedProjectId
+    && !taskRequired
+    && !timeError
+    && durationMins > 0
+    && description.trim().length > 0;
 
-    const [hours, minutes] = val.split(':').map(Number);
-    let newHours = hours + 2;
-    if (newHours >= 24) newHours -= 24;
-
-    const calculatedEnd = `${String(newHours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
-    setEndTime(calculatedEnd);
-  };
-
-  const calculateDuration = (start: string, end: string): number => {
-    if (!start || !end) return 0;
-    const [startH, startM] = start.split(':').map(Number);
-    const [endH, endM] = end.split(':').map(Number);
-    let diff = (endH * 60 + endM) - (startH * 60 + startM);
-    if (diff < 0) diff += 24 * 60;
-    return Number((diff / 60).toFixed(2));
-  };
-
-  const currentDuration = calculateDuration(startTime, endTime);
-  const isExactlyTwoHours = currentDuration === 2.0;
-
-  const isTimeSlotOverlapping = (): boolean => {
-    return todaysLogs.some(log => {
-      if (!log.start_time || !log.end_time) return false;
-
-      const [lStartH, lStartM] = log.start_time.split(':').map(Number);
-      const [lEndH, lEndM] = log.end_time.split(':').map(Number);
-      const logStart = lStartH * 60 + lStartM;
-      const logEnd = lEndH * 60 + lEndM;
-
-      const [cStartH, cStartM] = startTime.split(':').map(Number);
-      const [cEndH, cEndM] = endTime.split(':').map(Number);
-      const currentStart = cStartH * 60 + cStartM;
-      const currentEnd = cEndH * 60 + cEndM;
-
-      const isSameSlot =
-  logStart === currentStart &&
-  logEnd === currentEnd;
-
-if (isSameSlot) return false;
-
-return Math.max(logStart, currentStart) < Math.min(logEnd, currentEnd);
-    });
-  };
-
-  const hasOverlap =
-    todaysLogs.length > 0 &&
-    isTimeSlotOverlapping();
-  const targetDailyHours = 8.0;
-
-  const totalLoggedToday = todaysLogs.reduce((sum, log) => sum + (log.duration_hours || 0), 0);
-  const dailyPercentage = Math.min(100, Math.max(0, (totalLoggedToday / targetDailyHours) * 100));
-
-  const fetchTodaysLogs = async () => {
+  // ── Fetch projects on mount ─────────────────────────────────────────────
+  useEffect(() => {
     if (!token) return;
+    fetch(`${API_BASE_URL}/api/timesheet/projects`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then(d => setProjects(d.projects || []))
+      .catch(console.error);
+  }, [token]);
+
+  // ── Fetch tasks when project changes ────────────────────────────────────
+  useEffect(() => {
+    setTasks([]);
+    setSelectedTaskName('');
+    if (selectedProjectId === null) return;
+    setTasksLoading(true);
+    fetch(`${API_BASE_URL}/api/timesheet/projects/${selectedProjectId}/tasks`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then(d => setTasks(d.tasks || []))
+      .catch(console.error)
+      .finally(() => setTasksLoading(false));
+  }, [selectedProjectId]);
+
+  // ── Fetch today's logs ─────────────────────────────────────────────────
+  const fetchTodaysLogs = useCallback(async () => {
+    if (!token) return;
+    setLogsError('');
     try {
       const res = await fetch(`${API_BASE_URL}/api/timesheet/admin/all-logs`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        const logs: TimesheetLog[] = data.telemetry_logs || [];
-        const todayStr = getLocalDateStr();
-
-        const filtered = logs.filter(l => l.entry_date === todayStr);
-        filtered.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
-        setTodaysLogs(filtered);
-      }
-    } catch (err) {
-      console.error(err);
+      if (!res.ok) throw new Error('fetch failed');
+      const data = await res.json();
+      const allLogs: TimesheetLog[] = data.telemetry_logs || [];
+      const today = getLocalDateStr();
+      const filtered = allLogs
+        .filter(l => l.entry_date === today)
+        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+      setTodaysLogs(filtered);
+    } catch {
+      setLogsError('Could not load today\'s entries.');
     }
-  };
+  }, [token]);
 
-  // 🗑️ LIVE DELETE CONTROLLER HANDSHAKE
-  const handleDeleteLog = async (id: string | undefined) => {
+  useEffect(() => { fetchTodaysLogs(); }, [fetchTodaysLogs]);
+
+  // ── Delete entry ────────────────────────────────────────────────────────
+  const handleDelete = async (id: string | undefined) => {
     if (!id || !token) return;
-    if (!window.confirm("Are you sure you want to purge this status block entry?")) return;
-
+    if (!window.confirm('Delete this entry?')) return;
     setDeletingId(id);
-    setErrorAlert('');
     try {
-      // Direct call to backend deletion pipeline
       const res = await fetch(`${API_BASE_URL}/api/timesheet/delete/${id}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: { Authorization: `Bearer ${token}` },
       });
-
-      if (res.ok) {
-        // Success: Refresh telemetry track locally
-        fetchTodaysLogs();
-      } else {
-        throw new Error('Deletion rejected by backend.');
-      }
-    } catch (err) {
-      setErrorAlert('Failed to delete log entry from database cluster.');
+      if (!res.ok) throw new Error();
+      fetchTodaysLogs();
+    } catch {
+      setLogsError('Failed to delete entry.');
     } finally {
       setDeletingId(null);
     }
   };
 
-  useEffect(() => {
-    fetchTodaysLogs();
-  }, [token]);
-
-  const handleSubmitStatus = async (e: React.FormEvent) => {
+  // ── Submit ──────────────────────────────────────────────────────────────
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorAlert('');
-
-    if (!isExactlyTwoHours) {
-      setErrorAlert('Block duration must be exact 2.0 hours.');
-      return;
-    }
-    if (hasOverlap) {
-      setErrorAlert('Exploit Blocked: This continuous time window has already been logged.');
-      return;
-    }
+    setSubmitError('');
+    setSubmitSuccess(false);
+    if (!canSubmit) return;
 
     setLoading(true);
-    const payload = {
-      entry_date: getLocalDateStr(),
-      start_time: startTime,
-      end_time: endTime,
-      duration_hours: 2.0,
-      module_name: module || 'General Sprint',
+    const payload: Record<string, unknown> = {
+      entry_date:       getLocalDateStr(),
+      start_time:       startTime,
+      end_time:         endTime,
+      duration_hours:   durationHours,
       task_description: description,
-      project_name: `${client} › ${project}`
+      project_name:     selectedProjectName,
     };
+    if (selectedTaskName) payload.task_name = selectedTaskName;
 
     try {
-      const res = await fetch(API_BASE_URL + '/api/timesheet/submit', {
+      const res = await fetch(`${API_BASE_URL}/api/timesheet/submit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
-
-      if (!res.ok) throw new Error('Transaction dropped.');
-      setModule(''); setDescription('');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { message?: string }).message || 'Submit failed.');
+      }
+      // Reset form
+      setSelectedProjectId(null);
+      setSelectedProjectName('');
+      setTasks([]);
+      setSelectedTaskName('');
+      setStartTime('09:00');
+      setEndTime('11:00');
+      setDescription('');
+      setSubmitSuccess(true);
+      setTimeout(() => setSubmitSuccess(false), 3000);
       fetchTodaysLogs();
-    } catch (err) {
-      setErrorAlert('Backend injection pipeline dropped packet transaction.');
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error ? err.message : 'Unexpected error. Try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  const parseCompoundProjectString = (compoundStr: string | undefined) => {
-    if (!compoundStr) return { client: 'General Context', project: 'Internal Sprint' };
-    if (compoundStr.includes(' › ')) {
-      const parts = compoundStr.split(' › ');
-      return { client: parts[0], project: parts[1] };
-    }
-    return { client: 'Key Software Services', project: compoundStr };
-  };
+  // ── Totals ──────────────────────────────────────────────────────────────
+  const totalMinsToday = todaysLogs.reduce((s, l) => s + (l.duration_minutes || 0), 0);
+  const totalHrsToday  = (totalMinsToday / 60).toFixed(1);
 
-  const formatTimeTo12H = (militaryTime: string | undefined) => {
-    if (!militaryTime) return '00:00 AM';
-    const [hStr, mStr] = militaryTime.split(':');
-    let hours = parseInt(hStr, 10);
-    const ampm = hours >= 12 ? 'PM' : 'AM';
-    hours = hours % 12;
-    hours = hours ? hours : 12;
-    return `${String(hours).padStart(2, '0')}:${mStr} ${ampm}`;
-  };
-
+  // ────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="max-w-7xl mx-auto flex flex-col gap-4 p-4 lg:p-6 h-[calc(100vh-20px)] lg:h-[calc(100vh-40px)] overflow-hidden text-slate-100">
+    <div className="min-h-screen bg-[#020617] text-slate-100 p-4 lg:p-6">
 
-      {/* Header */}
-      <div className="shrink-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-          <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">KEYSS INFRASTRUCTURE PANEL</h3>
+      {/* ── Page header ── */}
+      <div className="mb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+            KEYSS INFRASTRUCTURE PANEL
+          </span>
         </div>
-        <h2 className="text-xl font-bold text-white tracking-tight">Daily Status Logging Studio</h2>
+        <h1 className="text-2xl font-bold text-white tracking-tight">Daily Status Logging Studio</h1>
       </div>
 
-      {/* Main split view container */}
-      <div className="flex flex-col xl:flex-row gap-4 flex-1 min-h-0">
+      {/* ── Two-column layout ── */}
+      <div className="flex flex-col xl:flex-row gap-5 items-start">
 
-        {/* LEFT SIDE: Input Form */}
-        <div className="flex-[1.8] bg-[#020617] border border-slate-800 rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between min-h-0 shadow-2xl">
-          <form onSubmit={handleSubmitStatus} className="space-y-4 flex flex-col justify-between h-full min-h-0 relative z-10">
-            <div className="space-y-3 overflow-y-auto pr-1 custom-scrollbar">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Client Registry</label>
-                  <select required value={client} onChange={e => setClient(e.target.value)} className="w-full bg-[#0f172a]/70 border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-200 focus:ring-1 focus:ring-emerald-700 outline-none cursor-pointer">
-                    <option value="">Select Client Properties...</option>
-                    <option value="Key Software Services Pvt Ltd">Key Software Services Pvt Ltd</option>
-                    <option value="Acme Holdings">Acme Holdings</option>
-                  </select>
-                </div>
+        {/* ════════════════════ LEFT — Add Work Status ════════════════════ */}
+        <div className="w-full xl:w-[440px] shrink-0 bg-[#020617] border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="px-6 pt-5 pb-3 border-b border-slate-800/60">
+            <h2 className="text-base font-bold text-white">Add Work Status</h2>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Log what you worked on, when, and on which project.
+            </p>
+          </div>
 
-                <div className="space-y-1">
-                  <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Project Track</label>
-                  <select required value={project} onChange={e => setProject(e.target.value)} className="w-full bg-[#0f172a]/70 border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-200 focus:ring-1 focus:ring-emerald-700 outline-none cursor-pointer">
-                    <option value="">Select Target Sprint...</option>
-                    <option value="Business Development">Business Development</option>
-                    <option value="Internal Tools">Internal Tools</option>
-                    <option value="Onboarding Portal">Onboarding Portal</option>
-                  </select>
-                </div>
-              </div>
+          <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
 
-              {/* Hours Grid */}
-              <div className="bg-[#0f172a]/40 border border-slate-800/60 rounded-xl p-4">
-                <div className="flex items-center gap-4 relative">
-                  <div className="flex-1 space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">START TIME (24H Format)</label>
-                    <input type="time" required value={startTime} onChange={e => handleStartTimeChange(e.target.value)} className="w-full bg-[#020617] border border-slate-800 rounded-xl px-4 py-1.5 text-xs font-semibold text-slate-100 focus:ring-1 focus:ring-emerald-700 outline-none [color-scheme:dark]" />
-                  </div>
+            {/* Project */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Project <span className="text-red-400">*</span>
+              </label>
+              <select
+                required
+                value={selectedProjectId ?? ''}
+                onChange={e => {
+                  const id = e.target.value ? Number(e.target.value) : null;
+                  const name = id
+                    ? (projects.find(p => p.id === id)?.name ?? '')
+                    : '';
+                  setSelectedProjectId(id);
+                  setSelectedProjectName(name);
+                }}
+                className="w-full bg-[#0f172a] border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-600 cursor-pointer"
+              >
+                <option value="">Select a project…</option>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
 
-                  <div className="shrink-0 mt-4">
-                    <div className={`shadow-md border px-3 py-1 rounded-full text-[11px] font-black ${(!isExactlyTwoHours || hasOverlap) ? 'bg-red-950/40 border-red-800/50 text-red-400' : 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400'}`}>
-                      {currentDuration.toFixed(1)}h
-                    </div>
-                  </div>
-
-                  <div className="flex-1 space-y-1">
-                    <label className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">AUTO END TIME</label>
-                    <input type="time" disabled value={endTime} className="w-full bg-[#0f172a]/40 border border-slate-800/40 text-slate-400 rounded-xl px-4 py-1.5 text-xs font-semibold outline-none cursor-not-allowed opacity-80" />
-                  </div>
-                </div>
-
-                <div className="mt-4 flex items-center justify-between bg-[#020617]/40 border border-slate-800/40 rounded-lg p-2 px-3">
-                  <div className='flex items-center gap-2'>
-                    <div className="h-1 w-24 bg-slate-800/70 rounded-full overflow-hidden">
-                      <div className="h-full bg-emerald-500 rounded-full transition-all duration-500" style={{ width: `${dailyPercentage}%` }}></div>
-                    </div>
-                    <span className="text-xs font-black text-slate-300">{dailyPercentage.toFixed(0)}%</span>
-                  </div>
-                  <span className="text-[10px] font-bold text-slate-400 tracking-wider">DAILY IMMUNITY BLOCK: {totalLoggedToday.toFixed(1)}h / {targetDailyHours.toFixed(1)}h</span>
-                </div>
-
-                {(errorAlert || hasOverlap) && (
-                  <div className="mt-3 flex items-center gap-2 rounded-lg bg-red-950/30 border border-red-900/40 p-2.5 text-[10px] font-semibold text-red-300 animate-pulse">
-                    <AlertTriangle size={12} className="shrink-0" />
-                    {hasOverlap ? 'Security Alert: Overlapping timeline block logic collision detected!' : errorAlert}
-                  </div>
+            {/* Task */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                Task
+                {tasks.length > 0 && <span className="text-red-400">*</span>}
+                {tasksLoading && (
+                  <span className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin inline-block" />
                 )}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Module Context (optional)</label>
-                <input type="text" value={module} onChange={e => setModule(e.target.value)} placeholder="e.g. Auth Engine, Report Pipeline" className="w-full bg-[#0f172a]/70 border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-200 focus:ring-1 focus:ring-emerald-700 outline-none placeholder:text-slate-600" />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Detailed Contribution Description</label>
-                <textarea required value={description} onChange={e => setDescription(e.target.value)} rows={3} placeholder="Describe specific technical feature builds, bugs eliminated, or infrastructure alignment details..." className="w-full bg-[#0f172a]/70 border border-slate-800 rounded-xl px-4 py-2.5 text-xs leading-relaxed text-slate-100 focus:ring-1 focus:ring-emerald-700 outline-none resize-none placeholder:text-slate-600 custom-scrollbar" />
-              </div>
+              </label>
+              <select
+                value={selectedTaskName}
+                onChange={e => setSelectedTaskName(e.target.value)}
+                disabled={!selectedProjectId || tasksLoading}
+                required={tasks.length > 0}
+                className="w-full bg-[#0f172a] border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {!selectedProjectId ? (
+                  <option value="">Select a project first</option>
+                ) : tasks.length === 0 && !tasksLoading ? (
+                  <option value="">No tasks for this project</option>
+                ) : (
+                  <>
+                    <option value="">Select a task…</option>
+                    {tasks.map(t => (
+                      <option key={t.id} value={t.task_name}>{t.task_name}</option>
+                    ))}
+                  </>
+                )}
+              </select>
             </div>
 
-            <div className="shrink-0 flex justify-end border-t border-slate-800/40 pt-3">
-              <button type="submit" disabled={!isExactlyTwoHours || hasOverlap || loading} className={`flex items-center gap-2 h-9 px-6 rounded-full text-[11px] font-black uppercase tracking-wider transition duration-300 shadow-md ${(!isExactlyTwoHours || hasOverlap || loading) ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/30' : 'bg-gradient-to-r from-blue-600 to-blue-500 text-white hover:shadow-lg hover:shadow-blue-900/20'}`}>
-                {loading ? <span className="w-3 h-3 border-2 border-slate-200 border-t-transparent rounded-full animate-spin"></span> : <Send size={12} />}
-                {loading ? 'Committing...' : 'Commit Status Entry'}
-              </button>
+            {/* Start / End time */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                Time Range <span className="text-red-400">*</span>
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 space-y-1">
+                  <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">Start</span>
+                  <input
+                    type="time"
+                    required
+                    value={startTime}
+                    onChange={e => { setStartTime(e.target.value); setSubmitError(''); }}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-600 [color-scheme:dark]"
+                  />
+                </div>
+
+                {/* Duration badge */}
+                <div className="shrink-0 mt-4">
+                  <span className={`text-[11px] font-black px-2.5 py-1 rounded-full border ${
+                    timeError
+                      ? 'bg-red-950/40 border-red-800/50 text-red-400'
+                      : durationMins > 0
+                      ? 'bg-emerald-950/40 border-emerald-800/50 text-emerald-400'
+                      : 'bg-slate-800/40 border-slate-700 text-slate-500'
+                  }`}>
+                    {durationMins > 0 ? `${durationHours}h` : '—'}
+                  </span>
+                </div>
+
+                <div className="flex-1 space-y-1">
+                  <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">End</span>
+                  <input
+                    type="time"
+                    required
+                    value={endTime}
+                    onChange={e => { setEndTime(e.target.value); setSubmitError(''); }}
+                    className="w-full bg-[#0f172a] border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-600 [color-scheme:dark]"
+                  />
+                </div>
+              </div>
+
+              {timeError && (
+                <div className="flex items-center gap-1.5 text-[10px] text-red-400 font-semibold mt-1">
+                  <AlertTriangle size={11} className="shrink-0" />
+                  {timeError}
+                </div>
+              )}
             </div>
+
+            {/* Description + char counter */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                  Task Description <span className="text-red-400">*</span>
+                </label>
+                <span className={`text-[10px] font-semibold ${description.length > MAX_DESC ? 'text-red-400' : 'text-slate-500'}`}>
+                  {description.length}/{MAX_DESC}
+                </span>
+              </div>
+              <textarea
+                required
+                rows={4}
+                maxLength={MAX_DESC}
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Describe the specific work you did — features built, bugs fixed, tasks completed…"
+                className="w-full bg-[#0f172a] border border-slate-700 rounded-xl px-4 py-2.5 text-xs leading-relaxed text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-600 resize-none placeholder:text-slate-600"
+              />
+            </div>
+
+            {/* Feedback messages */}
+            {submitError && (
+              <div className="flex items-center gap-2 rounded-lg bg-red-950/30 border border-red-900/40 px-3 py-2 text-[11px] font-semibold text-red-300">
+                <AlertTriangle size={12} className="shrink-0" />
+                {submitError}
+              </div>
+            )}
+            {submitSuccess && (
+              <div className="flex items-center gap-2 rounded-lg bg-emerald-950/30 border border-emerald-900/40 px-3 py-2 text-[11px] font-semibold text-emerald-300">
+                <CheckCircle2 size={12} className="shrink-0" />
+                Entry saved successfully!
+              </div>
+            )}
+
+            {/* Submit */}
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-[12px] font-black uppercase tracking-wider transition-all duration-200 shadow-md ${
+                canSubmit
+                  ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white hover:shadow-blue-900/30 hover:shadow-lg'
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/40'
+              }`}
+            >
+              {loading
+                ? <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />
+                : <Send size={13} />}
+              {loading ? 'Committing…' : 'Commit Status Entry'}
+            </button>
           </form>
         </div>
 
-        {/* RIGHT SIDE: Timeline List with Fixed Delete Triggers */}
-        <div className="flex-[0.9] bg-[#020617] border border-slate-800 rounded-2xl p-4 flex flex-col min-h-0 shadow-2xl relative overflow-hidden xl:max-w-sm">
-          <div className="relative z-10 flex flex-col h-full min-h-0">
-            <div className="shrink-0 flex items-center justify-between mb-4 pb-2 border-b border-slate-800/60">
-              <h3 className="text-sm font-bold text-white tracking-wide">Today's Sprint Logs</h3>
-              <span className="text-[10px] font-black text-emerald-400 bg-emerald-950/40 border border-emerald-900/40 px-2.5 py-0.5 rounded-full">{todaysLogs.length} Blocks</span>
+        {/* ════════════════════ RIGHT — Today's Entries ════════════════════ */}
+        <div className="w-full flex-1 bg-[#020617] border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="px-6 pt-5 pb-3 border-b border-slate-800/60 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-bold text-white">Today's Entries</h2>
+              <p className="text-[11px] text-slate-400 mt-0.5">Your status updates for today.</p>
             </div>
+            <div className="flex items-center gap-2">
+              <Clock size={13} className="text-slate-500" />
+              <span className="text-sm font-black text-blue-400 bg-blue-950/40 border border-blue-900/40 px-3 py-0.5 rounded-full">
+                {totalHrsToday} hrs
+              </span>
+            </div>
+          </div>
 
-            <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar relative pl-1 min-h-0">
-              <div className="absolute top-0 bottom-0 left-[11px] w-px bg-slate-800/60 pointer-events-none"></div>
-
-              {todaysLogs.length === 0 ? (
-                <div className="text-center text-slate-500 text-xs mt-12 font-medium italic">No rows committed for this current calendar date block.</div>
-              ) : (
-                <div className="space-y-3.5">
+          <div className="overflow-x-auto">
+            {logsError ? (
+              <div className="flex items-center gap-2 m-4 px-3 py-2.5 rounded-lg bg-red-950/30 border border-red-900/40 text-[11px] text-red-300 font-semibold">
+                <AlertTriangle size={12} />
+                {logsError}
+              </div>
+            ) : todaysLogs.length === 0 ? (
+              <div className="text-center text-slate-500 text-xs py-16 italic font-medium">
+                No entries logged yet for today.
+              </div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800/60 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                    <th className="text-left px-5 py-3">Project</th>
+                    <th className="text-left px-3 py-3">Employee</th>
+                    <th className="text-left px-3 py-3">Time</th>
+                    <th className="text-center px-3 py-3">Hrs</th>
+                    <th className="text-left px-3 py-3">Task</th>
+                    <th className="text-center px-3 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/40">
                   {todaysLogs.map((log, idx) => {
-                    const resolvedFields = parseCompoundProjectString(log.project_name);
+                    const hrs = log.duration_minutes
+                      ? Number((log.duration_minutes / 60).toFixed(1))
+                      : 0;
                     return (
-                      <div key={log.id || idx} className="relative pl-7 group">
-                        <div className="absolute left-[3px] top-[14px] w-1.5 h-1.5 rounded-full bg-blue-500 ring-2 ring-[#020617] shadow-[0_0_6px_rgba(59,130,246,0.8)] z-10"></div>
+                      <tr
+                        key={log.id || idx}
+                        className="hover:bg-[#0f172a]/60 transition-colors group"
+                      >
+                        {/* Project */}
+                        <td className="px-5 py-3.5">
+                          <div className="font-bold text-slate-200 truncate max-w-[160px]">
+                            {log.project_name || '—'}
+                          </div>
+                          {log.module_name && log.module_name !== 'GENERAL' && (
+                            <div className="text-[10px] text-slate-500 mt-0.5 truncate max-w-[160px]">
+                              {log.module_name}
+                            </div>
+                          )}
+                          {log.task_description && (
+                            <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-2 max-w-[180px]">
+                              {log.task_description}
+                            </div>
+                          )}
+                        </td>
 
-                        <div className="bg-[#0f172a]/50 border border-slate-800/60 p-3.5 rounded-xl border-l-2 border-l-blue-500 shadow-sm relative group">
+                        {/* Employee */}
+                        <td className="px-3 py-3.5">
+                          <span className="text-slate-300 font-medium whitespace-nowrap">
+                            {log.employee_name || '—'}
+                          </span>
+                        </td>
 
-                          {/* 🗑️ FIXED TRASH/DELETE TRIGGER ACTION BUTTON */}
+                        {/* Time */}
+                        <td className="px-3 py-3.5 whitespace-nowrap">
+                          <span className="font-mono text-blue-400 font-bold text-[10px] bg-blue-950/20 border border-blue-900/30 px-2 py-0.5 rounded">
+                            {fmt12(log.start_time)} – {fmt12(log.end_time)}
+                          </span>
+                        </td>
+
+                        {/* Hrs */}
+                        <td className="px-3 py-3.5 text-center">
+                          <span className={`font-black text-[11px] ${hrs > 0 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {hrs > 0 ? `${hrs}h` : '—'}
+                          </span>
+                        </td>
+
+                        {/* Task */}
+                        <td className="px-3 py-3.5">
+                          {log.task_name ? (
+                            <span className="text-slate-300 bg-slate-800/60 border border-slate-700/40 px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap">
+                              {log.task_name}
+                            </span>
+                          ) : (
+                            <span className="text-slate-600 text-[10px]">—</span>
+                          )}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-3 py-3.5 text-center">
                           <button
                             type="button"
                             disabled={deletingId === log.id}
-                            onClick={() => handleDeleteLog(log.id)}
-                            className="absolute top-2 right-2 text-slate-600 hover:text-red-400 transition-colors p-1 rounded-md hover:bg-red-950/20"
-                            title="Purge status record"
+                            onClick={() => handleDelete(log.id)}
+                            title="Delete entry"
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-950/25 transition-colors disabled:opacity-40"
                           >
                             {deletingId === log.id ? (
-                              <span className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin inline-block"></span>
+                              <span className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
                             ) : (
                               <Trash2 size={13} />
                             )}
                           </button>
-
-                          <div className="flex justify-between items-start gap-2 pr-4">
-                            <div className="min-w-0 flex-1">
-                              <h4 className="font-bold text-slate-200 text-xs truncate mb-0.5 capitalize">{resolvedFields.project}</h4>
-                              <div className="text-[10px] font-medium text-slate-400 truncate mb-1">{resolvedFields.client}</div>
-                              <p className="text-slate-300 text-[11px] leading-relaxed break-words line-clamp-2">{log.task_description}</p>
-
-                              <div className="text-[9px] font-black text-blue-400 mt-2 font-mono tracking-wide bg-[#020617] border border-slate-800/60 px-2 py-0.5 rounded inline-block">
-                                {formatTimeTo12H(log.start_time)} → {formatTimeTo12H(log.end_time)}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                        </td>
+                      </tr>
                     );
                   })}
-                </div>
-              )}
-            </div>
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
+
       </div>
     </div>
   );

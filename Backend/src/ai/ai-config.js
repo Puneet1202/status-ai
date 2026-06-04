@@ -4,6 +4,15 @@
 export const CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
 
+// Small, FAST model for casual/natural conversation (greetings, chit-chat).
+// The 70B is too slow over REST for chat (caused WORKERS_AI_TIMEOUT on "hey");
+// this 8B replies in ~0.5-1s — dynamic AND fast. Used ONLY for small talk;
+// structured/tool work still uses CHAT_MODEL where accuracy matters.
+export const CHAT_MODEL_FAST = '@cf/meta/llama-3.1-8b-instruct';
+// Short leash for the casual call — if even the small model stalls, the caller
+// falls back to a friendly canned line, so the user NEVER sees a timeout.
+export const FAST_TIMEOUT_MS = 8000;
+
 // Budget Management Hard-Limits
 export const MAX_MESSAGE_CHARS = 4000;
 export const MAX_TOTAL_CHARS = 52000;

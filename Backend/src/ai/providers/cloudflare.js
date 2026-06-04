@@ -76,10 +76,15 @@ function extractText(response) {
  * High-Level Request Gateway - Wrapper to safely query Cloudflare Workers AI platform
  * ✅ NOW SUPPORTS POLYMORPHIC TOOL CALLS MATRIX
  */
-export async function askCloudflareAI(systemPrompt, message, history = [], env, tools = null) {
+export async function askCloudflareAI(systemPrompt, message, history = [], env, tools = null, opts = {}) {
     if (!env?.AI?.run) {
         throw new Error('Cloudflare AI system binding connection is missing. Ensure wrangler.toml contains [ai] configurations.');
     }
+
+    // Allow the caller to pick a faster model / shorter timeout for casual chat.
+    // Defaults preserve the original behaviour (70B model, full AI_TIMEOUT_MS).
+    const model = opts.model || CHAT_MODEL;
+    const timeoutMs = opts.timeoutMs || AI_TIMEOUT_MS;
 
     const messages = normalizeMessages([
         { role: 'system', content: systemPrompt || 'You are a helpful assistant.' },
@@ -98,7 +103,7 @@ export async function askCloudflareAI(systemPrompt, message, history = [], env, 
         payload.tools = tools;
     }
 
-    const response = await withTimeout(env.AI.run(CHAT_MODEL, payload), AI_TIMEOUT_MS, 'WORKERS_AI');
+    const response = await withTimeout(env.AI.run(model, payload), timeoutMs, 'WORKERS_AI');
 
     // 🚨 PROTECTION FILTER: Agar response ke andar native 'tool_calls' exist karta hai, 
     // toh text extract mat karo, balki poora raw object return karo taaki chat.js use catch kar sake!
