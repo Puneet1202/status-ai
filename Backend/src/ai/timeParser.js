@@ -160,11 +160,23 @@ export function parseWorkBlocks(message) {
 
   // 3) Resolve work ranges left-to-right (ascending pointer).
   let pointer = 0;
+  let prevStart = null;
   const work = [];
   for (const r of workRanges) {
-    const start = resolveTime(r.sh, r.sm, r.sMer, pointer);
+    let start = resolveTime(r.sh, r.sm, r.sMer, pointer);
+    // OVERLAP-PRESERVE: a bare (no am/pm) start whose natural MORNING reading
+    // lands INSIDE the previous block means the user gave overlapping times
+    // (e.g. "9-11, 10-12"). Don't silently shove it to PM (10 → 22:00) — keep it
+    // literal so the handler's overlap check flags it with a clear message,
+    // instead of saving a wrong 22:00 block. A start that merely sits AFTER the
+    // previous block (e.g. "2-5" after "11-1") is still bumped to PM as before.
+    if (!r.sMer && prevStart != null) {
+      const amStart = resolveTime(r.sh, r.sm, r.sMer, 0);
+      if (amStart >= prevStart && amStart < pointer) start = amStart;
+    }
     let end = resolveTime(r.eh, r.em, r.eMer, start);
     if (end <= start) end += 1440; // overnight shift (e.g. 23:00 → 02:00 next day)
+    prevStart = start;
     pointer = end;
     work.push({ start, end, index: r.index, endIdx: r.end });
   }
