@@ -1,6 +1,6 @@
 # KEYSS AI — MariaDB Setup & Migration Guide
 
-> Ye file batati hai: (1) ab tak kya-kya kiya, (2) office/naye laptop me **step-by-step** kaise setup karna hai, (3) data kaise le jaana hai, (4) local vs remote (Cloudflare) ka farak. Office wale AI/team ko bhi yahi dikha dena — sab samajh jaayenge.
+
 
 ---
 

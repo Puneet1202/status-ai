@@ -19,9 +19,18 @@ export const MAX_TOTAL_CHARS = 52000;
 // Either way the tool handler validates everything (2h cap, overlap, lunch,
 // dedup) — bad data is never saved.
 //
-// LOCKED to 'regex-first': common formats are parsed instantly (free, no
-// latency); the LLM only rescues a format the regex can't parse. Best
-// speed/cost while still escaping the per-format "treadmill".
+// LOCKED to 'regex-first': for ENGLISH the deterministic parser is 100%
+// repeatable, instant and free — exactly what "professional, no mistakes" needs.
+// The 70B LLM is FLAKY for structured extraction (same input → sometimes a
+// perfect JSON array, sometimes empty), so it is NOT trusted as primary; it only
+// rescues a format the regex can't parse at all. (Hinglish needs the LLM and is
+// a separate, later task — see note below.) The handler validates everything.
+//
+// HINGLISH TODO: regex mangles Hinglish ("9 se 11 ... 11 sse 1 ... 1 se 2 lunch")
+// — misses blocks, keeps lunch as work, repeats the sentence as each label. When
+// Hinglish becomes a priority, the fix is a targeted Hinglish path (improve the
+// "se" connector + trailing-lunch detection in timeParser.js), NOT a blanket
+// switch to the flaky llm-first.
 export const EXTRACTION_MODE = 'regex-first';
 // Shorter leash for the extraction call so a slow model falls back to regex fast.
 export const EXTRACT_TIMEOUT_MS = 10000;
