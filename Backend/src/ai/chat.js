@@ -41,9 +41,9 @@ const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total
 const RECENT_WORD = /\b(last|recent|latest|aakhri|akhri|pichl[ae]|previous)\b/i;
 const ENTRY_WORD = /\b(entr(?:y|ies)|logs?|enter(?:ed)?|timesheet|status|kaam|work)\b/i;
 // Read verbs/nouns + period words for the deterministic date-range read below.
-const GET_VERB = /\b(show|list|view|display|fetch|dikhao|dikhana|dikhaiye|batao|how many|how much|kitne|kitna)\b/i;
-const GET_NOUN = /\b(logs?|entr(?:y|ies)|timesheet|hours|ghante|total)\b/i;
-const PERIOD = /\b(today|aaj|yesterday|kal|kl|this week|last week|this month|last month|weekly|monthly)\b|\bis haft|\bpichl[ae] haft|\bis mah|\bpichl[ae] mah|\d{4}-\d{2}-\d{2}/i;
+const GET_VERB = /\b(show|list|view|display|fetch|give|gimme|get|dikhao|dikhana|dikhaiye|batao|de ?do|how many|how much|kitne|kitna)\b/i;
+const GET_NOUN = /\b(logs?|entr(?:y|ies)|timesheet|tasks?|hours|ghante|kaam|work|total)\b/i;
+const PERIOD = /\b(today|aaj|yesterday|kal|kl|parso|this week|last week|this month|last month|weekly|monthly|day before yesterday)\b|\bis haft|\bpichl[ae] haft|\bis mah|\bpichl[ae] mah|\d+\s*(?:days?|din)\s*(?:ago|pehle|pahle)|\d{4}-\d{2}-\d{2}/i;
 
 // A specific time block ("9 se 11", "9-11", "9am") signals LOGGING, not a query.
 function looksLikeTimeBlock(text) {
@@ -202,6 +202,12 @@ function parseGetRange(message, base) {
     const isoHit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
     if (isoHit) return { from_date: isoHit[1], to_date: isoHit[1] };
 
+    // "N days ago" / "N din pehle" → that exact past day.
+    const ago = m.match(/\b(\d+)\s*(?:days?|din)\s*(?:ago|pehle|pahle|purane?)\b/);
+    if (ago) { const d = isoDate(addDays(base, -Math.abs(parseInt(ago[1], 10)))); return { from_date: d, to_date: d }; }
+    // day before yesterday / parso → 2 days back.
+    if (/\bday before yesterday\b|\bparso\b/.test(m)) { const d = isoDate(addDays(base, -2)); return { from_date: d, to_date: d }; }
+
     if (/\byesterday\b|\bkal\b|\bkl\b/.test(m)) { const y = isoDate(addDays(base, -1)); return { from_date: y, to_date: y }; }
     if (/\btoday\b|\baaj\b|\babhi\b/.test(m)) return { from_date: today, to_date: today };
 
@@ -280,7 +286,8 @@ export async function aiChat(env, userId, message, history = [], selectedProject
 
         // FUTURE date asked ("tomorrow", "next week") → logs can't exist in the
         // future. Say so clearly instead of silently falling back to recent rows.
-        const FUTURE_GET = /\btomorrow\b|\bday after tomorrow\b|\bnext (?:week|month|day)\b|\baane ?wala kal\b/i;
+        // Catches tomorrow + common misspellings (tommoro, tomorow, tmrw…) and other futures.
+        const FUTURE_GET = /\btom+or+ow?\b|\btomoro\b|\btmrw?\b|\bday after tomorrow\b|\bnext (?:week|month|day|\d+\s*days?)\b|\baane ?wala kal\b/i;
         if (isReadIntent && FUTURE_GET.test(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
             return { reply: "I can only show hours you've already logged — there's nothing for a future date yet. 🙂 Want today's or this week's logs instead?" };
         }
