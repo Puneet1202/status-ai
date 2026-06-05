@@ -7,7 +7,7 @@
 // when the locate is highly ambiguous (more than one plausible match).
 
 import {
-  getOrCreateProjectId,
+  resolveProjectId,
   calcMinutesFromTimes,
   isValidTime,
   isValidEntryDate,
@@ -94,12 +94,12 @@ function extractNewFields(data) {
 }
 
 // Find candidate rows for the requested edit. Returns an array (0..N rows).
-async function findCandidates(db, user, data) {
+async function findCandidates(db, employeeId, data) {
   const id = data.timesheet_id || data.entry_id;
   if (id) {
     const row = await db
       .prepare(`SELECT ${SELECT_COLS} ${ROW_FROM} WHERE d.id = ? AND d.employee_id = ?`)
-      .bind(id, user.id)
+      .bind(id, employeeId)
       .first();
     return row ? [row] : [];
   }
@@ -112,7 +112,7 @@ async function findCandidates(db, user, data) {
 
   if (hasCriteria) {
     let q = `SELECT ${SELECT_COLS} ${ROW_FROM} WHERE d.employee_id = ?`;
-    const b = [user.id];
+    const b = [employeeId];
     if (data.match_project_name?.trim()) {
       q += ` AND p.name LIKE ?`;
       b.push(`%${data.match_project_name.trim()}%`);
@@ -137,7 +137,7 @@ async function findCandidates(db, user, data) {
   // No criteria at all → the user's most recent entry ("fix my last entry").
   const row = await db
     .prepare(`SELECT ${SELECT_COLS} ${ROW_FROM} WHERE d.employee_id = ? ORDER BY d.created_at DESC LIMIT 1`)
-    .bind(user.id)
+    .bind(employeeId)
     .first();
   return row ? [row] : [];
 }
@@ -145,7 +145,7 @@ async function findCandidates(db, user, data) {
 // Merge new values over the existing row, validate, and write. Shared by the
 // direct (zero-friction) path and the confirm path.
 async function performUpdate(ctx, row, newFields) {
-  const { db, user } = ctx;
+  const { db, employeeId } = ctx;
 
   const startTime = newFields.start_time ?? row.start_time;
   const endTime = newFields.end_time ?? row.end_time;
@@ -166,7 +166,11 @@ async function performUpdate(ctx, row, newFields) {
   let projectId = row.project_id;
   let projectName = row.project_name;
   if (newFields.project_name) {
-    projectId = await getOrCreateProjectId(db, newFields.project_name);
+    const resolved = await resolveProjectId(db, newFields.project_name);
+    if (!resolved) {
+      return { reply: `I couldn't find a project named "${newFields.project_name}". Please use an existing project name.` };
+    }
+    projectId = resolved;
     projectName = newFields.project_name;
   }
 
@@ -190,7 +194,7 @@ async function performUpdate(ctx, row, newFields) {
       moduleName,
       taskDescription,
       row.id,
-      user.id
+      employeeId
     )
     .run();
 
@@ -210,7 +214,7 @@ async function performUpdate(ctx, row, newFields) {
 // ctx = { db, user, env, selectedProject, today }
 async function handler(ctx, data) {
   try {
-    const { db, user } = ctx;
+    const { db, employeeId } = ctx;
     const newFields = extractNewFields(data);
 
     if (Object.keys(newFields).length === 0) {
@@ -220,7 +224,7 @@ async function handler(ctx, data) {
       };
     }
 
-    const candidates = await findCandidates(db, user, data);
+    const candidates = await findCandidates(db, employeeId, data);
 
     if (candidates.length === 0) {
       return { reply: "I couldn't find a matching entry to update. Which one did you mean?" };
@@ -253,10 +257,10 @@ async function handler(ctx, data) {
 
 // Called by the controller when a pending UPDATE is confirmed by the user.
 export async function executeUpdate(ctx, pendingAction) {
-  const { db, user } = ctx;
+  const { db, employeeId } = ctx;
   const row = await db
     .prepare(`SELECT ${SELECT_COLS} ${ROW_FROM} WHERE d.id = ? AND d.employee_id = ?`)
-    .bind(pendingAction.matchId, user.id)
+    .bind(pendingAction.matchId, employeeId)
     .first();
   if (!row) return { reply: "That entry no longer exists." };
   return performUpdate(ctx, row, pendingAction.newFields || {});

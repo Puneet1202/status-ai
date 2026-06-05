@@ -1,15 +1,24 @@
+// FILE: backend/src/routers/auth.routes.js
+// OTP login routes — aligned to prod.db (no password endpoints).
+
 import { Hono } from 'hono';
-import { registerController, loginController, getAllUsers, getProfileHandler, refreshTokenController } from '../controllers/auth.controller.js';
+import {
+    requestOtpController,
+    verifyOtpController,
+    getProfileHandler,
+    refreshTokenController,
+    getAllUsers,
+} from '../controllers/auth.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const authRouter = new Hono();
 
-// 1. In par middleware NAHI lagega (Kyunki yahan user bina login ke aata hai)
-authRouter.post('/signup', registerController);
-authRouter.post('/login', loginController);
-authRouter.post('/refresh', refreshTokenController); // Refresh token se naya access token lo
+// Public — no token needed (this is how a user logs in).
+authRouter.post('/request-otp', requestOtpController); // email → emailed 6-digit code
+authRouter.post('/verify-otp', verifyOtpController);    // email + code → access/refresh JWT
+authRouter.post('/refresh', refreshTokenController);    // rotate tokens
 
-// 2. Is par middleware LAGEGA
+// Protected — require a valid access token.
 authRouter.get('/users', authMiddleware, getAllUsers);
 authRouter.get('/me', authMiddleware, getProfileHandler);
 

@@ -12,8 +12,10 @@ import getTimesheet from "./getTimesheet.tool.js";
 import updateTimesheet from "./updateTimesheet.tool.js";
 import deleteTimesheet from "./deleteTimesheet.tool.js";
 import getMyProfile from "./getMyProfile.tool.js";
+import analyzeTimesheet from "./analyzeTimesheet.tool.js";
+import queryTimesheet from "./queryTimesheet.tool.js";
 
-const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile];
+const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile, analyzeTimesheet, queryTimesheet];
 
 // name -> module
 export const REGISTRY = Object.fromEntries(MODULES.map((m) => [m.name, m]));

@@ -208,28 +208,143 @@ function parseGetRange(message, base) {
     // day before yesterday / parso → 2 days back.
     if (/\bday before yesterday\b|\bparso\b/.test(m)) { const d = isoDate(addDays(base, -2)); return { from_date: d, to_date: d }; }
 
-    if (/\byesterday\b|\bkal\b|\bkl\b/.test(m)) { const y = isoDate(addDays(base, -1)); return { from_date: y, to_date: y }; }
-    if (/\btoday\b|\baaj\b|\babhi\b/.test(m)) return { from_date: today, to_date: today };
+    // Period words are typo-tolerant on purpose — real users mistype ("yeaterday",
+    // "lasst wek"). We accept common misspellings so a date query never silently
+    // falls back to "recent" just because of a slip.
+    if (/\b(?:yesterday|yeaterday|yestrday|yesterdy|yesteday|ysterday|yestarday|yestreday)\b|\bkal\b|\bkl\b/.test(m)) { const y = isoDate(addDays(base, -1)); return { from_date: y, to_date: y }; }
+    if (/\b(?:today|todai|tody|tday|todey)\b|\baaj\b|\babhi\b/.test(m)) return { from_date: today, to_date: today };
 
     const monThisWeek = addDays(base, -((base.getUTCDay() + 6) % 7)); // Monday of this week
-    if (/\blast week\b|\bpichl[ae] haft/.test(m)) {
+    if (/\b(?:last|lasst|laast|lst)\s+(?:week|wek|weak|weeek|wek)\b|\bpichl[ae] haft/.test(m)) {
         return { from_date: isoDate(addDays(monThisWeek, -7)), to_date: isoDate(addDays(monThisWeek, -1)) };
     }
-    if (/\bthis week\b|\bis haft|\bweekly\b/.test(m)) {
+    if (/\b(?:this|dis)\s+(?:week|wek|weak|weeek)\b|\bis haft|\bweekly\b/.test(m)) {
         return { from_date: isoDate(monThisWeek), to_date: today };
     }
 
     const firstThisMonth = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1, 12));
-    if (/\blast month\b|\bpichl[ae] mah/.test(m)) {
+    if (/\b(?:last|lasst|laast|lst)\s+(?:month|munth|montth|mnth)\b|\bpichl[ae] mah/.test(m)) {
         const end = addDays(firstThisMonth, -1);
         const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1, 12));
         return { from_date: isoDate(start), to_date: isoDate(end) };
     }
-    if (/\bthis month\b|\bis mah|\bmonthly\b/.test(m)) {
+    if (/\b(?:this|dis)\s+(?:month|munth|montth|mnth)\b|\bis mah|\bmonthly\b/.test(m)) {
         return { from_date: isoDate(firstThisMonth), to_date: today };
     }
 
     return { recent: true };
+}
+
+// Which dimension to break totals down by (deterministic — keyword based).
+function parseGroupBy(message) {
+    const m = String(message || '').toLowerCase();
+    if (/\b(?:per|each|by|wise)\s*projects?\b|\bprojects?\s*wise\b|\bwhich project\b|\bhar project\b|\bkis project\b/.test(m)) return 'project';
+    if (/\b(?:per|each|by)\s*month\b|\bmonth\s*wise\b|\bmonthly\b|\bhar mahin[ae]\b|\bwhich month\b|\bbusiest month\b/.test(m)) return 'month';
+    if (/\b(?:per|each|by)\s*(?:module|categor)\w*\b|\bmodule\s*wise\b|\bwhich module\b/.test(m)) return 'module';
+    if (/\b(?:per|each|by)\s*year\b|\byear\s*wise\b|\byearly\b|\bhar saal\b|\bwhich year\b/.test(m)) return 'year';
+    if (/\b(?:per|each|by)\s*day\b|\bday\s*wise\b|\bdaily\b/.test(m)) return 'day';
+    return 'none';
+}
+
+// Date window for analytics. Adds year support ("this year", "last year", a bare
+// "2023") and defaults to ALL-TIME (not "recent") when no period is named —
+// because an analytics question without a period usually means "overall".
+function parseAnalyticsRange(message, base) {
+    const m = String(message || '').toLowerCase();
+    const hasFullDate = /\d{4}-\d{2}-\d{2}/.test(m);
+    if (/\bthis year\b|\bis saal\b|\bcurrent year\b/.test(m)) {
+        const y = base.getUTCFullYear();
+        return { from_date: `${y}-01-01`, to_date: isoDate(base) };
+    }
+    if (/\blast year\b|\bpichl[ae] saal\b|\bprevious year\b/.test(m)) {
+        const y = base.getUTCFullYear() - 1;
+        return { from_date: `${y}-01-01`, to_date: `${y}-12-31` };
+    }
+    const yr = !hasFullDate && m.match(/\b(20[0-2]\d)\b(?!-)/);
+    if (yr) return { from_date: `${yr[1]}-01-01`, to_date: `${yr[1]}-12-31` };
+    const r = parseGetRange(message, base); // reuse week/month/yesterday/today/ISO
+    if (!r.recent) return r;
+    return {}; // no period named → all-time
+}
+
+// Normalise a clock token ("1:30 pm", "3pm", "11:00", "3") → "HH:MM" 24h, or null.
+// Bare hours 1–7 are read as afternoon (work context: "at 3" = 15:00).
+function to24h(raw) {
+    const m = String(raw || '').toLowerCase().match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = m[3];
+    if (h > 23 || min > 59) return null;
+    if (ap === 'pm' && h < 12) h += 12;
+    else if (ap === 'am' && h === 12) h = 0;
+    else if (!ap && h >= 1 && h <= 7) h += 12; // bare 1-7 → PM
+    return String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+}
+
+// Extract advanced filters (keyword / time-of-day / duration / first-last / at-time)
+// for query_timesheet. Returns null when the message has NO real filter signal
+// (so plain "show today" stays a normal get). Date defaults to today in the tool.
+const NUM_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+function parseFilters(message, base) {
+    const m = String(message || '').toLowerCase().replace(/\b(one|two|three|four|five|six)\b/g, (w) => NUM_WORD[w]);
+    const f = {};
+
+    // date range (year/week/month/yesterday/today/ISO); else tool defaults to today
+    const range = parseAnalyticsRange(message, base);
+    if (range.from_date) { f.from_date = range.from_date; f.to_date = range.to_date; }
+
+    // keyword (first match wins) — maps phrasings to a searchable stem
+    const KW = [['chatbot', 'chatbot'], ['testing', 'test'], ['\\btest\\b', 'test'], ['debug', 'debug'],
+        ['documentation', 'document'], ['\\bdocs?\\b', 'document'], ['meeting', 'meeting'], ['discussion', 'meeting'],
+        ['frontend', 'frontend'], ['backend', 'backend'], ['\\bbug\\b', 'bug'], ['development', 'develop'],
+        ['dev work', 'develop'], ['machine learning', 'ai'], ['\\bml\\b', 'ai'], ['ai-related', 'ai'],
+        ['ai development', 'ai'], ['\\bai\\b', 'ai']];
+    for (const [pat, kw] of KW) { if (new RegExp(pat).test(m)) { f.keyword = kw; break; } }
+
+    // duration: more/less/exactly N hour|min
+    const dur = m.match(/(more than|over|longer than|greater than|at least|less than|under|shorter than|at most|exactly|exact)\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/);
+    if (dur) {
+        const val = parseFloat(dur[2]);
+        const mins = /^h/.test(dur[3]) ? Math.round(val * 60) : Math.round(val);
+        if (/more|over|longer|greater|at least/.test(dur[1])) f.min_minutes = mins;
+        else if (/less|under|shorter|at most/.test(dur[1])) f.max_minutes = mins;
+        else f.exact_minutes = mins;
+    }
+
+    // time-of-day windows
+    if (/before lunch/.test(m)) f.start_before = '13:00';
+    if (/after lunch/.test(m)) f.start_after = '13:00';
+    if (/\bmorning\b/.test(m)) f.start_before = '12:00';
+    if (/\bafternoon\b/.test(m)) f.start_after = '12:00';
+    let mm;
+    if ((mm = m.match(/start(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_before = t; }
+    if ((mm = m.match(/start(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_after = t; }
+    if ((mm = m.match(/end(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.end_after = t; }
+    if ((mm = m.match(/end(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.end_before = t; }
+    if ((mm = m.match(/between\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+and\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) {
+        const a = to24h(mm[1]); const b = to24h(mm[2]); if (a) f.start_after = a; if (b) f.start_before = b;
+    }
+    if (f.start_before === undefined && f.start_after === undefined && !/lunch|morning|afternoon/.test(m)) {
+        if ((mm = m.match(/\bbefore\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_before = t; }
+        else if ((mm = m.match(/\bafter\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_after = t; }
+    }
+
+    // point-in-time: "what was I doing at 1:30", "in progress at 3:00"
+    if ((mm = m.match(/\b(?:at|@)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/)) && /(doing|working|in progress|progress|happening|task)/.test(m)) {
+        const t = to24h(mm[1]); if (t) f.at_time = t;
+    }
+
+    // first / last N — explicit number ("first 3 tasks") or singular ("first task").
+    // Bare plural ("last entries") is left for the normal recent-list get, NOT here.
+    if ((mm = m.match(/\bfirst\s+(\d+)\s+(?:tasks?|entr\w*|activit\w*|logs?|things?)/))) { f.order = 'asc'; f.limit = parseInt(mm[1], 10); }
+    else if (/\bfirst\s+(?:task|entry|activity|log|thing)\b/.test(m)) { f.order = 'asc'; f.limit = 1; }
+    else if ((mm = m.match(/\blast\s+(\d+)\s+(?:tasks?|entr\w*|activit\w*|logs?|things?)/))) { f.order = 'desc'; f.limit = parseInt(mm[1], 10); }
+    else if (/\blast\s+(?:task|entry|activity|log|thing)\b/.test(m)) { f.order = 'desc'; f.limit = 1; }
+    else if (/chronological|in order/.test(m)) { f.order = 'asc'; }
+
+    const nonDate = Object.keys(f).filter((k) => k !== 'from_date' && k !== 'to_date');
+    return nonDate.length ? f : null;
 }
 
 // "what is my name", "who am I", "mera naam", "my email/role" → answer from the
@@ -290,6 +405,57 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         const FUTURE_GET = /\btom+or+ow?\b|\btomoro\b|\btmrw?\b|\bday after tomorrow\b|\bnext (?:week|month|day|\d+\s*days?)\b|\baane ?wala kal\b/i;
         if (isReadIntent && FUTURE_GET.test(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
             return { reply: "I can only show hours you've already logged — there's nothing for a future date yet. 🙂 Want today's or this week's logs instead?" };
+        }
+
+        // ── DETERMINISTIC ANALYTICS (reliable, no LLM) — totals / breakdowns /
+        // comparisons over the user's OWN data. Fires on clear aggregate signals
+        // (breakdown, per/which project|month|module|year, most, average, a year,
+        // "this/last year", "overall"). Code parses the dimension + range; the
+        // analyze tool does the SUM/GROUP BY → accurate even over years of data.
+        // Runs BEFORE the plain get-read so "hours per project this year" becomes a
+        // breakdown, not a list. A bare year inside an ISO date is excluded.
+        const ANALYTICS_INTENT = /\bbreak\s?downs?\b|\b(?:per|each|by|wise)\s*(?:projects?|month|module|categor\w+|year|day)\b|\b(?:projects?|month|module|year|day)\s*wise\b|\bmonthly\b|\byearly\b|\bwhich\s+(?:project|month|module|year|day)\b|\bmost\s+(?:hours|time|productive)\b|\bbusiest\b|\baverage\b|\bavg\b|\bcompare\b|\bversus\b|\bvs\b|\bthis year\b|\blast year\b|\b20[0-2]\d\b(?!-)|\bhar\s+(?:project|mahin[ae]|din|saal)\b|\bkis project\b|\bsabse\s+(?:zyada|kam)\b|\boverall\b|\ball[\s-]?time\b/i;
+        if (
+            ANALYTICS_INTENT.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage)
+        ) {
+            const base = nowInTz(timeZone);
+            return { action: { name: 'analyze_timesheet', data: { ...parseAnalyticsRange(cleanMessage, base), group_by: parseGroupBy(cleanMessage) } } };
+        }
+
+        // ── DETERMINISTIC ADVANCED FILTER (reliable, no LLM) — keyword / time-of-day
+        // / duration / first-last / point-in-time. Only when there's a clear READ
+        // signal AND parseFilters finds a real filter (so a logging message like
+        // "testing kiya" without a time is NOT hijacked into a list). Routes to
+        // query_timesheet, which runs the exact filtered SQL scoped to the user.
+        // NOTE: no !looksLikeTimeBlock guard here — point-in-time reads ("what was
+        // I doing at 1:30 PM") contain a clock time. READ_SIGNAL + parseFilters
+        // (which returns null unless a real filter is found) keep logging messages
+        // out: a bare "9-11 fixed bug" has no read word, so it never reaches here.
+        const READ_SIGNAL =
+            GET_VERB.test(cleanMessage) ||
+            /\?\s*$/.test(cleanMessage) ||
+            /\b(show|list|display|only|filter|find|which|what|first|last|between|chronological|doing|working|in progress|tasks?|activit\w*|entr\w*)\b/i.test(cleanMessage);
+        if (
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage)
+        ) {
+            const filters = parseFilters(cleanMessage, nowInTz(timeZone));
+            if (filters) {
+                // "Strong" filters (duration / time-of-day / point-in-time / first-last)
+                // are unmistakably READ intent → route even without a read verb.
+                // A keyword-only filter is ambiguous with logging, so it needs a
+                // read signal (e.g. "show testing" yes; "9-11 testing" = a log).
+                const strong =
+                    filters.min_minutes != null || filters.max_minutes != null || filters.exact_minutes != null ||
+                    filters.start_after || filters.start_before || filters.end_after || filters.end_before ||
+                    filters.at_time || filters.limit != null;
+                if (strong || READ_SIGNAL) {
+                    return { action: { name: 'query_timesheet', data: filters } };
+                }
+            }
         }
 
         if (

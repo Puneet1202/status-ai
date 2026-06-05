@@ -6,7 +6,7 @@ import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
 import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
 import {
-    getOrCreateProjectId,
+    resolveProjectId,
     calcEndTime,
     calcMinutesFromTimes,
     todayISO,
@@ -19,10 +19,14 @@ export const addTimesheetEntry = async (c) => {
     try {
         const db = c.env.DB;
         const currentUser = c.get('user');
-        const employeeId = currentUser.id;
+        // Timesheet rows key off employee.id — carried in the JWT as employee_id.
+        const employeeId = currentUser.employee_id;
+        if (!employeeId) {
+            return c.json({ message: "Your account isn't linked to an employee record, so timesheet entries can't be saved.", success: false }, 403);
+        }
         const body = await c.req.json();
 
-        let { entry_date, start_time, end_time, module_name, task_description, project_name, duration_minutes, duration_hours, task_name } = body;
+        let { entry_date, start_time, end_time, module_name, task_description, project_name, duration_minutes, duration_hours } = body;
 
         // Duration normalization — no hardcoded fallback
         if (!duration_minutes && duration_hours) {
@@ -46,10 +50,13 @@ export const addTimesheetEntry = async (c) => {
             }, 400);
         }
 
-        const projectId = await getOrCreateProjectId(db, project_name);
+        const projectId = await resolveProjectId(db, project_name);
+        if (!projectId) {
+            return c.json({ message: `Project "${project_name}" not found. Please pick an existing project.`, success: false }, 404);
+        }
         const result = await db
-            .prepare(`INSERT INTO daily_status_entries (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(employeeId, projectId, entry_date, start_time, end_time, parseInt(duration_minutes, 10), (module_name || "GENERAL").toUpperCase().trim(), task_description, task_name || null)
+            .prepare(`INSERT INTO daily_status_entries (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(employeeId, projectId, entry_date, start_time, end_time, parseInt(duration_minutes, 10), (module_name || "GENERAL").toUpperCase().trim(), task_description)
             .run();
 
         if (result.meta.changes === 0) throw new Error("Insert failed.");
@@ -75,10 +82,10 @@ export const getAllTimesheetsAdmin = async (c) => {
 
         let sqlQuery = `
             SELECT t.id, t.employee_id, t.project_id, t.entry_date, t.start_time, t.end_time,
-                   t.duration_minutes, t.task_description, t.module_name, t.task_name, t.is_email_sent, t.created_at,
-                   u.name as employee_name, u.email as employee_email, p.name as project_name
+                   t.duration_minutes, t.task_description, t.module_name, t.is_email_sent, t.created_at,
+                   e.name as employee_name, p.name as project_name
             FROM daily_status_entries t
-            JOIN users u ON t.employee_id = u.id
+            JOIN employee e ON t.employee_id = e.id
             JOIN projects p ON t.project_id = p.id
             WHERE 1=1
         `;
@@ -86,9 +93,9 @@ export const getAllTimesheetsAdmin = async (c) => {
 
         if (currentUser.role === 'employee') {
             sqlQuery += ` AND t.employee_id = ?`;
-            binds.push(currentUser.id);
+            binds.push(currentUser.employee_id);
         } else if (employeeName && employeeName !== 'all') {
-            sqlQuery += ` AND LOWER(u.name) = LOWER(?)`;
+            sqlQuery += ` AND LOWER(e.name) = LOWER(?)`;
             binds.push(employeeName);
         }
 
@@ -123,7 +130,7 @@ export const deleteTimesheetEntry = async (c) => {
 
         const result = await db
             .prepare(`DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?`)
-            .bind(logId, currentUser.id)
+            .bind(logId, currentUser.employee_id)
             .run();
 
         if (result.meta.changes === 0) return c.json({ message: "Entry not found or unauthorized.", success: false }, 404);
@@ -175,7 +182,7 @@ export const aiChatHandler = async (c) => {
         // These become each saved entry's module_name (see addTimesheet handler).
         // timezone: the user's IANA zone (sent by the frontend) so "today"/"kal"
         // resolve to the user's real local date, not UTC (fixes night-shift logs).
-        const ctx = { db, user, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+        const ctx = { db, user, employeeId: user.employee_id, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -238,6 +245,7 @@ export const submitAiFeedback = async (c) => {
             })
             .join('\n');
 
+        const employeeId = user.employee_id;
         const noteVal = note ? String(note).slice(0, 500) : null;
         const projVal = selectedProject ? String(selectedProject).slice(0, 200) : null;
         const messagesJson = JSON.stringify(trimmed);
@@ -248,13 +256,13 @@ export const submitAiFeedback = async (c) => {
         try {
             await db
                 .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages, transcript) VALUES (?, ?, ?, ?, ?)')
-                .bind(user.id, noteVal, projVal, messagesJson, transcript)
+                .bind(employeeId, noteVal, projVal, messagesJson, transcript)
                 .run();
         } catch (e) {
             if (/no column named transcript|has no column|no such column/i.test(String(e?.message))) {
                 await db
                     .prepare('INSERT INTO ai_feedback (employee_id, note, selected_project, messages) VALUES (?, ?, ?, ?)')
-                    .bind(user.id, noteVal, projVal, messagesJson)
+                    .bind(employeeId, noteVal, projVal, messagesJson)
                     .run();
             } else {
                 throw e;
@@ -280,15 +288,14 @@ export const getProjects = async (c) => {
         // ADMIN / HR / SUPERADMIN → poori company ke saare projects (woh manage karte hain).
         let results;
         if (currentUser.role === 'employee') {
+            // Only this employee's assigned projects (assignments key off employee.id).
             ({ results } = await db
                 .prepare(`SELECT DISTINCT p.id, p.name
                             FROM projects p
                             JOIN project_assignments pa ON pa.project_id = p.id
-                            JOIN employee e             ON e.id = pa.employee_id
-                            JOIN users u                ON u.employee_id = e.id
-                           WHERE u.id = ?
+                           WHERE pa.employee_id = ?
                            ORDER BY p.name ASC`)
-                .bind(currentUser.id)
+                .bind(currentUser.employee_id)
                 .all());
         } else {
             ({ results } = await db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all());
@@ -313,19 +320,18 @@ export const getProjectTasksController = async (c) => {
   const projectId = c.req.param('id');
 
   try {
-    // 👉 LINE 2: Cloudflare D1 Remote Database se connect karke query taiyaar kar rahe hain
-    // Hum bol rahe hain: "project_tasks table se id aur task_name nikaalo jahan project_id matches"
+    // prod.db has a `tasks` table (task_key, title, project_id, …) — there is no
+    // `project_tasks`. We expose `title` as `task_name` so the frontend contract
+    // (id + task_name) stays unchanged. Only real, active tasks for this project.
     const queryPrepare = c.env.DB.prepare(
-      "SELECT id, task_name FROM project_tasks WHERE project_id = ?"
+      "SELECT id, title AS task_name FROM tasks WHERE project_id = ? ORDER BY title ASC"
     );
 
-    // 👉 LINE 3: Query ke andar actual projectId ko bind (fit) kar rahe hain aur saara data (.all()) nikaal rahe hain
     const { results } = await queryPrepare.bind(projectId).all();
-    
-    // 👉 LINE 4: Agar sab sahi raha, toh frontend ko 200 OK status ke sath ekdum saaf JSON data bhej rahe hain
-    return c.json({ 
-      success: true, 
-      tasks: results // Isme saare tasks ki array hogi (like ['UI Design', 'Bug Fix'])
+
+    return c.json({
+      success: true,
+      tasks: results
     }, 200);
 
   } catch (error) {

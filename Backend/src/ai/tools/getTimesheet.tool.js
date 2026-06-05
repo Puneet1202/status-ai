@@ -38,7 +38,7 @@ const schema = {
 
 // ctx = { db, user, env, selectedProject, today }
 async function handler(ctx, data) {
-  const { db, user, today } = ctx;
+  const { db, employeeId, today } = ctx;
 
   // RECENT mode ("show my last entry / last log dikhao") — the most recently
   // logged entries regardless of date. Otherwise the classic date-range query.
@@ -55,7 +55,7 @@ async function handler(ctx, data) {
       WHERE d.employee_id = ?
       ORDER BY d.entry_date DESC, d.start_time DESC, d.id DESC
       LIMIT ?`;
-    binds = [user.id, limit];
+    binds = [employeeId, limit];
   } else {
     // Validate as real dates; clamp future to today. No year hardcode.
     let fromDate = data.from_date || data.date || today;
@@ -71,7 +71,7 @@ async function handler(ctx, data) {
       FROM daily_status_entries d
       JOIN projects p ON d.project_id = p.id
       WHERE d.employee_id = ? AND d.entry_date BETWEEN ? AND ?`;
-    binds = [user.id, fromDate, toDate];
+    binds = [employeeId, fromDate, toDate];
     if (data.module_name) { query += ` AND UPPER(d.module_name) = UPPER(?)`; binds.push(data.module_name); }
     if (data.project_name) { query += ` AND LOWER(p.name) LIKE LOWER(?)`; binds.push(`%${data.project_name.trim()}%`); }
     query += ` ORDER BY d.entry_date ASC, d.start_time ASC`;

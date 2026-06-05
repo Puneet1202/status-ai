@@ -31,7 +31,7 @@ const SELECT_COLS = `d.id, p.name AS project_name, d.duration_minutes, d.task_de
 
 // ctx = { db, user, env, selectedProject, today }
 async function handler(ctx, data) {
-  const { db, user } = ctx;
+  const { db, employeeId } = ctx;
   let matchLog = null;
 
   const id = data.timesheet_id || data.entry_id;
@@ -40,13 +40,13 @@ async function handler(ctx, data) {
       .prepare(
         `SELECT ${SELECT_COLS} FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.id = ? AND d.employee_id = ?`
       )
-      .bind(id, user.id)
+      .bind(id, employeeId)
       .first();
   }
 
   if (!matchLog && (data.project_name?.trim() || data.task_description?.trim())) {
     let q = `SELECT ${SELECT_COLS} FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = ?`;
-    const b = [user.id];
+    const b = [employeeId];
     if (data.project_name?.trim()) {
       q += ` AND p.name LIKE ?`;
       b.push(`%${data.project_name.trim()}%`);
@@ -64,7 +64,7 @@ async function handler(ctx, data) {
       .prepare(
         `SELECT ${SELECT_COLS} FROM daily_status_entries d JOIN projects p ON d.project_id = p.id WHERE d.employee_id = ? ORDER BY d.created_at DESC LIMIT 1`
       )
-      .bind(user.id)
+      .bind(employeeId)
       .first();
   }
 
@@ -85,10 +85,10 @@ async function handler(ctx, data) {
 
 // Called by the controller when a pending DELETE is confirmed by the user.
 export async function executeDelete(ctx, pendingAction) {
-  const { db, user } = ctx;
+  const { db, employeeId } = ctx;
   const result = await db
     .prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?")
-    .bind(pendingAction.matchId, user.id)
+    .bind(pendingAction.matchId, employeeId)
     .run();
 
   if (result.meta.changes === 0) {

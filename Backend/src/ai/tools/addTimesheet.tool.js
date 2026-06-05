@@ -2,14 +2,13 @@
 // Plug-and-play tool module: schema + handler in one place.
 
 import {
-  getOrCreateProjectId,
+  resolveProjectId,
   calcEndTime,
   calcMinutesFromTimes,
   isValidTime,
   isValidEntryDate,
   detectOverlap,
   matchProjectTask,
-  todayISO,
 } from "./_helpers.js";
 
 const name = "add_timesheet_entries";
@@ -75,8 +74,11 @@ const schema = {
 
 // ctx = { db, user, env, selectedProject, selectedTasks, today }
 async function handler(ctx, data) {
-  const { db, user, selectedProject, selectedTasks, today } = ctx;
+  const { db, employeeId, selectedProject, selectedTasks, today } = ctx;
   try {
+  if (!employeeId) {
+    return { reply: "Your account isn't linked to an employee record, so I can't log time for you. Please contact your admin." };
+  }
   const targetProjectName = selectedProject || data.project_name;
   if (!targetProjectName) {
     return { reply: "Please select a project first! Type '@' to choose." };
@@ -179,45 +181,55 @@ async function handler(ctx, data) {
     return { reply: `I couldn't save those entries:\n${problems.join("\n")}` };
   }
 
-  const projectId = await getOrCreateProjectId(db, targetProjectName);
+  const projectId = await resolveProjectId(db, targetProjectName);
+  if (!projectId) {
+    return {
+      reply: `I couldn't find a project named "${targetProjectName}". Please pick an existing project (type '@' to choose).`,
+    };
+  }
 
-  // Predefined tasks for this project — used to auto-assign a PER-BLOCK task from
-  // each slot's description when the user didn't explicitly tick tasks in the UI.
-  // (Boss's ask: "9-10 ye task, 11-12 wo task" — different task per time slot.)
-  let projectTasks = [];
+  // Real tasks for this project (prod `tasks` table). When the user didn't tick
+  // UI tasks, we try to auto-link each block to a matching task by its description
+  // (sets the FK `task_id`). Empty until the company app populates `tasks`.
+  let projectTaskRows = [];
   if (!taskModule) {
     try {
       const res = await db
-        .prepare("SELECT task_name FROM project_tasks WHERE project_id = ?")
+        .prepare("SELECT id, title FROM tasks WHERE project_id = ?")
         .bind(projectId)
         .all();
-      projectTasks = (res.results || []).map((r) => r.task_name);
+      projectTaskRows = res.results || [];
     } catch {
-      projectTasks = [];
+      projectTaskRows = [];
     }
   }
+  const taskTitles = projectTaskRows.map((r) => r.title);
+  const titleToId = new Map(projectTaskRows.map((r) => [r.title, r.id]));
 
   // Parameterized batch insert — atomic over the VALID blocks only.
   const statements = valid.map((entry) => {
-    // task_name priority: UI-ticked tasks (apply to all blocks) → per-block match
-    // from this slot's description → null.
-    const taskName = taskModule || matchProjectTask(entry.task_description, projectTasks) || null;
+    // module_name: UI-ticked tasks (apply to all blocks) override the AI-derived
+    // category; otherwise use the per-block auto-derived module.
+    const moduleName = taskModule || (entry.module_name || "GENERAL").toUpperCase().trim();
+    // task_id: best-effort link to a real project task matched from the description.
+    const matchedTitle = taskModule ? null : matchProjectTask(entry.task_description, taskTitles);
+    const taskId = matchedTitle ? (titleToId.get(matchedTitle) ?? null) : null;
     return db
       .prepare(
         `INSERT INTO daily_status_entries
-         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_name)
+         (employee_id, project_id, entry_date, start_time, end_time, duration_minutes, module_name, task_description, task_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
-        user.id,
+        employeeId,
         projectId,
         entryDate,
         entry.start_time,
         entry.end_time,
         entry._mins,
-        (entry.module_name || "GENERAL").toUpperCase().trim(), // module = AI auto-derived (unchanged)
+        moduleName,
         entry.task_description?.trim() || "Work update",
-        taskName
+        taskId
       );
   });
 

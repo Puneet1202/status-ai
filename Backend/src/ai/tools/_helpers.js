@@ -3,35 +3,23 @@
 // Single home — previously duplicated inside the controller.
 
 // =========================================================================
-// Resolve or create a project id (idempotent, case-insensitive)
+// Resolve an EXISTING project id by name (case-insensitive). Returns null when
+// no such project exists.
+//
+// We deliberately do NOT auto-create projects: in prod.db `projects.client_id`
+// is NOT NULL (every project belongs to a client), so the AI cannot invent a
+// valid project out of a free-text name. Callers must handle null by asking the
+// user to pick a real, existing project.
 // =========================================================================
-export async function getOrCreateProjectId(db, projectName) {
-  const cleanName = projectName.trim();
+export async function resolveProjectId(db, projectName) {
+  const cleanName = String(projectName || "").trim();
+  if (!cleanName) return null;
 
   const existing = await db
     .prepare("SELECT id FROM projects WHERE LOWER(name) = LOWER(?)")
     .bind(cleanName)
     .first();
-  if (existing) return existing.id;
-
-  try {
-    const insertResult = await db
-      .prepare("INSERT INTO projects (name) VALUES (?)")
-      .bind(cleanName)
-      .run();
-    if (insertResult.meta.changes === 0) {
-      throw new Error(`Project creation failed: ${cleanName}`);
-    }
-    return insertResult.meta.last_row_id;
-  } catch (err) {
-    // Lost a race on the UNIQUE(name) constraint — re-read the winner's row.
-    const raced = await db
-      .prepare("SELECT id FROM projects WHERE LOWER(name) = LOWER(?)")
-      .bind(cleanName)
-      .first();
-    if (raced) return raced.id;
-    throw err;
-  }
+  return existing ? existing.id : null;
 }
 
 // =========================================================================

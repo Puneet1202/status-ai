@@ -1,0 +1,252 @@
+# Apni sawaalon ki list — ek sawaal per line. # se shuru = comment (ignore hota hai).
+# Chalao:  npm run check:questions
+
+# ── Basic ──
+How many hours did I work today?
+What was my total working time excluding lunch?
+How much time did I spend on AI development today?
+Which task took the most time?
+How many hours were spent on chatbot development?
+How much time did I spend on testing and debugging?
+What was my first task of the day?
+What was the last task I worked on today?
+Did I take a lunch break? If yes, for how long?
+How many different tasks did I complete today?
+What was I working on at 1:30 PM?
+What task was in progress at 3:00 PM?
+How much time was spent before lunch?
+How much time was spent after lunch?
+What percentage of my day was spent on AI-related work?
+Which tasks lasted more than one hour?
+List all tasks in chronological order.
+
+# ── Generative summaries ──
+Summarize my workday in one sentence.
+Give me a professional daily work summary.
+Create a timesheet from my work log.
+Was there any idle time in my schedule?
+How productive was my day based on the work log?
+What are the key accomplishments from today?
+Generate a standup update from today's work.
+Convert this work log into a manager-friendly summary.
+
+# ── Tricky ──
+What was I doing at 11:45 AM?
+What task did I start immediately after lunch?
+How much time passed between my first and last task?
+Which two tasks were performed consecutively?
+Did I spend more time on development or testing?
+If lunch is excluded, what is my total billable time?
+What were my top three time-consuming activities today?
+
+# ── Data coverage (meta) ──
+What time range does this work log cover?
+What is the start and end time of the data?
+From what time to what time was I working today?
+What are the earliest and latest timestamps in the data?
+What is the overall duration covered by the data?
+
+# ── Time-of-day filters ──
+Show only the tasks completed before lunch.
+Show only the tasks completed after lunch.
+List all activities between 10:00 and 12:00.
+What tasks were performed in the morning?
+What tasks were performed in the afternoon?
+Show tasks that started before 11:00.
+Show tasks that ended after 3:00.
+Show the first three tasks of the day.
+Show the last two tasks of the day.
+
+# ── Duration filters ──
+Show tasks that took more than 1 hour.
+Show tasks that took less than 30 minutes.
+List all activities longer than 90 minutes.
+Which tasks lasted exactly 1 hour?
+
+# ── Task / keyword filters ──
+Show only AI-related activities.
+Show only chatbot-related work.
+List all testing activities.
+Show all debugging tasks.
+Show only development work.
+Show only meetings and discussions.
+List all documentation-related activities.
+Which tasks contributed to AI development?
+
+# ── Natural employee questions ──
+What did I spend most of my time on today?
+What did I work on before lunch?
+What was I doing after 2 PM?
+What were my major tasks today?
+Which activities took the least amount of time?
+Remove lunch and meetings and show actual work done.
+What were my key activities between 9 and 1?
+
+
+
+# ── Advanced Time Analysis ──
+How much time did I spend actively working today?
+How much time was non-productive?
+What was the longest uninterrupted work session?
+What was the shortest task of the day?
+How many hours passed between my first and last activity?
+How much time did I spend on breaks today?
+How many tasks were completed before noon?
+How many tasks were completed after noon?
+Which task started the earliest?
+Which task ended the latest?
+What was my average task duration?
+What was the median task duration?
+How many tasks lasted more than 90 minutes?
+How many tasks lasted less than 45 minutes?
+What was my busiest time of day?
+When was I most productive?
+What was my longest work streak without a break?
+How much time did I spend working consecutively?
+Did I work continuously before lunch?
+Did I work continuously after lunch?
+
+# ── Timeline Reasoning ──
+What happened immediately before lunch?
+What happened immediately after lunch?
+What was I doing before chatbot development?
+What task followed AI model training?
+What was the second task of the day?
+What was the third task of the day?
+What task came before testing?
+What task came after testing?
+Which task was performed between AI work and testing?
+What activities happened in the first half of the day?
+What activities happened in the second half of the day?
+What was the order of all activities?
+What were the first three activities?
+What were the last three activities?
+What task occurred halfway through the day?
+
+# ── Productivity Analysis ──
+Which activity consumed the most time?
+Which activity consumed the least time?
+What percentage of my day was spent on development?
+What percentage of my day was spent on testing?
+What percentage of my day was spent on meetings?
+How much of my day was productive work?
+How much of my day was spent on support activities?
+What were my top productivity drivers today?
+What was my primary focus today?
+What was my secondary focus today?
+Which area received the most attention?
+Which area received the least attention?
+What were my key contributions today?
+What work delivered the highest impact?
+What tasks should be highlighted in a status report?
+
+# ── AI / Chatbot Specific ──
+How much time was spent on AI model work?
+How much time was spent on chatbot development?
+How much time was spent on data preparation?
+How much time was spent on model evaluation?
+How much time was spent on prompt engineering?
+How much time was spent on API integration?
+How much time was spent on debugging?
+How much time was spent on frontend development?
+How much time was spent on backend development?
+How much time was spent on deployment activities?
+List all AI-related tasks.
+List all chatbot-related tasks.
+List all integration-related tasks.
+List all testing-related tasks.
+List all bug-fixing activities.
+
+# ── Gap / Idle Time Detection ──
+Was there any idle time during the day?
+How many idle periods existed?
+What was the longest idle period?
+What was the shortest idle period?
+When was I not assigned to any task?
+Were there any gaps between tasks?
+List all idle periods.
+How much total idle time existed?
+Did I have any breaks besides lunch?
+What was I doing before the idle period?
+
+# ── Filtering Variations ──
+Show tasks longer than 45 minutes.
+Show tasks shorter than 1 hour.
+Show tasks between 30 and 90 minutes.
+Show tasks between 1 and 2 hours.
+Show activities that started before noon.
+Show activities that ended after noon.
+Show only work-related activities.
+Show only non-work activities.
+Exclude lunch and show remaining tasks.
+Exclude testing activities.
+Exclude AI-related activities.
+Exclude chatbot-related activities.
+Show only tasks containing development work.
+Show only tasks involving validation.
+Show only tasks involving analysis.
+Show only tasks involving reviews.
+
+# ── Comparison Questions ──
+Did I spend more time on AI or chatbot work?
+Did I spend more time on development or testing?
+Did I spend more time before lunch or after lunch?
+Which took longer: debugging or testing?
+Which took longer: AI training or chatbot development?
+Did integration take longer than bug fixing?
+Which category dominated my schedule?
+What was my most time-consuming responsibility?
+What was my least time-consuming responsibility?
+Which work area received the greatest focus?
+
+# ── Manager Reporting ──
+Create a manager-friendly summary.
+Generate an executive summary.
+Create a standup update.
+Generate a sprint update.
+Generate a client update.
+Generate a project progress report.
+Summarize today's achievements.
+List today's deliverables.
+List today's completed work.
+Highlight today's major accomplishments.
+What should I report to my manager?
+What milestones were achieved today?
+What progress was made today?
+What blockers were identified today?
+What risks were discovered today?
+
+# ── Employee Style Questions ──
+What did I mainly work on today?
+What was the focus of my day?
+How would you summarize my work in three bullet points?
+What were my priorities today?
+What were my key responsibilities today?
+What work was completed before lunch?
+What work was completed after lunch?
+What work remains unfinished?
+What did I spend most of my morning on?
+What did I spend most of my afternoon on?
+How would a manager describe my day?
+How would a team lead summarize my day?
+How would this look in a timesheet?
+How would this look in Jira?
+How would this look in a daily standup?
+How would this look in a weekly report?
+
+# ── Edge Case Tests ──
+Were any tasks overlapping?
+Did any activities have invalid durations?
+Are there duplicate activities?
+Is any information missing?
+Can you identify ambiguous activities?
+Can you detect scheduling conflicts?
+Can you normalize this work log?
+Can you convert this into structured JSON?
+Can you convert this into a table?
+Can you generate billable hours from this log?
+Can you estimate productivity from this schedule?
+Can you categorize all activities by type?
+Can you identify the main project worked on today?
+Can you infer my role from these activities?
+Can you identify recurring work patterns?
