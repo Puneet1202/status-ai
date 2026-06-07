@@ -2,4 +2,6 @@ node_modules/
 .env
 dist/
 build/
-.dev.varskeyss-status.prod.db.backup-*
+.dev.vars
+keyss-status.prod.db.backup-*
+keyss-status.prod.compnay.db
