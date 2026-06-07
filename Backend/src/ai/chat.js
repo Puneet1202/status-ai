@@ -11,7 +11,8 @@ import { getToolSchemas } from './tools/index.js';
 import { parseEntryDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
 import { todayISO } from './tools/_helpers.js';
-import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, CHAT_MODEL_FAST, FAST_TIMEOUT_MS } from './ai-config.js';
+import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, CHAT_MODEL_FAST, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
+import { routeWithClaude } from './claudeRouter.js';
 
 // =========================================================================
 // 🎯 DETERMINISTIC INTENT HINTS
@@ -431,6 +432,21 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             } catch (e) {
                 console.warn('[small-talk fast-model failed → canned fallback]', e?.message || e);
                 return { reply: cannedSmallTalkReply(cleanMessage) };
+            }
+        }
+
+        // ── 🧠 CLAUDE BRAIN (LLM-as-router) ───────────────────────────────────
+        // When an Anthropic key is configured, a reliable model reads the message,
+        // picks the right tool, and extracts its args — so ANY phrasing works
+        // without hand-written regex. update/delete are left to the deterministic
+        // confirm-flow below; on any error/miss we fall through to that engine too,
+        // so the app NEVER hard-depends on the brain (graceful degradation).
+        if (isBrainEnabled(env) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            try {
+                const routed = await routeWithClaude(env, cleanMessage, window, selectedProject, timeZone);
+                if (routed) return routed;
+            } catch (e) {
+                console.warn('[claude-brain failed → deterministic fallback]', e?.message || e);
             }
         }
 

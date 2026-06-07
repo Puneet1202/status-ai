@@ -35,6 +35,10 @@ const env = {
   REFRESH_TOKEN_SECRET: process.env.REFRESH_TOKEN_SECRET || 'dev_refresh_secret_change_me',
   ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || '',
   AI_PROVIDER: process.env.AI_PROVIDER || 'cloudflare',
+  // 🧠 Claude "brain" (intent routing + extraction). Set ANTHROPIC_API_KEY to turn
+  // it ON; switch models via AI_MODEL — no code change. No key → deterministic only.
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  AI_MODEL: process.env.AI_MODEL || '',
   // OTP email (SendGrid). Empty → mailer logs the OTP to THIS terminal instead.
   SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
   SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || '',

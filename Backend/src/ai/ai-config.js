@@ -4,6 +4,32 @@
 export const CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
 
+// =========================================================================
+// 🧠 "BRAIN" PROVIDER — the reliable LLM that routes intent + extracts args
+// (see ../claudeRouter.js). Everything here is ENV-DRIVEN so switching the model
+// is a .env change, NOT a code change:
+//   ANTHROPIC_API_KEY=sk-ant-...   ← present → brain ON. Remove it → deterministic only.
+//   AI_MODEL=claude-haiku-4-5      ← swap the model here; no code edit needed.
+//   AI_BRAIN=off                   ← optional kill-switch (keep the key, force OFF).
+// Haiku 4.5 is the default: top-tier tool-calling, fast (~1s), very cheap.
+// =========================================================================
+export const DEFAULT_BRAIN_MODEL = 'claude-haiku-4-5';
+export const BRAIN_TIMEOUT_MS = 12000;
+
+// ON when an Anthropic key is present, unless explicitly killed via AI_BRAIN=off.
+// No key → the app runs exactly as before (100% deterministic, nothing breaks).
+export function isBrainEnabled(env) {
+  if (!env || !env.ANTHROPIC_API_KEY) return false;
+  const flag = String(env.AI_BRAIN || '').toLowerCase();
+  if (flag === 'off' || flag === 'false' || flag === '0' || flag === 'no') return false;
+  return true;
+}
+
+// The model the brain uses — overridable per-env without touching code.
+export function getBrainModel(env) {
+  return (env && (env.AI_MODEL || env.ANTHROPIC_MODEL)) || DEFAULT_BRAIN_MODEL;
+}
+
 // Small, FAST model for casual/natural conversation (greetings, chit-chat).
 // The 70B is too slow over REST for chat (caused WORKERS_AI_TIMEOUT on "hey");
 // this 8B replies in ~0.5-1s — dynamic AND fast. Used ONLY for small talk;

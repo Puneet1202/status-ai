@@ -8,20 +8,29 @@ const name = "get_timesheet_logs";
 const schema = {
   name,
   description:
-    "Fetch timesheet history by date range. Supports filtering by module, project, or specific dates. Handles natural language date queries.",
+    "List the user's logged timesheet entries. Two modes: (1) a date range via from_date/to_date for a named day/period (today, yesterday, this week, a specific date); or (2) their MOST RECENT entries via recent:true (with optional limit:N) when no specific date is named — use this for 'last entry', 'recent logs', 'last 3 entries', etc.",
   parameters: {
     type: "object",
-    required: ["from_date", "to_date"],
     properties: {
+      recent: {
+        type: "boolean",
+        description:
+          "Set true for 'most recent / latest / last' entries with NO specific date. Returns the newest entries across ALL dates. When true, do NOT pass from_date/to_date.",
+      },
+      limit: {
+        type: "number",
+        description:
+          "Used with recent:true — how many of the most recent entries to return (e.g. 'last 3 entries' → 3). Omit for the default of 5.",
+      },
       from_date: {
         type: "string",
         description:
-          "Start date in YYYY-MM-DD. Parse from user input. Default: today when none given.",
+          "Start date YYYY-MM-DD for a named day/range. Leave unset when recent:true.",
       },
       to_date: {
         type: "string",
         description:
-          "End date in YYYY-MM-DD. Parse from user input. Default: today when none given.",
+          "End date YYYY-MM-DD for a named day/range. Leave unset when recent:true.",
       },
       module_name: {
         type: "string",
