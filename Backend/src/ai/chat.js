@@ -441,7 +441,25 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // without hand-written regex. update/delete are left to the deterministic
         // confirm-flow below; on any error/miss we fall through to that engine too,
         // so the app NEVER hard-depends on the brain (graceful degradation).
-        if (isBrainEnabled(env) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+        //
+        // 💰 TOKEN SAVER: a clear time-log with NO read signal is unmistakably an
+        // ADD — the deterministic parser below handles it for free, instant, and
+        // 100% repeatably. So we DON'T spend a brain call on the hot logging path;
+        // the brain is reserved for reads/filters/analytics and any odd phrasing
+        // (exactly the part regex was bad at). Logging is the most frequent action
+        // in a timesheet, so this skips the majority of paid calls.
+        const isClearAdd =
+            looksLikeTimeBlock(cleanMessage) &&
+            !HARD_GET.test(cleanMessage) &&
+            !RECENT_WORD.test(cleanMessage) &&
+            !/\?\s*$/.test(cleanMessage) &&
+            !/\b(doing|working|in progress|which|filter|only|between|chronological|how much|how many|kitne|kitna)\b/i.test(cleanMessage);
+        if (
+            isBrainEnabled(env) &&
+            !isClearAdd &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage)
+        ) {
             try {
                 const routed = await routeWithClaude(env, cleanMessage, window, selectedProject, timeZone);
                 if (routed) return routed;
