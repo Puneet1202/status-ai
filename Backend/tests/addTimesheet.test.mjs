@@ -17,8 +17,10 @@ function mockDb(projectTasks = []) {
         bind(...a) { this._args = a; return this; },
         async first() { return /SELECT id FROM projects/.test(this._sql) ? { id: 1 } : null; },
         async all() {
-          return /FROM project_tasks/.test(this._sql)
-            ? { results: projectTasks.map((t) => ({ task_name: t })) }
+          // Prod schema: the handler resolves real tasks via `SELECT id, title FROM tasks`.
+          // Give each task an id by index (State Bug Fixes=1, UI Layout Refactoring=2, …).
+          return /FROM tasks/.test(this._sql)
+            ? { results: projectTasks.map((t, i) => ({ id: i + 1, title: t })) }
             : { results: [] };
         },
         async run() { return { meta: { changes: 1, last_row_id: 1 } }; },
@@ -32,8 +34,9 @@ function mockDb(projectTasks = []) {
     },
   };
 }
+// The prod handler keys writes on `employeeId` (= employee.id), not `user.id`.
 const ctx = ({ projectTasks = [], ...over } = {}) => ({
-  db: mockDb(projectTasks), user: { id: 1 }, selectedProject: 'AI Project', selectedTasks: [], today: '2026-06-01', ...over,
+  db: mockDb(projectTasks), employeeId: 1, user: { id: 1 }, selectedProject: 'AI Project', selectedTasks: [], today: '2026-06-01', ...over,
 });
 
 test('partial save: valid blocks saved, >2h block flagged', async () => {
@@ -49,23 +52,26 @@ test('all blocks within 2h are saved', async () => {
   assert.equal(c.db.saved.length, 3);
 });
 
-test('module_name = AI auto-derived; ticked tasks go to task_name column', async () => {
+// Prod schema: a ticked UI task becomes the entry's module_name (the company app
+// reads module_name in its reports); the task_id FK is left null in that case.
+test('ticked UI task becomes module_name; task_id FK stays null', async () => {
   const c = ctx({ selectedTasks: ['Embedding Pipeline Setup'] });
   await addTool.handler(c, { entries: parseWorkBlocks('9-11 fixed login bug').entries });
-  assert.equal(c.db.saved[0].module, 'BUG_FIXING');           // auto
-  assert.equal(c.db.saved[0].task, 'Embedding Pipeline Setup'); // separate column
+  assert.equal(c.db.saved[0].module, 'Embedding Pipeline Setup'); // ticked task → module_name
+  assert.equal(c.db.saved[0].task, null);                         // task_id FK unset
   assert.match(c.db.saved[0].desc, /login bug/i);
 });
 
-test('multiple ticked tasks joined; no tasks → task_name null', async () => {
+test('multiple ticked tasks joined into module_name; no tasks → auto module', async () => {
   let c = ctx({ selectedTasks: ['Prompt Tuning', 'Model Output Extraction'] });
   await addTool.handler(c, { entries: parseWorkBlocks('9-11 api work').entries });
-  assert.equal(c.db.saved[0].task, 'Prompt Tuning | Model Output Extraction');
+  assert.equal(c.db.saved[0].module, 'Prompt Tuning | Model Output Extraction'); // joined → module_name
+  assert.equal(c.db.saved[0].task, null);                                         // task_id FK unset
 
   c = ctx({ selectedTasks: [] });
   await addTool.handler(c, { entries: parseWorkBlocks('2-4 testing').entries });
   assert.equal(c.db.saved[0].task, null);
-  assert.equal(c.db.saved[0].module, 'TESTING');
+  assert.equal(c.db.saved[0].module, 'TESTING'); // no ticked tasks → auto-derived module
 });
 
 test('no project selected → asks to pick one (nothing saved)', async () => {
@@ -97,17 +103,20 @@ test('matchProjectTask: confident keyword match, else null', () => {
   assert.equal(matchProjectTask('9 to 11', []), null);
 });
 
-test('per-block task auto-assigned from project tasks (different task per slot)', async () => {
+test('per-block task_id auto-assigned from project tasks (different task per slot)', async () => {
+  // mockDb assigns task ids by index: State Bug Fixes=1, UI Layout Refactoring=2.
   const c = ctx({ projectTasks: ['State Bug Fixes', 'UI Layout Refactoring'] });
   await addTool.handler(c, { entries: parseWorkBlocks('9-10 fixed the state bug, 11-12 refactored the ui layout').entries });
   assert.equal(c.db.saved.length, 2);
-  assert.equal(c.db.saved[0].task, 'State Bug Fixes');
-  assert.equal(c.db.saved[1].task, 'UI Layout Refactoring');
+  assert.equal(c.db.saved[0].task, 1); // matched "State Bug Fixes" → task_id 1
+  assert.equal(c.db.saved[1].task, 2); // matched "UI Layout Refactoring" → task_id 2
 });
 
-test('UI-ticked tasks override per-block matching (apply to all blocks)', async () => {
+test('UI-ticked tasks override per-block matching → module_name on all blocks', async () => {
   const c = ctx({ projectTasks: ['State Bug Fixes'], selectedTasks: ['Prompt Tuning'] });
   await addTool.handler(c, { entries: parseWorkBlocks('9-10 fixed the state bug, 11-12 misc work').entries });
-  assert.equal(c.db.saved[0].task, 'Prompt Tuning');
-  assert.equal(c.db.saved[1].task, 'Prompt Tuning');
+  assert.equal(c.db.saved[0].module, 'Prompt Tuning'); // ticked task wins over auto-match
+  assert.equal(c.db.saved[1].module, 'Prompt Tuning');
+  assert.equal(c.db.saved[0].task, null);              // FK not set when UI tasks are ticked
+  assert.equal(c.db.saved[1].task, null);
 });

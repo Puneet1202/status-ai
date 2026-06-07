@@ -39,7 +39,8 @@ const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total
 // an ADD) and isn't a delete/update. Handles "last entry", "last log dikhao",
 // "aakhri entries", "recent kaam", "last enter".
 const RECENT_WORD = /\b(last|recent|latest|aakhri|akhri|pichl[ae]|previous)\b/i;
-const ENTRY_WORD = /\b(entr(?:y|ies)|logs?|enter(?:ed)?|timesheet|status|kaam|work)\b/i;
+// Tolerant of misspellings (entrie/enterie/loggs) — real users mistype the noun.
+const ENTRY_WORD = /\b(entr\w*|logs?|enter\w*|timesheet|status|kaam|work)\b/i;
 // Read verbs/nouns + period words for the deterministic date-range read below.
 const GET_VERB = /\b(show|list|view|display|fetch|give|gimme|get|dikhao|dikhana|dikhaiye|batao|de ?do|how many|how much|kitne|kitna)\b/i;
 const GET_NOUN = /\b(logs?|entr(?:y|ies)|timesheet|tasks?|hours|ghante|kaam|work|total)\b/i;
@@ -104,6 +105,26 @@ function safeParseArgs(raw) {
         if (end === -1) throw new Error("Tool args: malformed unclosed bracket structure.");
         return JSON.parse(raw.slice(start, end + 1));
     }
+}
+
+// =========================================================================
+// 🩹 SALVAGE a text tool-call dump. Some models DESCRIBE the call in plain text
+// (raw `{"type":"function","name":"add_timesheet_entries",...}`) instead of
+// emitting a real tool_call — that JSON would leak to the user AND nothing would
+// be saved. Pull the add args out so we run them instead. Returns an
+// { name, data } action, or null when there's nothing salvageable. Reused on BOTH
+// the fast conversational path and the tool round-trip, so a leak on either is caught.
+// =========================================================================
+function salvageTextToolCall(textOut) {
+    if (typeof textOut !== "string" || !/add_timesheet_entries|"type"\s*:\s*"function"/i.test(textOut)) return null;
+    try {
+        const parsed = safeParseArgs(textOut);
+        const data = parsed?.parameters || parsed;
+        if (data && Array.isArray(data.entries) && data.entries.length > 0) {
+            return { name: "add_timesheet_entries", data };
+        }
+    } catch { /* not a salvageable dump → caller shows a clean hint */ }
+    return null;
 }
 
 // =========================================================================
@@ -285,10 +306,14 @@ function to24h(raw) {
 // Extract advanced filters (keyword / time-of-day / duration / first-last / at-time)
 // for query_timesheet. Returns null when the message has NO real filter signal
 // (so plain "show today" stays a normal get). Date defaults to today in the tool.
-const NUM_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const NUM_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 function parseFilters(message, base) {
     const m = String(message || '').toLowerCase().replace(/\b(one|two|three|four|five|six)\b/g, (w) => NUM_WORD[w]);
     const f = {};
+    // Did a time-of-day come from an EXPLICIT clock ("before 10am") vs a vague word
+    // ("morning")? Explicit clock = a strong read signal; vague words are weak (they
+    // also show up in logs, e.g. "add my morning work").
+    let explicitTOD = false;
 
     // date range (year/week/month/yesterday/today/ISO); else tool defaults to today
     const range = parseAnalyticsRange(message, base);
@@ -318,16 +343,16 @@ function parseFilters(message, base) {
     if (/\bmorning\b/.test(m)) f.start_before = '12:00';
     if (/\bafternoon\b/.test(m)) f.start_after = '12:00';
     let mm;
-    if ((mm = m.match(/start(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_before = t; }
-    if ((mm = m.match(/start(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_after = t; }
-    if ((mm = m.match(/end(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.end_after = t; }
-    if ((mm = m.match(/end(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.end_before = t; }
+    if ((mm = m.match(/start(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.start_before = t; explicitTOD = true; } }
+    if ((mm = m.match(/start(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.start_after = t; explicitTOD = true; } }
+    if ((mm = m.match(/end(?:ed|ing)?\s+after\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.end_after = t; explicitTOD = true; } }
+    if ((mm = m.match(/end(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.end_before = t; explicitTOD = true; } }
     if ((mm = m.match(/between\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+and\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) {
-        const a = to24h(mm[1]); const b = to24h(mm[2]); if (a) f.start_after = a; if (b) f.start_before = b;
+        const a = to24h(mm[1]); const b = to24h(mm[2]); if (a) { f.start_after = a; explicitTOD = true; } if (b) { f.start_before = b; explicitTOD = true; }
     }
     if (f.start_before === undefined && f.start_after === undefined && !/lunch|morning|afternoon/.test(m)) {
-        if ((mm = m.match(/\bbefore\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_before = t; }
-        else if ((mm = m.match(/\bafter\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) f.start_after = t; }
+        if ((mm = m.match(/\bbefore\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.start_before = t; explicitTOD = true; } }
+        else if ((mm = m.match(/\bafter\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.start_after = t; explicitTOD = true; } }
     }
 
     // point-in-time: "what was I doing at 1:30", "in progress at 3:00"
@@ -335,16 +360,37 @@ function parseFilters(message, base) {
         const t = to24h(mm[1]); if (t) f.at_time = t;
     }
 
-    // first / last N — explicit number ("first 3 tasks") or singular ("first task").
-    // Bare plural ("last entries") is left for the normal recent-list get, NOT here.
+    // FIRST N (the EARLIEST of the day → a real same-day filter) stays here.
+    // "last N" is deliberately NOT here: it means "the N most recent across ALL
+    // dates", which the recent-GET below handles. query_timesheet defaults its
+    // window to TODAY, so routing "last 3 entries" here wrongly hid older days
+    // (today often has 0-1 rows) — that was the "last two/three" bug.
     if ((mm = m.match(/\bfirst\s+(\d+)\s+(?:tasks?|entr\w*|activit\w*|logs?|things?)/))) { f.order = 'asc'; f.limit = parseInt(mm[1], 10); }
     else if (/\bfirst\s+(?:task|entry|activity|log|thing)\b/.test(m)) { f.order = 'asc'; f.limit = 1; }
-    else if ((mm = m.match(/\blast\s+(\d+)\s+(?:tasks?|entr\w*|activit\w*|logs?|things?)/))) { f.order = 'desc'; f.limit = parseInt(mm[1], 10); }
-    else if (/\blast\s+(?:task|entry|activity|log|thing)\b/.test(m)) { f.order = 'desc'; f.limit = 1; }
     else if (/chronological|in order/.test(m)) { f.order = 'asc'; }
 
     const nonDate = Object.keys(f).filter((k) => k !== 'from_date' && k !== 'to_date');
-    return nonDate.length ? f : null;
+    if (!nonDate.length) return null;
+    // "_strong" = the filter is UNMISTAKABLY a read (duration / point-in-time /
+    // first-last N / explicit clock time-of-day). A bare keyword or a vague word
+    // ("morning", "before lunch") is WEAK — it also appears in logs, so the caller
+    // routes it to query_timesheet only with a read signal AND no time block.
+    f._strong =
+        f.min_minutes != null || f.max_minutes != null || f.exact_minutes != null ||
+        f.at_time != null || f.limit != null || explicitTOD;
+    return f;
+}
+
+// How many recent entries to list for a "last N" read: "last 3 entries" → 3,
+// singular "last entry" → 1, bare "last entries" → null (tool default = 5).
+// It keys off the NUMBER, not the (often misspelled) noun, so "last 2 enterie"
+// still returns 2. Clamped 1-20 to match the get_timesheet_logs recent cap.
+function recentLimit(message) {
+    const m = String(message || '').toLowerCase().replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/g, (w) => NUM_WORD[w]);
+    const numHit = m.match(/\b(?:last|recent|latest|previous|first|pichl[ae]|aakhri|akhri)\s+(\d{1,2})\b/);
+    if (numHit) { const n = parseInt(numHit[1], 10); if (n >= 1 && n <= 20) return n; }
+    if (/\b(?:last|recent|latest|previous|aakhri|akhri|pichl[ae])\s+(?:entry|log|task|record|activity)\b/.test(m)) return 1;
+    return null;
 }
 
 // "what is my name", "who am I", "mera naam", "my email/role" → answer from the
@@ -444,15 +490,15 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         ) {
             const filters = parseFilters(cleanMessage, nowInTz(timeZone));
             if (filters) {
-                // "Strong" filters (duration / time-of-day / point-in-time / first-last)
-                // are unmistakably READ intent → route even without a read verb.
-                // A keyword-only filter is ambiguous with logging, so it needs a
-                // read signal (e.g. "show testing" yes; "9-11 testing" = a log).
-                const strong =
-                    filters.min_minutes != null || filters.max_minutes != null || filters.exact_minutes != null ||
-                    filters.start_after || filters.start_before || filters.end_after || filters.end_before ||
-                    filters.at_time || filters.limit != null;
-                if (strong || READ_SIGNAL) {
+                const strong = filters._strong;
+                delete filters._strong; // internal routing flag — never goes to the tool.
+                // Strong filters (duration / point-in-time / first-last N / explicit
+                // clock time) are unmistakably a READ → route directly. A WEAK filter
+                // (a bare keyword or a vague "morning"/"before lunch") is ambiguous with
+                // logging, so it routes ONLY with a read signal AND no time block — a
+                // time block means the user is LOGGING ("9-11 ai work", "9 to 11 last
+                // minute bug fixes"), not asking to filter.
+                if (strong || (READ_SIGNAL && !looksLikeTimeBlock(cleanMessage))) {
                     return { action: { name: 'query_timesheet', data: filters } };
                 }
             }
@@ -464,7 +510,11 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             !UPDATE_INTENT.test(cleanMessage) &&
             !looksLikeTimeBlock(cleanMessage)
         ) {
-            return { action: { name: 'get_timesheet_logs', data: parseGetRange(cleanMessage, nowInTz(timeZone)) } };
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone));
+            // "last N entries" → N most recent across ALL dates. Singular "last
+            // entry" → 1. Bare "last entries" → the tool's default (5).
+            if (range.recent) { const lim = recentLimit(cleanMessage); if (lim) range.limit = lim; }
+            return { action: { name: 'get_timesheet_logs', data: range } };
         }
 
         // ── DETERMINISTIC ADD (the hot path) — parse work blocks in code. ──
@@ -563,6 +613,13 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                     getCasualPrompt(), cleanMessage, window, env, null,
                     { model: CHAT_MODEL_FAST, timeoutMs: FAST_TIMEOUT_MS }
                 );
+                // Even the casual model can leak a tool-call dump → salvage it into a
+                // real add instead of showing raw JSON.
+                const salvaged = salvageTextToolCall(casual);
+                if (salvaged) {
+                    console.log('[salvaged text tool-call · casual path]', JSON.stringify(salvaged.data.entries));
+                    return { action: salvaged };
+                }
                 return { reply: (typeof casual === 'string' && casual.trim()) ? casual.trim() : cannedSmallTalkReply(cleanMessage) };
             } catch (e) {
                 console.warn('[conversational fast-model failed → canned]', e?.message || e);
@@ -610,15 +667,14 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             ? toolResponse
             : (toolResponse?.response || '');
 
+        const salvaged = salvageTextToolCall(textOut);
+        if (salvaged) {
+            console.log('[salvaged text tool-call]', JSON.stringify(salvaged.data.entries));
+            return { action: salvaged };
+        }
         if (/add_timesheet_entries|"type"\s*:\s*"function"/i.test(textOut)) {
-            try {
-                const parsed = safeParseArgs(textOut);
-                const data = parsed?.parameters || parsed;
-                if (data && Array.isArray(data.entries) && data.entries.length > 0) {
-                    console.log('[salvaged text tool-call]', JSON.stringify(data.entries));
-                    return { action: { name: 'add_timesheet_entries', data } };
-                }
-            } catch { /* fall through to a clean hint */ }
+            // Looked like a tool-call dump but had no usable entries → clean hint,
+            // never the raw JSON.
             return { reply: "Got it — just tell me the time and what you worked on, e.g. \"9-11 fixed the login bug\"." };
         }
 

@@ -80,6 +80,33 @@ test('"mera last log dikhao" (Hindi) → recent GET', async () => {
   assert.equal(r.action.data.recent, true);
 });
 
+// REGRESSION: "last N entries" must show the N MOST RECENT across all dates — NOT
+// today-only (the query_timesheet today-default once made "last 2/3" return 1).
+test('"show my last 2 entries" → recent GET limited to 2', async () => {
+  const r = await aiChat(noAI, 1, 'show my last 2 entries', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.recent, true);
+  assert.equal(r.action.data.limit, 2);
+});
+
+test('"show my last three entrie" (number word + typo) → recent GET limit 3', async () => {
+  const r = await aiChat(noAI, 1, 'show my last three entrie', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.limit, 3);
+});
+
+test('"show my last two enterie" (different typo) → recent GET limit 2', async () => {
+  const r = await aiChat(noAI, 1, 'show my last two enterie', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.limit, 2);
+});
+
+test('singular "show my last entry" → recent GET limit 1', async () => {
+  const r = await aiChat(noAI, 1, 'show my last entry', [], null);
+  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action.data.limit, 1);
+});
+
 // SAFETY: a real time-log that merely contains "last" must NOT be hijacked into a
 // GET — the time block keeps it an ADD.
 test('a time-log containing "last" still logs (ADD not broken)', async () => {
