@@ -3,5 +3,6 @@ node_modules/
 dist/
 build/
 .dev.vars
+.wrangler/
 keyss-status.prod.db.backup-*
 keyss-status.prod.compnay.db
