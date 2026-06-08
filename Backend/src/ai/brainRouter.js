@@ -1,21 +1,31 @@
-// FILE: backend/src/ai/claudeRouter.js
-// THE "BRAIN" LAYER. Instead of hand-written regex deciding intent (brittle — a
-// new phrasing = a new bug), a reliable LLM (Claude) reads the message, picks the
-// right tool, and extracts its arguments via native tool-calling. The deterministic
-// tool handlers still validate + execute (employee scoping, 2h cap, overlap, SQL),
-// so the model decides WHAT, and tested code decides HOW and does it safely.
+// FILE: backend/src/ai/brainRouter.js
+// THE "BRAIN" LAYER (provider-agnostic). Instead of hand-written regex deciding
+// intent (brittle — a new phrasing = a new bug), a reliable LLM reads the message,
+// picks the right tool, and extracts its arguments via native tool-calling. The
+// deterministic tool handlers still validate + execute (employee scoping, 2h cap,
+// overlap, SQL) — model decides WHAT, tested code decides HOW.
 //
-// Returns { action: {name, data} } when Claude routed to a tool, { reply } for a
-// plain conversational answer, or null to defer to the deterministic engine.
+// The model PROVIDER (Anthropic / OpenAI / Gemini) is chosen by AI_PROVIDER in
+// .env — switching is a config change, no code edit. All three adapters share the
+// same { toolCall, text } interface, so the routing logic below is identical.
+//
+// Returns { action: {name, data} } when routed to a tool, { reply } for a plain
+// conversational answer, or null to defer to the deterministic engine.
 
 import { getToolSchemas } from "./tools/index.js";
 import { todayISO } from "./tools/_helpers.js";
-import { getBrainModel, BRAIN_TIMEOUT_MS } from "./ai-config.js";
+import { getProvider, getProviderKey, getBrainModel, BRAIN_TIMEOUT_MS } from "./ai-config.js";
 import { askAnthropic } from "./providers/anthropic.js";
+import { askOpenAI } from "./providers/openai.js";
+import { askGemini } from "./providers/gemini.js";
 
-// Tools the brain may route to. update/delete are included now (Step 3): they
-// return a confirm prompt + pendingAction, and the controller intercepts the
-// user's "confirm" BEFORE the brain — so the destructive step stays deterministic.
+// One adapter per provider — all take { apiKey, model, system, message, history,
+// tools, timeoutMs } and return { toolCall, text }.
+const ADAPTERS = { anthropic: askAnthropic, openai: askOpenAI, gemini: askGemini };
+
+// Tools the brain may route to. update/delete are included (Step 3): they return a
+// confirm prompt + pendingAction, and the controller intercepts the user's
+// "confirm" BEFORE the brain — so the destructive step stays deterministic.
 const BRAIN_TOOLS = new Set([
   "add_timesheet_entries",
   "get_timesheet_logs",
@@ -30,8 +40,8 @@ function brainToolSchemas() {
   return getToolSchemas().filter((s) => BRAIN_TOOLS.has((s.function || s).name));
 }
 
-// Anthropic requires messages[0] to be a user turn. Drop any leading assistant
-// turns from the sliding window so a history that starts with the bot is valid.
+// All providers want messages to start with a user turn. Drop any leading
+// assistant turns from the sliding window so a bot-first history is valid.
 function sanitizeHistory(history) {
   const h = (Array.isArray(history) ? history : [])
     .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
@@ -66,13 +76,15 @@ function buildSystemPrompt(today, selectedProject) {
   ].join("\n");
 }
 
-export async function routeWithClaude(env, message, window, selectedProject, timeZone) {
+export async function routeWithBrain(env, message, window, selectedProject, timeZone) {
+  const provider = getProvider(env);
+  const ask = ADAPTERS[provider] || askAnthropic;
   const today = todayISO(timeZone);
   const system = buildSystemPrompt(today, selectedProject);
   const history = sanitizeHistory(window);
 
-  const { toolCall, text } = await askAnthropic({
-    apiKey: env.ANTHROPIC_API_KEY,
+  const { toolCall, text } = await ask({
+    apiKey: getProviderKey(env, provider),
     model: getBrainModel(env),
     system,
     message,
@@ -82,7 +94,7 @@ export async function routeWithClaude(env, message, window, selectedProject, tim
   });
 
   if (toolCall && BRAIN_TOOLS.has(toolCall.name)) {
-    console.log("[claude-brain routed]", JSON.stringify({ tool: toolCall.name, args: toolCall.arguments }));
+    console.log(`[brain routed · ${provider}]`, JSON.stringify({ tool: toolCall.name, args: toolCall.arguments }));
     return { action: { name: toolCall.name, data: toolCall.arguments || {} } };
   }
   if (text) return { reply: text };

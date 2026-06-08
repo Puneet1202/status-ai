@@ -55,9 +55,29 @@ Widget login token bhejega. AI usse verify karega. Sabse easy:
 
 ---
 
-## ✅ STEP 5 — Model badalna (jab chahiye)
-- **Claude versions** (Haiku ↔ Sonnet ↔ Opus): sirf `.env` me `AI_MODEL=` badlo. **Code nahi.**
-- **OpenAI / Gemini pe jaana** ho: sirf key se nahi hoga — ek chhota adapter file chahiye (~30 min). Architecture isolated hai, baaki code same. (Bolo to bana du.)
+## ✅ STEP 5 — Provider / Model badalna (sab `.env` se — CODE NAHI)
+Ab teen provider support hain. Switch karne ka **method**: bas `.env` me 2 line.
+
+**Gemini pe jaana (~10x sasta):**
+```
+AI_PROVIDER=gemini
+GEMINI_API_KEY=...        # aistudio.google.com se free key
+```
+**OpenAI pe jaana (~7x sasta):**
+```
+AI_PROVIDER=openai
+OPENAI_API_KEY=sk-...     # platform.openai.com
+```
+**Claude pe wapas (default, best tool-calling):**
+```
+AI_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+Phir `npm run dev:node` restart. Bas. **Kisi file ka code nahi badalna.**
+
+- Model id bhi override kar sakte ho: `AI_MODEL=gemini-2.0-flash` (warna provider ka default chal jata hai).
+- Galat/khaali key → app crash nahi, purana deterministic mode chal jata hai.
+- Test: `npm run test:brain` (jo provider on hai usi se chalega).
 
 ---
 

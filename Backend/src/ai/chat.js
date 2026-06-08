@@ -12,7 +12,7 @@ import { parseEntryDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
 import { todayISO } from './tools/_helpers.js';
 import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, CHAT_MODEL_FAST, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
-import { routeWithClaude } from './claudeRouter.js';
+import { routeWithBrain } from './brainRouter.js';
 
 // =========================================================================
 // 🎯 DETERMINISTIC INTENT HINTS
@@ -455,7 +455,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // back to the model's own entries only if regex can't read the format.
         if (isBrainEnabled(env)) {
             try {
-                const routed = await routeWithClaude(env, cleanMessage, window, selectedProject, timeZone);
+                const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone);
                 if (routed?.action?.name === 'add_timesheet_entries') {
                     const { entries } = await extractWorkBlocks(cleanMessage, env);
                     if (entries.length > 0) {

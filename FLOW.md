@@ -158,8 +158,8 @@ hi sahi tool chunna hai. Iske baad cost dekho.
 | Gemini Flash | ~$0.0003 | Achha | ~10x sasta (key slot already hai) |
 | Cloudflare llama | ~free | Kamzor | Purana problem |
 
-> Model badalna = `.env` me `AI_MODEL=` (Claude versions). GPT/Gemini pe jaana ho
-> to ek chhota adapter (~30 min) — baaki code same rahega.
+> Provider/model badalna = sirf `.env` (CODE nahi): `AI_PROVIDER=anthropic|openai|gemini`
+> + us provider ki key. Anthropic, OpenAI, Gemini — teeno ready. Detail `SETUP-OFFICE.md` STEP 5.
 
 ---
 

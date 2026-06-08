@@ -34,11 +34,13 @@ const env = {
   ACCESS_TOKEN_SECRET: process.env.ACCESS_TOKEN_SECRET || 'dev_access_secret_change_me',
   REFRESH_TOKEN_SECRET: process.env.REFRESH_TOKEN_SECRET || 'dev_refresh_secret_change_me',
   ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || '',
-  AI_PROVIDER: process.env.AI_PROVIDER || 'cloudflare',
-  // 🧠 Claude "brain" (intent routing + extraction). Set ANTHROPIC_API_KEY to turn
-  // it ON; switch models via AI_MODEL — no code change. No key → deterministic only.
+  // 🧠 "Brain" (intent routing + extraction). Pick a provider with AI_PROVIDER and
+  // set its key — switching is a .env change, no code edit. No key → deterministic.
+  AI_PROVIDER: process.env.AI_PROVIDER || '',           // anthropic | openai | gemini (default anthropic)
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-  AI_MODEL: process.env.AI_MODEL || '',
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  AI_MODEL: process.env.AI_MODEL || '',                 // override model; else provider default
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
   AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',

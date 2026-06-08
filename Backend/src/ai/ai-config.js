@@ -6,28 +6,48 @@ export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
 
 // =========================================================================
 // 🧠 "BRAIN" PROVIDER — the reliable LLM that routes intent + extracts args
-// (see ../claudeRouter.js). Everything here is ENV-DRIVEN so switching the model
-// is a .env change, NOT a code change:
-//   ANTHROPIC_API_KEY=sk-ant-...   ← present → brain ON. Remove it → deterministic only.
-//   AI_MODEL=claude-haiku-4-5      ← swap the model here; no code edit needed.
-//   AI_BRAIN=off                   ← optional kill-switch (keep the key, force OFF).
-// Haiku 4.5 is the default: top-tier tool-calling, fast (~1s), very cheap.
+// (see ../brainRouter.js). Everything is ENV-DRIVEN so switching the PROVIDER or
+// MODEL is a .env change, NOT a code change:
+//   AI_PROVIDER=anthropic|openai|gemini   ← which company's model (default anthropic)
+//   ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY  ← key for the chosen one
+//   AI_MODEL=<model id>                   ← override the model (else provider default)
+//   AI_BRAIN=off                          ← kill-switch (force deterministic mode)
+// Brain is ON only when the SELECTED provider has a key; else the app runs the
+// 100% deterministic engine (nothing breaks).
 // =========================================================================
-export const DEFAULT_BRAIN_MODEL = 'claude-haiku-4-5';
 export const BRAIN_TIMEOUT_MS = 12000;
 
-// ON when an Anthropic key is present, unless explicitly killed via AI_BRAIN=off.
-// No key → the app runs exactly as before (100% deterministic, nothing breaks).
-export function isBrainEnabled(env) {
-  if (!env || !env.ANTHROPIC_API_KEY) return false;
-  const flag = String(env.AI_BRAIN || '').toLowerCase();
-  if (flag === 'off' || flag === 'false' || flag === '0' || flag === 'no') return false;
-  return true;
+// Sensible default model per provider (used when AI_MODEL isn't set).
+const PROVIDER_DEFAULTS = {
+  anthropic: 'claude-haiku-4-5', // top tool-calling, fast, cheap
+  openai: 'gpt-4o-mini',          // ~7x cheaper than Haiku
+  gemini: 'gemini-2.0-flash',     // ~10x cheaper
+};
+export const DEFAULT_BRAIN_MODEL = PROVIDER_DEFAULTS.anthropic; // kept for back-compat
+
+// Which provider runs the brain (AI_PROVIDER); defaults to anthropic.
+export function getProvider(env) {
+  const p = String(env?.AI_PROVIDER || 'anthropic').toLowerCase();
+  return ['anthropic', 'openai', 'gemini'].includes(p) ? p : 'anthropic';
 }
 
-// The model the brain uses — overridable per-env without touching code.
+// The API key for the selected provider.
+export function getProviderKey(env, provider = getProvider(env)) {
+  if (provider === 'openai') return env?.OPENAI_API_KEY || '';
+  if (provider === 'gemini') return env?.GEMINI_API_KEY || '';
+  return env?.ANTHROPIC_API_KEY || '';
+}
+
+// ON when the chosen provider has a key, unless AI_BRAIN=off forces it off.
+export function isBrainEnabled(env) {
+  const flag = String(env?.AI_BRAIN || '').toLowerCase();
+  if (['off', 'false', '0', 'no'].includes(flag)) return false;
+  return !!getProviderKey(env);
+}
+
+// The model the brain uses — AI_MODEL overrides; else the provider's default.
 export function getBrainModel(env) {
-  return (env && (env.AI_MODEL || env.ANTHROPIC_MODEL)) || DEFAULT_BRAIN_MODEL;
+  return (env && (env.AI_MODEL || env.ANTHROPIC_MODEL)) || PROVIDER_DEFAULTS[getProvider(env)] || DEFAULT_BRAIN_MODEL;
 }
 
 // Small, FAST model for casual/natural conversation (greetings, chit-chat).
