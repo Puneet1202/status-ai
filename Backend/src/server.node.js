@@ -42,6 +42,9 @@ const env = {
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
   AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',
+  // Report alerts: paste a Slack/Discord incoming-webhook URL → every "Report"
+  // pings you with the transcript. Empty → reports still save to ai_feedback only.
+  REPORT_WEBHOOK_URL: process.env.REPORT_WEBHOOK_URL || '',
   // OTP email (SendGrid). Empty → mailer logs the OTP to THIS terminal instead.
   SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
   SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || '',

@@ -5,6 +5,7 @@ import { aiChat } from '../ai/chat.js';
 import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
 import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
+import { sendReportNotification } from '../services/reportNotifier.js';
 import {
     resolveProjectId,
     calcEndTime,
@@ -288,6 +289,21 @@ export const submitAiFeedback = async (c) => {
             } else {
                 throw e;
             }
+        }
+
+        // Instant alert (Slack/Discord) so you SEE the mistake without watching the
+        // DB. Best-effort + name lookup for a readable message; never blocks/saves-fail.
+        try {
+            const emp = await db.prepare('SELECT name FROM employee WHERE id = ?').bind(employeeId).first();
+            await sendReportNotification(c.env, {
+                employeeName: emp?.name || null,
+                employeeId,
+                project: projVal,
+                note: noteVal,
+                transcript,
+            });
+        } catch (e) {
+            console.warn('[report notify skipped]', e?.message || e);
         }
 
         return c.json({ success: true, message: 'Thanks! Your report was saved.' }, 201);
