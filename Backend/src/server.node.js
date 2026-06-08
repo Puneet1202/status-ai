@@ -39,6 +39,9 @@ const env = {
   // it ON; switch models via AI_MODEL — no code change. No key → deterministic only.
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   AI_MODEL: process.env.AI_MODEL || '',
+  // Token guard: max AI messages per minute per employee (default 20). Caps a
+  // chatty user from burning credit on the brain.
+  AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',
   // OTP email (SendGrid). Empty → mailer logs the OTP to THIS terminal instead.
   SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
   SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || '',

@@ -436,32 +436,37 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         }
 
         // ── 🧠 CLAUDE BRAIN (LLM-as-router) ───────────────────────────────────
-        // When an Anthropic key is configured, a reliable model reads the message,
-        // picks the right tool, and extracts its args — so ANY phrasing works
-        // without hand-written regex. update/delete are left to the deterministic
-        // confirm-flow below; on any error/miss we fall through to that engine too,
-        // so the app NEVER hard-depends on the brain (graceful degradation).
+        // When an Anthropic key is configured, a reliable model decides the intent
+        // (add / get / query / analyze / update / delete / profile) and extracts the
+        // args — so ANY phrasing works without brittle regex intent-routing. On any
+        // error/miss we fall through to the deterministic engine below, so the app
+        // NEVER hard-depends on the brain (graceful degradation).
         //
-        // 💰 TOKEN SAVER: a clear time-log with NO read signal is unmistakably an
-        // ADD — the deterministic parser below handles it for free, instant, and
-        // 100% repeatably. So we DON'T spend a brain call on the hot logging path;
-        // the brain is reserved for reads/filters/analytics and any odd phrasing
-        // (exactly the part regex was bad at). Logging is the most frequent action
-        // in a timesheet, so this skips the majority of paid calls.
-        const isClearAdd =
-            looksLikeTimeBlock(cleanMessage) &&
-            !HARD_GET.test(cleanMessage) &&
-            !RECENT_WORD.test(cleanMessage) &&
-            !/\?\s*$/.test(cleanMessage) &&
-            !/\b(doing|working|in progress|which|filter|only|between|chronological|how much|how many|kitne|kitna)\b/i.test(cleanMessage);
-        if (
-            isBrainEnabled(env) &&
-            !isClearAdd &&
-            !DELETE_INTENT.test(cleanMessage) &&
-            !UPDATE_INTENT.test(cleanMessage)
-        ) {
+        // WHY the brain decides add-vs-edit (not a regex fast-path): regex cannot
+        // reliably tell a fresh log from an edit across languages — e.g. Hindi
+        // "9-11 ko 10-12 kar do" is an UPDATE, but has no English edit word and a
+        // time block, so a regex "clear add" check misfiles it as a NEW entry
+        // (duplicate, wrong data). Letting the model classify removes that whole
+        // class of corruption. Greetings/profile are still settled for free above,
+        // so only real work messages reach here.
+        //
+        // For a NEW log we still re-extract the times with the TESTED deterministic
+        // parser (model decides intent; proven code does the time math), and fall
+        // back to the model's own entries only if regex can't read the format.
+        if (isBrainEnabled(env)) {
             try {
                 const routed = await routeWithClaude(env, cleanMessage, window, selectedProject, timeZone);
+                if (routed?.action?.name === 'add_timesheet_entries') {
+                    const { entries } = await extractWorkBlocks(cleanMessage, env);
+                    if (entries.length > 0) {
+                        enrichThinDescriptions(entries, history);
+                        const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
+                        return { action: { name: 'add_timesheet_entries', data: { entries, ...(entry_date ? { entry_date } : {}) } } };
+                    }
+                    const modelEntries = Array.isArray(routed.action.data?.entries) ? routed.action.data.entries : [];
+                    if (modelEntries.length > 0) return routed; // exotic format the regex missed — handler still validates
+                    return { reply: "Got it — what time did you work on that? e.g. \"9 to 11\"." };
+                }
                 if (routed) return routed;
             } catch (e) {
                 console.warn('[claude-brain failed → deterministic fallback]', e?.message || e);

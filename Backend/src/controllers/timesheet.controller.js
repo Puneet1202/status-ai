@@ -143,14 +143,35 @@ export const deleteTimesheetEntry = async (c) => {
     }
 };
 
-// Best-effort per-user throttle for the EXPENSIVE AI endpoint. Uses Cloudflare's
-// native rate-limit binding (env.AI_RATE_LIMITER) when configured; if the binding
-// is absent (e.g. plain local dev) it silently no-ops so nothing ever breaks.
-// To turn it ON: uncomment the [[unsafe.bindings]] block in wrangler.toml.
+// In-memory sliding-window throttle — works EVERYWHERE (Node + Workers), so a
+// chatty employee can't burn tokens by spamming the brain. Window + cap are
+// env-tunable (AI_RATE_PER_MIN, default 20/min per user). Single-process state;
+// on multi-isolate Workers the native binding below is the durable layer.
+const RL_WINDOW_MS = 60_000;
+const rlHits = new Map(); // key -> [timestamps within the window]
+function inMemoryRateOk(key, maxPerMin) {
+    const now = Date.now();
+    const recent = (rlHits.get(key) || []).filter((t) => now - t < RL_WINDOW_MS);
+    if (recent.length >= maxPerMin) { rlHits.set(key, recent); return false; }
+    recent.push(now);
+    rlHits.set(key, recent);
+    if (rlHits.size > 5000) { // cheap GC so the map can't grow forever
+        for (const [k, arr] of rlHits) if (!arr.some((t) => now - t < RL_WINDOW_MS)) rlHits.delete(k);
+    }
+    return true;
+}
+
+// Per-user throttle for the EXPENSIVE AI endpoint. Two layers: (1) Cloudflare's
+// native rate-limit binding (env.AI_RATE_LIMITER) when configured — durable across
+// Workers isolates; (2) an always-on in-memory window so local/Node deploys are
+// protected too. Either layer saying "no" throttles the request.
 async function aiRateLimitOk(c, user) {
-    const limiter = c.env.AI_RATE_LIMITER;
-    if (!limiter || typeof limiter.limit !== 'function') return true; // not configured → skip
     const key = user?.id ? `user:${user.id}` : `ip:${c.req.header('cf-connecting-ip') || 'anon'}`;
+    const maxPerMin = Math.max(1, parseInt(c.env.AI_RATE_PER_MIN, 10) || 20);
+    if (!inMemoryRateOk(String(key), maxPerMin)) return false;
+
+    const limiter = c.env.AI_RATE_LIMITER;
+    if (!limiter || typeof limiter.limit !== 'function') return true; // binding absent → in-memory only
     try {
         const { success } = await limiter.limit({ key: String(key) });
         return success;
