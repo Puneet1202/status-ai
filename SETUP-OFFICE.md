@@ -75,9 +75,29 @@ ANTHROPIC_API_KEY=sk-ant-...
 ```
 Phir `npm run dev:node` restart. Bas. **Kisi file ka code nahi badalna.**
 
-- Model id bhi override kar sakte ho: `AI_MODEL=gemini-2.0-flash` (warna provider ka default chal jata hai).
+### 📝 Exact steps (literally) — maan lo Claude → Gemini
+1. File kholo: **`Backend/.env`** (Notepad / VS Code).
+2. Do line badlo:
+   ```
+   # pehle:                 # baad me:
+   AI_PROVIDER=anthropic     AI_PROVIDER=gemini
+   ANTHROPIC_API_KEY=sk-ant- GEMINI_API_KEY=AIza...
+   ```
+   (Anthropic wali line rehne do — `AI_PROVIDER=gemini` hone se wo use hi nahi hogi.)
+3. File **save** karo.
+4. Server **restart** karo (`.env` sirf start pe padhta hai):
+   - Terminal me **`Ctrl + C`** (band) → phir `npm run dev:node` (dobara chalu).
+5. Confirm: `npm run test:brain` → output me `[brain routed · gemini]` = ho gaya. ✅
+
+### 2 case
+| Situation | Kya karna |
+|---|---|
+| **Provider badalna** (Claude→Gemini/OpenAI) | `AI_PROVIDER=` + us provider ki key → save → restart |
+| **Sirf key badalna** (purani expire) | bas us key wali line update → save → restart |
+
+- Model id override: `AI_MODEL=gemini-2.0-flash` (warna provider ka default).
 - Galat/khaali key → app crash nahi, purana deterministic mode chal jata hai.
-- Test: `npm run test:brain` (jo provider on hai usi se chalega).
+- 3 valid value: `AI_PROVIDER=anthropic | openai | gemini`.
 
 ---
 
