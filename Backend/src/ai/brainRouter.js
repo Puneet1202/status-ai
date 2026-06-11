@@ -15,7 +15,7 @@
 import { getToolSchemas } from "./tools/index.js";
 import { todayISO } from "./tools/_helpers.js";
 import { isMonthFirstTz } from "./timeParser.js";
-import { getProvider, getProviderKey, getProviderBaseUrl, getBrainModel, BRAIN_TIMEOUT_MS } from "./ai-config.js";
+import { getProvider, getProviderKey, getProviderBaseUrl, getBrainModel, getBrainTimeout } from "./ai-config.js";
 import { askAnthropic } from "./providers/anthropic.js";
 import { askOpenAI } from "./providers/openai.js";
 import { askGemini } from "./providers/gemini.js";
@@ -23,7 +23,8 @@ import { askGemini } from "./providers/gemini.js";
 // One adapter per provider — all take { apiKey, model, system, message, history,
 // tools, timeoutMs } and return { toolCall, text }. Groq is OpenAI-compatible,
 // so it reuses the openai adapter (ai-config gives it the Groq base URL).
-const ADAPTERS = { anthropic: askAnthropic, openai: askOpenAI, gemini: askGemini, groq: askOpenAI };
+// ollama aur cloudflare dono OpenAI-format bolte hai → wahi openai adapter reuse.
+const ADAPTERS = { anthropic: askAnthropic, openai: askOpenAI, gemini: askGemini, groq: askOpenAI, ollama: askOpenAI, cloudflare: askOpenAI };
 
 // Tools the brain may route to. update/delete are included (Step 3): they return a
 // confirm prompt + pendingAction, and the controller intercepts the user's
@@ -38,11 +39,12 @@ const BRAIN_TOOLS = new Set([
   "delete_timesheet",
   "list_employees",
   "get_employee_info",
+  "get_pending_status",
 ]);
 
 // HR/Admin-ONLY tools. Hidden from a normal employee's toolset entirely (the
 // handler also hard-gates, but not exposing it keeps the brain from ever trying).
-const ORG_ONLY_TOOLS = new Set(["list_employees", "get_employee_info"]);
+const ORG_ONLY_TOOLS = new Set(["list_employees", "get_employee_info", "get_pending_status"]);
 
 // Read tools jinme org-viewer kisi aur employee ko target kar sakta hai.
 const READ_TOOLS = new Set(["get_timesheet_logs", "query_timesheet", "analyze_timesheet"]);
@@ -97,15 +99,24 @@ function brainToolSchemas(isOrgViewer) {
 // token saaf dikhe (real API counts, koi guess nahi). Cumulative total bhi rakhte
 // hai taaki session me ab tak kitne tokens lage wo bhi pata chale.
 let _tokenTotals = { input: 0, output: 0, total: 0 };
-function logTokens(provider, model, usage, tag = "") {
-  if (!usage) { console.log(`[tokens · ${provider} · ${model}]${tag} (no usage returned)`); return; }
+function logTokens(provider, model, usage, tag = "", ms = 0) {
+  const t = ms ? `${(ms / 1000).toFixed(2)}s` : "?";
+  if (!usage) { console.log(`\n  AI call · ${provider} · ${model}${tag}  time=${t}  (no usage returned)\n`); return; }
   const input = usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount ?? 0;
   const output = usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0;
   const total = usage.total_tokens ?? usage.totalTokenCount ?? (input + output);
   _tokenTotals.input += input; _tokenTotals.output += output; _tokenTotals.total += total;
+  // tok/sec = output tokens generate hone ki speed (standard "speed" metric).
+  const speed = ms ? `${(output / (ms / 1000)).toFixed(1)} tok/s` : "?";
+  const rss = `${(process.memoryUsage().rss / 1024 / 1024).toFixed(0)} MB`;
+  const pad = (v) => String(v).padStart(8);
+  // Terminal me ek saaf table — har AI call pe input/output/time/speed/RAM ek nazar me.
   console.log(
-    `[tokens · ${provider} · ${model}]${tag} input=${input} output=${output} total=${total}` +
-    `  | session so far: in=${_tokenTotals.input} out=${_tokenTotals.output} total=${_tokenTotals.total}`
+    `\n  ┌─ AI call · ${provider} · ${model}${tag}\n` +
+    `  │  input ${pad(input)} tok      output ${pad(output)} tok     total ${pad(total)} tok\n` +
+    `  │  time  ${pad(t)}          speed  ${pad(speed.replace(' tok/s',''))} t/s   ram   ${pad(rss)}\n` +
+    `  │  session →  input ${pad(_tokenTotals.input)}   output ${pad(_tokenTotals.output)}   total ${pad(_tokenTotals.total)}\n` +
+    `  └─`
   );
 }
 
@@ -133,7 +144,7 @@ function sanitizeHistory(history) {
   return h.slice(i);
 }
 
-function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = false) {
+function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = false, viewAs = null) {
   const proj = selectedProject
     ? `The user's currently selected project is "${selectedProject}". When they log work, it goes under this project — you do NOT need to ask for or include the project.`
     : `No project is selected yet.`;
@@ -180,12 +191,19 @@ function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = fal
 
   // DYNAMIC block — the ONLY per-turn bits (today's date + selected project). Kept
   // OUT of the cached prefix so changing project/day never busts the big cache.
+  // A teammate is currently SELECTED (sticky "Viewing: X" pill). OVERRIDE the
+  // org-block's "ask whose?" rule: for an unnamed view/analyze (no 'my'), proceed
+  // for THIS teammate — never ask. (Controller scopes employee_name; brain may omit it.)
+  const viewingLine = (isOrgViewer && viewAs)
+    ? `OVERRIDE: A teammate is currently SELECTED for viewing (${viewAs}). For ANY request to view/analyze entries WITHOUT naming a different person and WITHOUT saying 'my/mera/apni', CALL the read tool for this selected teammate — do NOT ask whose it is. You may omit employee_name; it will be scoped to them.`
+    : null;
   const dynamic = [
     `Today's date is ${today}. Resolve relative dates ("today", "kal/yesterday", "is hafte/this week") against it.`,
     // Global company (India + US): numeric dates user ke locale ke hisaab se —
     // jiska number 12 se bada ho wo din hai; dono ≤12 ho to is rule se resolve.
     `Numeric dates like "05-06-2026" are ${monthFirst ? "MM-DD-YYYY (month first — US style)" : "DD-MM-YYYY (day first)"} in this user's locale; convert to YYYY-MM-DD accordingly.`,
     proj,
+    ...(viewingLine ? [viewingLine] : []),
   ].join("\n");
 
   return { stable, dynamic };
@@ -193,11 +211,11 @@ function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = fal
 
 // isOrgViewer DB-driven hai (controller me user ki real permissions se nikla) — yahan
 // sirf boolean aata hai, koi role-naam hardcode nahi.
-export async function routeWithBrain(env, message, window, selectedProject, timeZone, isOrgViewer = false) {
+export async function routeWithBrain(env, message, window, selectedProject, timeZone, isOrgViewer = false, viewAs = null) {
   const provider = getProvider(env);
   const ask = ADAPTERS[provider] || askAnthropic;
   const today = todayISO(timeZone);
-  const { stable, dynamic } = buildSystemPrompt(today, selectedProject, isOrgViewer, isMonthFirstTz(timeZone));
+  const { stable, dynamic } = buildSystemPrompt(today, selectedProject, isOrgViewer, isMonthFirstTz(timeZone), viewAs);
   // `system` = full prompt (used by openai/gemini adapters as-is). The anthropic
   // adapter ALSO gets the stable/dynamic split so it can cache the stable prefix.
   const system = `${stable}\n${dynamic}`;
@@ -213,10 +231,11 @@ export async function routeWithBrain(env, message, window, selectedProject, time
     message,
     history,
     tools: brainToolSchemas(isOrgViewer),
-    timeoutMs: BRAIN_TIMEOUT_MS,
+    timeoutMs: getBrainTimeout(env),
   };
+  const _t0 = Date.now();
   let { toolCall, text, usage } = await ask(req);
-  logTokens(provider, getBrainModel(env), usage);
+  logTokens(provider, getBrainModel(env), usage, "", Date.now() - _t0);
 
   // ── ANTI-FABRICATION GUARD ─────────────────────────────────────────────────
   // Chhota/free model kabhi-kabhi tool call karne ke BAJAY khud (a) "✅ saved /
@@ -231,8 +250,9 @@ export async function routeWithBrain(env, message, window, selectedProject, time
     console.warn(`[brain fabrication blocked · ${provider}]`, JSON.stringify(text.slice(0, 140)));
     try {
       let retryUsage;
+      const _r0 = Date.now();
       ({ toolCall, text, usage: retryUsage } = await ask({ ...req, toolChoice: "required" }));
-      logTokens(provider, getBrainModel(env), retryUsage, " [retry]");
+      logTokens(provider, getBrainModel(env), retryUsage, " [retry]", Date.now() - _r0);
     } catch (e) {
       console.warn(`[brain forced-tool retry failed · ${provider}]`, e?.message || e);
       return null; // deterministic engine takes over — honest, never a fake receipt

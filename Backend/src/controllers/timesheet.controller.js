@@ -211,6 +211,7 @@ export const aiChatHandler = async (c) => {
         // pe gate karne se employee dusro ka data dekh leta (privacy leak). Sir DB me
         // kisi role ko 'all_employee_attendance' de/le → AI khud adapt karega.
         let isOrgViewer = false;
+        let permSet = new Set();
         try {
             const permRows = await db.prepare(
                 `SELECT p.name FROM users u
@@ -218,13 +219,16 @@ export const aiChatHandler = async (c) => {
                    JOIN permissions p ON p.id = rp.permission_id
                   WHERE u.id = ?`
             ).bind(user.id).all();
-            const permSet = new Set((permRows.results || []).map((r) => r.name));
+            permSet = new Set((permRows.results || []).map((r) => r.name));
             isOrgViewer = permSet.has('all_employee_attendance');
         } catch (e) {
-            console.warn('[isOrgViewer perm load failed]', e?.message || e);
+            console.warn('[perm load failed]', e?.message || e);
         }
 
-        const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+        // perms = LIVE permission set (har request pe fresh DB se). Tools isse apni
+        // specific permission check karte hai → admin DB me OFF kare to AGLE message
+        // pe AI khud mana kar deta, koi alag sync/config nahi. (auto-sync built-in)
+        const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -238,7 +242,14 @@ export const aiChatHandler = async (c) => {
         }
 
         // ── Single AI round-trip → tool call or conversational reply ──
-        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer);
+        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs);
+
+        // "Log MY hours" / self-intent in a LOGGING context → clear any "Viewing: X"
+        // pill so a follow-up "9-11 ..." logs for SELF, not the viewed teammate.
+        // (Safety: stale read-pill ko add-for-others me leak hone se rokta hai.)
+        const SELF_LOG = isOrgViewer
+            && /\b(my|mera|meri|mere|apni|apna|apne|khud|self|mine)\b/i.test(message)
+            && /\b(log|add|enter|fill|status|hours?|ghante)\b/i.test(message);
 
         if (result.action) {
             // ── STICKY VIEWER SCOPE (org-viewer only) ──────────────────────────
@@ -273,6 +284,22 @@ export const aiChatHandler = async (c) => {
                 }
             }
 
+            // ── ADD-FOR-OTHERS ────────────────────────────────────────────────
+            // HR/Admin "Viewing: <X>" pill ke saath hours log kare (aur "my/apni"
+            // na bole) → wo hours USI X ke liye save ho. Gate: org-viewer +
+            // enter_status (dispatchTool me dobara verify). "Log my hours" chip me
+            // "my" hota hai → SELF_INTENT true → self hi rehta (safe).
+            // SELF_LOG → kabhi add-for-others inject mat karo (self hi), aur pill clear.
+            if (result.action.name === 'add_timesheet_entries'
+                && !SELF_LOG
+                && isOrgViewer && permSet.has('enter_status')
+                && !SELF_INTENT.test(message)
+                && viewAs && typeof viewAs === 'string'
+                && !result.action.data?.employee_name) {
+                result.action.data = { ...result.action.data, employee_name: viewAs };
+            }
+            if (SELF_LOG) clearViewTarget = true; // self-log → "Viewing" pill hatao
+
             const out = await dispatchTool(result.action.name, result.action.data, ctx);
             // self bola → frontend ka pill clear karo (viewTarget: null bhej ke)
             if (clearViewTarget && out && typeof out === 'object' && out.viewTarget === undefined) {
@@ -281,6 +308,11 @@ export const aiChatHandler = async (c) => {
             return c.json(out, 200);
         }
 
+        // Non-action reply (e.g. "log my hours" → "give me the time"). Self-log →
+        // pill clear yahan bhi, taaki agle "9-11 ..." message me self hi rahe.
+        if (SELF_LOG && result && typeof result === 'object' && result.viewTarget === undefined) {
+            result.viewTarget = null;
+        }
         return c.json(result, 200);
 
     } catch (error) {

@@ -17,19 +17,37 @@ export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
 // =========================================================================
 export const BRAIN_TIMEOUT_MS = 12000;
 
+// Local Ollama (CPU, no GPU) is MUCH slower than Groq/cloud — first call also pays
+// a cold model-load. 12s aborts before qwen replies. So the brain timeout is
+// per-provider: ollama gets a long leash, cloud stays snappy. Override anytime
+// with AI_BRAIN_TIMEOUT_MS in .env.
+export function getBrainTimeout(env) {
+  // .env override: AI_BRAIN_TIMEOUT_MS. Set 0 (ya "none"/"off") = NO LIMIT — jitna
+  // time lage lagne do (slow local model debug karne ke liye). Khaali → smart default.
+  const raw = env?.AI_BRAIN_TIMEOUT_MS;
+  if (raw !== undefined && raw !== '') {
+    if (['0', 'none', 'off', 'no', 'unlimited'].includes(String(raw).toLowerCase())) return 0; // 0 = no abort
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return getProvider(env) === 'ollama' ? 90000 : BRAIN_TIMEOUT_MS;
+}
+
 // Sensible default model per provider (used when AI_MODEL isn't set).
 const PROVIDER_DEFAULTS = {
   anthropic: 'claude-haiku-4-5', // top tool-calling, fast, cheap
   openai: 'gpt-4o-mini',          // ~7x cheaper than Haiku
   gemini: 'gemini-2.0-flash',     // ~10x cheaper
   groq: 'llama-3.3-70b-versatile', // FREE tier, OpenAI-compatible, solid tool-calling
+  ollama: 'qwen3.5:latest',        // LOCAL, 100% free; OpenAI-compatible at :11434/v1
+  cloudflare: '@cf/qwen/qwen3-30b-a3b-fp8', // CF Workers AI; supports Function calling (397B does NOT)
 };
 export const DEFAULT_BRAIN_MODEL = PROVIDER_DEFAULTS.anthropic; // kept for back-compat
 
 // Which provider runs the brain (AI_PROVIDER); defaults to anthropic.
 export function getProvider(env) {
   const p = String(env?.AI_PROVIDER || 'anthropic').toLowerCase();
-  return ['anthropic', 'openai', 'gemini', 'groq'].includes(p) ? p : 'anthropic';
+  return ['anthropic', 'openai', 'gemini', 'groq', 'ollama', 'cloudflare'].includes(p) ? p : 'anthropic';
 }
 
 // The API key for the selected provider.
@@ -37,6 +55,11 @@ export function getProviderKey(env, provider = getProvider(env)) {
   if (provider === 'openai') return env?.OPENAI_API_KEY || '';
   if (provider === 'gemini') return env?.GEMINI_API_KEY || '';
   if (provider === 'groq') return env?.GROQ_API_KEY || '';
+  // Ollama local needs no key; return a dummy so the brain stays ENABLED and the
+  // openai adapter (which requires a non-empty key) is satisfied.
+  if (provider === 'ollama') return env?.OLLAMA_API_KEY || 'ollama';
+  // Cloudflare Workers AI: the CF API token (same one used for the AI binding).
+  if (provider === 'cloudflare') return env?.CF_API_TOKEN || env?.CLOUDFLARE_API_TOKEN || '';
   return env?.ANTHROPIC_API_KEY || '';
 }
 
@@ -47,6 +70,13 @@ export function getProviderKey(env, provider = getProvider(env)) {
 export function getProviderBaseUrl(env, provider = getProvider(env)) {
   if (provider === 'groq') return env?.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
   if (provider === 'openai') return env?.OPENAI_BASE_URL || '';
+  // Ollama default local endpoint; OLLAMA_BASE_URL overrides (e.g. a heavy laptop/cloud IP).
+  if (provider === 'ollama') return env?.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+  // Cloudflare Workers AI OpenAI-compatible endpoint — built from the account id.
+  if (provider === 'cloudflare') {
+    const acct = env?.CF_ACCOUNT_ID || env?.CLOUDFLARE_ACCOUNT_ID || '';
+    return `https://api.cloudflare.com/client/v4/accounts/${acct}/ai/v1`;
+  }
   return '';
 }
 

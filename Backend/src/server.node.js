@@ -45,7 +45,9 @@ const env = {
   // 'openai' at Cerebras / a local Ollama). Empty → provider's own default URL.
   GROQ_BASE_URL: process.env.GROQ_BASE_URL || '',
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+  OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL || '',   // local Ollama (default :11434/v1); set to a heavy-laptop/cloud IP to offload
   AI_MODEL: process.env.AI_MODEL || '',                 // override model; else provider default
+  AI_BRAIN_TIMEOUT_MS: process.env.AI_BRAIN_TIMEOUT_MS || '', // brain timeout override; 0 = NO LIMIT (slow local Ollama debug)
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
   AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',
@@ -56,6 +58,9 @@ const env = {
   SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || '',
   SENDGRID_FROM_EMAIL: process.env.SENDGRID_FROM_EMAIL || '',
   SENDGRID_FROM_NAME: process.env.SENDGRID_FROM_NAME || '',
+  // CF creds bhi brain ko forward karo — AI_PROVIDER=cloudflare in dono se URL+key banata hai.
+  CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID || '',
+  CF_API_TOKEN: process.env.CF_API_TOKEN || '',
   // Workers AI ko Node par REST se chalate hai. CF key ho to asli LLM (greetings
   // + update/delete natural), warna graceful stub (app crash nahi hota; add/get
   // waise bhi deterministic hai, LLM ki zaroorat nahi).
@@ -70,10 +75,11 @@ const port = Number(process.env.PORT || 8787);
 
 // Which BRAIN provider/model is actually live (so a wrong .env is obvious at boot,
 // not only after a confusing reply). Mirrors ai-config's selection logic.
-const BRAIN_PROVIDER = ['anthropic', 'openai', 'gemini', 'groq'].includes(String(env.AI_PROVIDER).toLowerCase())
+const BRAIN_PROVIDER = ['anthropic', 'openai', 'gemini', 'groq', 'ollama', 'cloudflare'].includes(String(env.AI_PROVIDER).toLowerCase())
   ? String(env.AI_PROVIDER).toLowerCase() : 'anthropic';
-const BRAIN_KEY = { anthropic: env.ANTHROPIC_API_KEY, openai: env.OPENAI_API_KEY, gemini: env.GEMINI_API_KEY, groq: env.GROQ_API_KEY }[BRAIN_PROVIDER];
-const BRAIN_MODEL = env.AI_MODEL || { anthropic: 'claude-haiku-4-5', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile' }[BRAIN_PROVIDER];
+// ollama local needs no real key — 'ollama' dummy so the banner shows ON (matches ai-config).
+const BRAIN_KEY = { anthropic: env.ANTHROPIC_API_KEY, openai: env.OPENAI_API_KEY, gemini: env.GEMINI_API_KEY, groq: env.GROQ_API_KEY, ollama: 'ollama', cloudflare: env.CF_API_TOKEN }[BRAIN_PROVIDER];
+const BRAIN_MODEL = env.AI_MODEL || { anthropic: 'claude-haiku-4-5', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile', ollama: 'qwen3.5:latest', cloudflare: '@cf/qwen/qwen3-30b-a3b-fp8' }[BRAIN_PROVIDER];
 
 serve({ fetch: (req) => app.fetch(req, env), port }, (info) => {
   console.log(`✅ KEYSS live →  http://localhost:${info.port}`);

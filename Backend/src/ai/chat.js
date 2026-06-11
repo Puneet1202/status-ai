@@ -446,7 +446,7 @@ const DIRECTORY_INTENT = /\b(how many|number of|count of|total(?: number)? of)\s
 // work-log like "fixed the leave module" won't trigger). Time-block also skips it.
 const OUT_OF_SCOPE_INTENT = /\b(apply|applied|applying|book|request|take|cancel|approve|lagao|laga do|chahiye)\b[\s\w]*\b(leave|leaves|holiday|vacation|time ?off|chutti|chhutti)\b|\b(leave|chutti|chhutti|holiday)\b[\s\w]*\b(apply|lagao|laga do|book|chahiye|approve)\b|\b(payroll|payslip|salary slip)\b/i;
 
-export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false) {
+export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false, viewAs = null) {
     try {
         const cleanMessage = (message || '').trim();
         // Numeric-date format user ke timezone se: US → month-first (05-20-2026),
@@ -462,6 +462,20 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // block (that's a work log, e.g. "9-11 my role permissions feature").
         if (PROFILE_INTENT.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
             return { action: { name: 'get_my_profile', data: {} } };
+        }
+
+        // ── PERMISSIONS menu (deterministic — sensitive, model NEVER touches it) ──
+        // Chip click "perm:<name>" → us permission ka action sub-menu khulta hai.
+        const permChip = cleanMessage.match(/^\s*perm:([a-z_]+)\s*$/i);
+        if (permChip) {
+            return { action: { name: 'get_my_permissions', data: { area: permChip[1] } } };
+        }
+        // "my permissions" / "kitni permission hai" / "mere paas kya access" → list + chips.
+        // Typo-tolerant: permission|permisison|permision|permisson|permissions sab
+        // pakad'ta hai (users aksar galat spell karte hai). Time-block guard:
+        // "9-11 permissions feature" ek work log hai, menu nahi.
+        if (/\bpermi[si]*ons?\b/i.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
+            return { action: { name: 'get_my_permissions', data: {} } };
         }
 
         // Capability / out-of-scope / directory — deterministic (reliable + 0 tokens),
@@ -562,7 +576,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // back to the model's own entries only if regex can't read the format.
         if (isBrainEnabled(env)) {
             try {
-                const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone, isOrgViewer);
+                const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone, isOrgViewer, viewAs);
                 if (routed?.action?.name === 'add_timesheet_entries') {
                     const { entries } = await extractWorkBlocks(cleanMessage, env);
                     const modelEntries = Array.isArray(routed.action.data?.entries) ? routed.action.data.entries : [];
