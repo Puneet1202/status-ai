@@ -6,15 +6,44 @@
 // Our tool schemas are ALREADY in OpenAI shape ({type:'function', function:{...}}),
 // so no conversion is needed.
 
-function toOpenAITools(schemas) {
-  return schemas.map((s) =>
-    s && s.type === "function" && s.function ? s : { type: "function", function: s }
-  );
+// Groq tool-args ko schema ke against STRICTLY validate karta hai, aur gpt-oss
+// optional params me `null` bhejta hai ("from_date": null = "nahi diya") → 400
+// "expected string, but got null" → poori call mar jaati hai. Fix: har OPTIONAL
+// param ko nullable bana do (type: ["string","null"], enum me null add). Handlers
+// pehle se null-safe hai (null = absent treat karte hai), to behaviour same.
+function nullableOptionals(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+  const out = { ...node };
+  if (out.type === "object" && out.properties) {
+    const req = new Set(out.required || []);
+    const props = {};
+    for (const [k, v] of Object.entries(out.properties)) {
+      let p = nullableOptionals(v);
+      if (!req.has(k) && typeof p.type === "string") {
+        p = { ...p, type: [p.type, "null"] };
+        if (Array.isArray(p.enum) && !p.enum.includes(null)) p.enum = [...p.enum, null];
+      }
+      props[k] = p;
+    }
+    out.properties = props;
+  }
+  if (out.items) out.items = nullableOptionals(out.items);
+  return out;
 }
 
-export async function askOpenAI({ apiKey, model, system, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024, baseUrl }) {
-  if (!apiKey) throw new Error("OPENAI_API_KEY missing");
+function toOpenAITools(schemas) {
+  return schemas.map((s) => {
+    const fn = s && s.type === "function" && s.function ? s.function : s;
+    return { type: "function", function: { ...fn, parameters: nullableOptionals(fn.parameters) } };
+  });
+}
+
+export async function askOpenAI({ apiKey, model, system, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024, baseUrl, toolChoice = "auto" }) {
+  // Groq (and any other OpenAI-compatible server) also lands here via baseUrl,
+  // so error labels say which host actually failed instead of always "OpenAI".
+  if (!apiKey) throw new Error("API key missing for OpenAI-compatible provider");
   const url = (baseUrl || "https://api.openai.com/v1") + "/chat/completions";
+  const host = url.includes("groq") ? "Groq" : "OpenAI";
 
   const messages = [
     { role: "system", content: system || "You are a helpful timesheet assistant." },
@@ -24,7 +53,9 @@ export async function askOpenAI({ apiKey, model, system, message, history = [], 
   const body = { model, messages, max_tokens: maxTokens, temperature: 0.1 };
   if (tools && tools.length) {
     body.tools = toOpenAITools(tools);
-    body.tool_choice = "auto";
+    // "required" = anti-fabrication retry (brainRouter): model ko tool call
+    // karna HI padega, khud "✅ saved" type ki kahani nahi likh sakta.
+    body.tool_choice = toolChoice === "required" ? "required" : "auto";
   }
 
   const ctrl = new AbortController();
@@ -40,15 +71,16 @@ export async function askOpenAI({ apiKey, model, system, message, history = [], 
   } finally {
     clearTimeout(timer);
   }
-  if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  if (!resp.ok) throw new Error(`${host} ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
 
   const data = await resp.json();
   const msg = data?.choices?.[0]?.message;
   const tc = msg?.tool_calls?.[0];
+  // usage = real token counts from Groq/OpenAI ({prompt_tokens, completion_tokens, total_tokens}).
   if (tc?.function) {
     let args = {};
     try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* leave {} */ }
-    return { toolCall: { name: tc.function.name, arguments: args }, text: null };
+    return { toolCall: { name: tc.function.name, arguments: args }, text: null, usage: data?.usage };
   }
-  return { toolCall: null, text: (msg?.content || "").trim() };
+  return { toolCall: null, text: (msg?.content || "").trim(), usage: data?.usage };
 }

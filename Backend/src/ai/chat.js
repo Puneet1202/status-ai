@@ -8,7 +8,7 @@
 import { askCloudflareAI } from './providers/cloudflare.js';
 import { getSystemPrompt, getCasualPrompt } from './tools.js';
 import { getToolSchemas } from './tools/index.js';
-import { parseEntryDate } from './timeParser.js';
+import { parseEntryDate, isMonthFirstTz, resolveNumericDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
 import { todayISO } from './tools/_helpers.js';
 import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, CHAT_MODEL_FAST, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
@@ -48,9 +48,14 @@ const GET_NOUN = /\b(logs?|entr(?:y|ies)|timesheet|tasks?|hours|ghante|kaam|work
 const PERIOD = /\b(today|aaj|yesterday|kal|kl|parso|this week|last week|this month|last month|weekly|monthly|day before yesterday)\b|\bis haft|\bpichl[ae] haft|\bis mah|\bpichl[ae] mah|\d+\s*(?:days?|din)\s*(?:ago|pehle|pahle)|\d{4}-\d{2}-\d{2}/i;
 
 // A specific time block ("9 se 11", "9-11", "9am") signals LOGGING, not a query.
+// NOTE: pehle numeric DATEs hata do — "20-05-2026" ek DATE hai (4-digit year ke
+// saath kabhi time-range nahi ho sakta), warna "20 - 05" ko 20:00→05:00 samajh
+// kar date-search bhi work-log ban jata tha (project maangta, read skip hota).
+const NUMERIC_DATE_RE = /\b\d{1,2}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*(?:20\d{2}|\d{2})\b/g;
 function looksLikeTimeBlock(text) {
-    return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(text)
-        || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(text);
+    const t = String(text || '').replace(NUMERIC_DATE_RE, ' ');
+    return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(t)
+        || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(t);
 }
 
 // =========================================================================
@@ -217,12 +222,22 @@ function nowInTz(timeZone) {
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 function addDays(d, n) { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; }
 
-function parseGetRange(message, base) {
+function parseGetRange(message, base, monthFirst = false) {
     const m = String(message || '').toLowerCase();
     const today = isoDate(base);
 
     const isoHit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
     if (isoHit) return { from_date: isoHit[1], to_date: isoHit[1] };
+
+    // Numeric date: "20-05-2026" (India, day-first) / "05/20/2026" (US, month-first)
+    // — user ke TIMEZONE se decide hota hai (global company: India + US dono).
+    // Explicit date period-words ("last month") ko BEAT karta hai — user ne exact
+    // din diya hai to wahi chahiye.
+    const dmy = m.match(/\b(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(20\d{2})\b/);
+    if (dmy) {
+        const d = resolveNumericDate(parseInt(dmy[1], 10), parseInt(dmy[2], 10), dmy[3], monthFirst);
+        if (d) return { from_date: d, to_date: d };
+    }
 
     // "N days ago" / "N din pehle" → that exact past day.
     const ago = m.match(/\b(\d+)\s*(?:days?|din)\s*(?:ago|pehle|pahle|purane?)\b/);
@@ -271,7 +286,7 @@ function parseGroupBy(message) {
 // Date window for analytics. Adds year support ("this year", "last year", a bare
 // "2023") and defaults to ALL-TIME (not "recent") when no period is named —
 // because an analytics question without a period usually means "overall".
-function parseAnalyticsRange(message, base) {
+function parseAnalyticsRange(message, base, monthFirst = false) {
     const m = String(message || '').toLowerCase();
     const hasFullDate = /\d{4}-\d{2}-\d{2}/.test(m);
     if (/\bthis year\b|\bis saal\b|\bcurrent year\b/.test(m)) {
@@ -284,7 +299,7 @@ function parseAnalyticsRange(message, base) {
     }
     const yr = !hasFullDate && m.match(/\b(20[0-2]\d)\b(?!-)/);
     if (yr) return { from_date: `${yr[1]}-01-01`, to_date: `${yr[1]}-12-31` };
-    const r = parseGetRange(message, base); // reuse week/month/yesterday/today/ISO
+    const r = parseGetRange(message, base, monthFirst); // reuse week/month/yesterday/today/ISO
     if (!r.recent) return r;
     return {}; // no period named → all-time
 }
@@ -308,7 +323,7 @@ function to24h(raw) {
 // for query_timesheet. Returns null when the message has NO real filter signal
 // (so plain "show today" stays a normal get). Date defaults to today in the tool.
 const NUM_WORD = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
-function parseFilters(message, base) {
+function parseFilters(message, base, monthFirst = false) {
     const m = String(message || '').toLowerCase().replace(/\b(one|two|three|four|five|six)\b/g, (w) => NUM_WORD[w]);
     const f = {};
     // Did a time-of-day come from an EXPLICIT clock ("before 10am") vs a vague word
@@ -317,7 +332,7 @@ function parseFilters(message, base) {
     let explicitTOD = false;
 
     // date range (year/week/month/yesterday/today/ISO); else tool defaults to today
-    const range = parseAnalyticsRange(message, base);
+    const range = parseAnalyticsRange(message, base, monthFirst);
     if (range.from_date) { f.from_date = range.from_date; f.to_date = range.to_date; }
 
     // keyword (first match wins) — maps phrasings to a searchable stem
@@ -397,11 +412,46 @@ function recentLimit(message) {
 // "what is my name", "who am I", "mera naam", "my email/role" → answer from the
 // logged-in token (get_my_profile), NOT the flaky model which guesses a "name"
 // out of the words ("ky hai" → "Kyhai"). Deterministic + exact + safe.
-const PROFILE_INTENT = /\bwho am i\b|\b(what'?s|what is|whats|tell me)\s+my\s+(name|email|role)\b|\bmy (name|email|role)\b|\bmera naam\b|\bmera email\b|\bmera role\b|\bmain kaun\b/i;
+const PROFILE_INTENT = /\bwho\s+(?:am\s+i|i\s+am)\b|\bwho\s+am?\s+i+\b|\bwho\s+i\s+am+\b|\b(what'?s|what is|whats|tell me)\s+my\s+(name|email|role)\b|\bmy (name|email|role)\b|\bmera naam\b|\bmera email\b|\bmera role\b|\bmain kaun\b|\bkaun h(?:u|oon|un)\b/i;
 
-export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null) {
+// Capability / "what can you do" / "how much access" → a FIXED, accurate answer.
+// The flaky free model otherwise greets or dumps entries on these. Deterministic =
+// reliable + 0 tokens. Skip if there's a time block (that's a log: "help me 9-11…").
+const CAPABILITY_INTENT = /\bwhat (can|do) (you|u) do\b|\bwhat can i (do|ask)\b|\bhow (much|many) (access|permission|permissions)\b|\bwhat (are|is) my (access|permission|permissions)\b|\b(your|ur) (capabilit|feature)|\bwhat are you\b|\bkya kar sakt[ae]\b|\b(tum|aap|tu) kya kar\b|^\s*help\s*$/i;
+
+function getCapabilityReply(isOrgViewer) {
+    const lines = [
+        "Main aapki timesheet ka assistant hu. Ye kar sakta hu:",
+        "• Hours log karna — e.g. \"9 to 11 fixed login bug\"",
+        "• Entries dekhna (aaj / is hafte / kisi date ki) aur filter karna",
+        "• Analyze — totals, per-project/month breakdown, busiest, average",
+        "• Entries edit / delete karna (confirm ke saath)",
+        "• Profile batana (naam / email / role)",
+    ];
+    if (isOrgViewer) {
+        lines.push("• HR/Admin: kisi bhi employee ki timesheet dekhna/analyze + employee list/count");
+    }
+    lines.push("");
+    lines.push("Main leave, payroll, ya HR settings NAHI handle karta — wo website pe hai. 🙂");
+    return lines.join("\n");
+}
+
+// Employee DIRECTORY count/list → list_employees (handler khud gate karta hai:
+// org-viewer ko list, normal employee ko "HR/Admin only"). Deterministic taaki
+// "total employee" galti se analyze_timesheet (apne hours) me na chala jaye.
+const DIRECTORY_INTENT = /\b(how many|number of|count of|total(?: number)? of)\s+(active\s+)?employees?\b|\btotal\s+employees?\b|\bkitne\s+employees?\b|\b(list|show)\s+(all\s+|active\s+)?employees?\s*$|\bemployees?\s+(list|count|directory)\b/i;
+
+// Out-of-scope HR requests (leave/payroll/holiday) → say clearly we don't do it,
+// instead of a confusing greeting. Needs an ACTION verb + the noun (narrow, so a
+// work-log like "fixed the leave module" won't trigger). Time-block also skips it.
+const OUT_OF_SCOPE_INTENT = /\b(apply|applied|applying|book|request|take|cancel|approve|lagao|laga do|chahiye)\b[\s\w]*\b(leave|leaves|holiday|vacation|time ?off|chutti|chhutti)\b|\b(leave|chutti|chhutti|holiday)\b[\s\w]*\b(apply|lagao|laga do|book|chahiye|approve)\b|\b(payroll|payslip|salary slip)\b/i;
+
+export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false) {
     try {
         const cleanMessage = (message || '').trim();
+        // Numeric-date format user ke timezone se: US → month-first (05-20-2026),
+        // India/baaki → day-first (20-05-2026). Global company, per-user sahi.
+        const monthFirst = isMonthFirstTz(timeZone);
 
         // Guardrail: single-message length.
         if (cleanMessage.length > MAX_MESSAGE_CHARS) {
@@ -412,6 +462,63 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // block (that's a work log, e.g. "9-11 my role permissions feature").
         if (PROFILE_INTENT.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
             return { action: { name: 'get_my_profile', data: {} } };
+        }
+
+        // Capability / out-of-scope / directory — deterministic (reliable + 0 tokens),
+        // so the flaky free model never greets or mis-tools these. All skip when the
+        // message has a time block (that's a work log, not a meta question).
+        if (!looksLikeTimeBlock(cleanMessage)) {
+            if (CAPABILITY_INTENT.test(cleanMessage)) {
+                return { reply: getCapabilityReply(isOrgViewer) };
+            }
+            if (OUT_OF_SCOPE_INTENT.test(cleanMessage)) {
+                return { reply: "Main sirf timesheet ka kaam karta hu (hours log/view/analyze). Leave, holiday, ya payroll main handle nahi karta — uske liye website use karein. 🙂" };
+            }
+            if (DIRECTORY_INTENT.test(cleanMessage)) {
+                return { action: { name: 'list_employees', data: {} } };
+            }
+            // ATTENDANCE — deterministic day-wise view (model isko kabhi greeting,
+            // kabhi entries deta tha — ab decision code ka hai). Typo-tolerant
+            // (attendance/attendence/sttendance) + Hindi (haziri). Period diya ho
+            // to wahi, warna THIS MONTH (website ke calendar jaisa mental model).
+            // Sticky viewer controller me lagta hai → selected employee ka hi aayega.
+            const ATTENDANCE_INTENT = /\b\w{0,2}t+end[ae]n[cs]e\w*\b|\bhaziri\b|\bhajiri\b|\bupasthiti\b/i;
+            if (ATTENDANCE_INTENT.test(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+                const base = nowInTz(timeZone);
+                const r = parseAnalyticsRange(cleanMessage, base, monthFirst);
+                const range = r.from_date
+                    ? { from_date: r.from_date, to_date: r.to_date }
+                    : { from_date: isoDate(new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1, 12))), to_date: isoDate(base) };
+                return { action: { name: 'analyze_timesheet', data: { ...range, group_by: 'day' } } };
+            }
+            // Profile-card ki quick-action CHIPS ke exact texts → seedha deterministic
+            // analyze (brain skip = 0 token + kabhi misroute nahi). Anchored (^...$)
+            // hai taaki normal sentences par kabhi na lage.
+            if (/^\s*total hours(?:\s*\(?\s*all[\s-]?time\s*\)?)?\s*$/i.test(cleanMessage)) {
+                return { action: { name: 'analyze_timesheet', data: { group_by: 'none' } } }; // no dates = all-time
+            }
+            if (/^\s*hours by project(?:\s*\(?\s*all[\s-]?time\s*\)?)?\s*$/i.test(cleanMessage)) {
+                return { action: { name: 'analyze_timesheet', data: { group_by: 'project' } } };
+            }
+        }
+
+        // ── ORG-VIEWER EMAIL-PICK (deterministic, no LLM) ─────────────────────
+        // After a same-name list ("1. Vijay Kumar — vijay@… 2. Vijay — vijay12@…")
+        // the HR/Admin replies with JUST an email to pick the person. Resolving
+        // this is a flaky multi-step for ANY small model (it must remember the list
+        // and re-issue the lookup), so we do it in code: a bare email from an
+        // org-viewer → show THAT person's recent logs. dispatchTool turns
+        // employee_name(email) → the employee (active-only) + labels the reply.
+        // Recent is the sensible default; the user can then ask for a date range.
+        const BARE_EMAIL = /^\s*([^\s@]+@[^\s@]+\.[A-Za-z]{2,})\s*$/;
+        if (isOrgViewer && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            const em = cleanMessage.match(BARE_EMAIL);
+            if (em) {
+                // Chip-click / bare email = SELECT karo + profile card do (kaun hai,
+                // role kya hai) — entries DUMP mat karo (user feedback: entries tabhi
+                // jab khud maange). Sticky viewer pill isi se set hota hai.
+                return { action: { name: 'get_employee_info', data: { employee_name: em[1] } } };
+            }
         }
 
         const window = buildSlidingWindow(history);
@@ -455,15 +562,31 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // back to the model's own entries only if regex can't read the format.
         if (isBrainEnabled(env)) {
             try {
-                const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone);
+                const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone, isOrgViewer);
                 if (routed?.action?.name === 'add_timesheet_entries') {
                     const { entries } = await extractWorkBlocks(cleanMessage, env);
+                    const modelEntries = Array.isArray(routed.action.data?.entries) ? routed.action.data.entries : [];
+
+                    // MULTI-TURN STITCH: when the user gives the time RANGE in one
+                    // message ("9 se 4 …") and the BREAK in a later one ("1 se 2"), the
+                    // current message alone is a fragment — regex on it sees ONLY the
+                    // break and would log 01:00–02:00 as work (losing 9–4). The brain
+                    // reads the WHOLE conversation and assembles the real split
+                    // (09–13 + 14–16, lunch 13–14 → dropped by is_lunch). So when the
+                    // brain produced MORE real work blocks than the current message
+                    // yields, trust the brain's entries. Single-message logs are
+                    // unaffected (equal counts → regex path below, as before).
+                    // Handler still validates HH:MM / 2h cap / overlap / drops is_lunch.
+                    const workCount = (arr) => arr.filter((e) => e && !e.is_lunch).length;
+                    if (workCount(modelEntries) > workCount(entries)) {
+                        return routed;
+                    }
+
                     if (entries.length > 0) {
                         enrichThinDescriptions(entries, history);
-                        const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
+                        const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone), monthFirst);
                         return { action: { name: 'add_timesheet_entries', data: { entries, ...(entry_date ? { entry_date } : {}) } } };
                     }
-                    const modelEntries = Array.isArray(routed.action.data?.entries) ? routed.action.data.entries : [];
                     if (modelEntries.length > 0) return routed; // exotic format the regex missed — handler still validates
                     return { reply: "Got it — what time did you work on that? e.g. \"9 to 11\"." };
                 }
@@ -507,7 +630,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             !looksLikeTimeBlock(cleanMessage)
         ) {
             const base = nowInTz(timeZone);
-            return { action: { name: 'analyze_timesheet', data: { ...parseAnalyticsRange(cleanMessage, base), group_by: parseGroupBy(cleanMessage) } } };
+            return { action: { name: 'analyze_timesheet', data: { ...parseAnalyticsRange(cleanMessage, base, monthFirst), group_by: parseGroupBy(cleanMessage) } } };
         }
 
         // ── DETERMINISTIC ADVANCED FILTER (reliable, no LLM) — keyword / time-of-day
@@ -527,7 +650,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             !DELETE_INTENT.test(cleanMessage) &&
             !UPDATE_INTENT.test(cleanMessage)
         ) {
-            const filters = parseFilters(cleanMessage, nowInTz(timeZone));
+            const filters = parseFilters(cleanMessage, nowInTz(timeZone), monthFirst);
             if (filters) {
                 const strong = filters._strong;
                 delete filters._strong; // internal routing flag — never goes to the tool.
@@ -549,7 +672,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             !UPDATE_INTENT.test(cleanMessage) &&
             !looksLikeTimeBlock(cleanMessage)
         ) {
-            const range = parseGetRange(cleanMessage, nowInTz(timeZone));
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
             // "last N entries" → N most recent across ALL dates. Singular "last
             // entry" → 1. Bare "last entries" → the tool's default (5).
             if (range.recent) { const lim = recentLimit(cleanMessage); if (lim) range.limit = lim; }
@@ -591,7 +714,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                     // Multi-turn: borrow a real description from the previous message
                     // when this one was basically just a time.
                     enrichThinDescriptions(entries, history);
-                    const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone));
+                    const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone), monthFirst);
                     console.log(`[hybrid add: ${source}]`, JSON.stringify({ entry_date, entries }));
                     return {
                         action: {

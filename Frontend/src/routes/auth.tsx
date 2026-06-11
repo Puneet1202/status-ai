@@ -129,7 +129,12 @@ export const AuthScreen: React.FC = () => {
                 pattern="[0-9]*"
                 maxLength={6}
                 value={otp}
-                onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  const digits = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+                  setOtp(digits);
+                }}
                 className="w-full bg-slate-950 border border-slate-800 text-white rounded-lg px-4 py-2.5 tracking-[0.5em] text-center text-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
                 placeholder="000000"
                 autoFocus

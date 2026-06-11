@@ -81,7 +81,34 @@ async function handler(ctx, data) {
   }
   const targetProjectName = selectedProject || data.project_name;
   if (!targetProjectName) {
-    return { reply: "Please select a project first! Type '@' to choose." };
+    // Project chips = is user ke ASSIGNED projects (DB se → no model, koi galat
+    // project nahi). kind:"project" → frontend click pe project PILL set karta hai
+    // (text send nahi), phir user time bata kar log karta hai.
+    let projectOptions = [];
+    try {
+      const pr = await db
+        .prepare(
+          `SELECT DISTINCT p.id, p.name
+             FROM projects p
+             JOIN project_assignments pa ON pa.project_id = p.id
+            WHERE pa.employee_id = ?
+            ORDER BY p.name ASC`
+        )
+        .bind(employeeId)
+        .all();
+      projectOptions = (pr.results || []).map((p) => ({
+        label: p.name,
+        value: p.name,
+        kind: "project",
+        projectId: p.id,
+      }));
+    } catch (e) {
+      console.warn("[addTimesheet project-options failed]", e?.message || e);
+    }
+    return {
+      reply: "Please select a project first! Niche se chunein ya '@' type karein.",
+      ...(projectOptions.length ? { options: projectOptions, optionsTitle: "Apna project chunein:" } : {}),
+    };
   }
 
   // If the user ticked predefined project tasks in the UI, those become the
@@ -176,6 +203,43 @@ async function handler(ctx, data) {
     };
   }
 
+  // ── DB-OVERLAP: naye block DB me pehle se logged entries se clash to nahi? ────
+  // Upar wala detectOverlap sirf ISI message ke blocks check karta hai. Ye check
+  // EXISTING entries se bachata hai — jaise alag-alag message me pehle 9-9:30,
+  // phir 9-10 (jo overlap karta hai). Clash waale block flag hote hai, clean save.
+  try {
+    const ex = await db
+      .prepare("SELECT start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
+      .bind(employeeId, entryDate)
+      .all();
+    const existing = (ex.results || [])
+      .map((r) => ({
+        start_time: String(r.start_time || "").slice(0, 5),
+        end_time: String(r.end_time || "").slice(0, 5),
+      }))
+      .filter((r) => isValidTime(r.start_time) && isValidTime(r.end_time));
+
+    if (existing.length) {
+      const clean = [];
+      for (const v of valid) {
+        const clashes = existing.some((e) =>
+          detectOverlap([e, { start_time: v.start_time, end_time: v.end_time }])
+        );
+        if (clashes) {
+          problems.push(
+            `• ${v.start_time}–${v.end_time} ("${v.task_description || "work"}") — is din ki kisi pehle se logged entry se overlap karta hai; time adjust karein.`
+          );
+        } else {
+          clean.push(v);
+        }
+      }
+      valid.length = 0;
+      valid.push(...clean);
+    }
+  } catch (e) {
+    console.warn("[addTimesheet DB-overlap check failed]", e?.message || e);
+  }
+
   // Nothing valid to save → report only the problems.
   if (valid.length === 0) {
     return { reply: `I couldn't save those entries:\n${problems.join("\n")}` };
@@ -188,32 +252,39 @@ async function handler(ctx, data) {
     };
   }
 
-  // Real tasks for this project (prod `tasks` table). When the user didn't tick
-  // UI tasks, we try to auto-link each block to a matching task by its description
-  // (sets the FK `task_id`). Empty until the company app populates `tasks`.
+  // Real tasks for this project (prod `tasks` table). Used two ways:
+  // 1) UI-ticked task → resolve ITS row id so the FK `task_id` is saved too.
+  // 2) No tick → auto-link each block to a matching task by its description.
   let projectTaskRows = [];
-  if (!taskModule) {
-    try {
-      const res = await db
-        .prepare("SELECT id, title FROM tasks WHERE project_id = ?")
-        .bind(projectId)
-        .all();
-      projectTaskRows = res.results || [];
-    } catch {
-      projectTaskRows = [];
-    }
+  try {
+    const res = await db
+      .prepare("SELECT id, title FROM tasks WHERE project_id = ?")
+      .bind(projectId)
+      .all();
+    projectTaskRows = res.results || [];
+  } catch {
+    projectTaskRows = [];
   }
   const taskTitles = projectTaskRows.map((r) => r.title);
   const titleToId = new Map(projectTaskRows.map((r) => [r.title, r.id]));
+
+  // UI-ticked task ka FK: exactly EK task tick ho to uska id har block pe lagta
+  // hai (multiple ticks → FK ek hi ho sakta hai, isliye null hi rehta hai).
+  let tickedTaskId = null;
+  if (taskModule && Array.isArray(selectedTasks) && selectedTasks.length === 1) {
+    const want = String(selectedTasks[0]).trim().toLowerCase();
+    const row = projectTaskRows.find((r) => String(r.title).trim().toLowerCase() === want);
+    tickedTaskId = row?.id ?? null;
+  }
 
   // Parameterized batch insert — atomic over the VALID blocks only.
   const statements = valid.map((entry) => {
     // module_name: UI-ticked tasks (apply to all blocks) override the AI-derived
     // category; otherwise use the per-block auto-derived module.
     const moduleName = taskModule || (entry.module_name || "GENERAL").toUpperCase().trim();
-    // task_id: best-effort link to a real project task matched from the description.
+    // task_id: UI-ticked task ka id; warna description se best-effort match.
     const matchedTitle = taskModule ? null : matchProjectTask(entry.task_description, taskTitles);
-    const taskId = matchedTitle ? (titleToId.get(matchedTitle) ?? null) : null;
+    const taskId = taskModule ? tickedTaskId : (matchedTitle ? (titleToId.get(matchedTitle) ?? null) : null);
     return db
       .prepare(
         `INSERT INTO daily_status_entries

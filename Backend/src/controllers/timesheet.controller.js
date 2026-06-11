@@ -188,7 +188,7 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
@@ -204,7 +204,27 @@ export const aiChatHandler = async (c) => {
         // These become each saved entry's module_name (see addTimesheet handler).
         // timezone: the user's IANA zone (sent by the frontend) so "today"/"kal"
         // resolve to the user's real local date, not UTC (fixes night-shift logs).
-        const ctx = { db, user, employeeId: user.employee_id, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+        // Org-viewer? FULLY DB-DRIVEN — gate SIRF 'all_employee_attendance' pe hai,
+        // kyunki iska matlab hi hai "poore org ke employees dekh sakta hu" (HR/Admin/
+        // Superadmin teeno ke paas hai). 'search_status' pe gate NAHI karte: wo ek
+        // aam view permission hai jo normal employee ke paas bhi ho sakti hai → us
+        // pe gate karne se employee dusro ka data dekh leta (privacy leak). Sir DB me
+        // kisi role ko 'all_employee_attendance' de/le → AI khud adapt karega.
+        let isOrgViewer = false;
+        try {
+            const permRows = await db.prepare(
+                `SELECT p.name FROM users u
+                   JOIN role_permissions rp ON rp.role_id = u.role_id
+                   JOIN permissions p ON p.id = rp.permission_id
+                  WHERE u.id = ?`
+            ).bind(user.id).all();
+            const permSet = new Set((permRows.results || []).map((r) => r.name));
+            isOrgViewer = permSet.has('all_employee_attendance');
+        } catch (e) {
+            console.warn('[isOrgViewer perm load failed]', e?.message || e);
+        }
+
+        const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -218,10 +238,46 @@ export const aiChatHandler = async (c) => {
         }
 
         // ── Single AI round-trip → tool call or conversational reply ──
-        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone);
+        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer);
 
         if (result.action) {
+            // ── STICKY VIEWER SCOPE (org-viewer only) ──────────────────────────
+            // Ek baar HR/Admin ne kisi employee ko (ya "apni") choose kiya, to AGLE
+            // reads usi pe chalein — har baar naam dobara na dena pade (user feedback).
+            // viewAs = frontend ka sticky "Viewing: <naam>" (us banda ka email).
+            // Precedence: (1) is message me naam diya → wahi (naya sticky banta hai).
+            // (2) "apni/meri/my/khud" bola → self + sticky CLEAR. (3) na naam na self →
+            // pichla sticky (viewAs) lagao. READ tools par hi — log/edit/delete hamesha
+            // khud ke (security): unka scope yahan kabhi nahi badalta.
+            const READ_TOOL = /^(get_timesheet_logs|query_timesheet|analyze_timesheet|get_employee_info)$/.test(result.action.name);
+            const SELF_INTENT = /\b(my own|mine|my|mera|meri|mere|apni|apna|apne|khud|khudki|self)\b/i;
+            // User ne KHUD comparison maanga tabhi leaderboard chale — warna sticky
+            // viewer jeet'ta hai ("Viewing: Puneet" + "total attendance" = PUNEET ka
+            // total, sab employees ka nahi). Model kabhi-kabhi vague "total X" ko
+            // compare samajh leta hai — ye deterministic override use rok deta hai.
+            const COMPARE_WORDS = /\b(compare|comparison|sabse\s+(?:zyada|kam)|kisne|who\s+worked|which\s+employee|leaderboard|top\s+employee|all\s+employees?|every(?:one|body)|har\s+employee|sab(?:hi)?\s+employees?|sb\s+emplo)/i;
+            let isCompareAll = result.action.data?.compare_employees === true;
+            if (isCompareAll && viewAs && !COMPARE_WORDS.test(message)) {
+                delete result.action.data.compare_employees;
+                isCompareAll = false; // ab ye scoped read hai → niche viewAs lagega
+            }
+            let clearViewTarget = false;
+            if (isOrgViewer && READ_TOOL && !isCompareAll) {
+                if (result.action.data?.employee_name) {
+                    // explicit naam is message me → dispatchTool ise resolve karke
+                    // viewTarget laut'ata hai (naya sticky).
+                } else if (SELF_INTENT.test(message)) {
+                    clearViewTarget = true; // user ne saaf kaha "apni" → sticky hatao
+                } else if (viewAs && typeof viewAs === 'string') {
+                    result.action.data = { ...result.action.data, employee_name: viewAs };
+                }
+            }
+
             const out = await dispatchTool(result.action.name, result.action.data, ctx);
+            // self bola → frontend ka pill clear karo (viewTarget: null bhej ke)
+            if (clearViewTarget && out && typeof out === 'object' && out.viewTarget === undefined) {
+                out.viewTarget = null;
+            }
             return c.json(out, 200);
         }
 
@@ -321,22 +377,20 @@ export const getProjects = async (c) => {
         const db = c.env.DB;
         const currentUser = c.get('user');
 
-        // EMPLOYEE → sirf apne assigned projects (users.employee_id → employee → project_assignments).
-        // ADMIN / HR / SUPERADMIN → poori company ke saare projects (woh manage karte hain).
-        let results;
-        if (currentUser.role === 'employee') {
-            // Only this employee's assigned projects (assignments key off employee.id).
-            ({ results } = await db
-                .prepare(`SELECT DISTINCT p.id, p.name
-                            FROM projects p
-                            JOIN project_assignments pa ON pa.project_id = p.id
-                           WHERE pa.employee_id = ?
-                           ORDER BY p.name ASC`)
-                .bind(currentUser.employee_id)
-                .all());
-        } else {
-            ({ results } = await db.prepare("SELECT id, name FROM projects ORDER BY name ASC").all());
-        }
+        // Chatbot me har user APNA OWN time log karta hai — to role chahe koi bhi ho
+        // (HR/Admin/Employee), hamesha LOGGED-IN user ke ASSIGNED projects do. Ye sir
+        // ke "Enter Status" form jaisा hi hai (Prachi/HR ko bhi sirf uske assigned
+        // dikhte hain) aur fully DB-driven (project_assignments → employee_id). Pehle
+        // HR/Admin ko SAARE company projects milte the → AI me doosron ke projects
+        // dikh jate the (galat).
+        const { results } = await db
+            .prepare(`SELECT DISTINCT p.id, p.name
+                        FROM projects p
+                        JOIN project_assignments pa ON pa.project_id = p.id
+                       WHERE pa.employee_id = ?
+                       ORDER BY p.name ASC`)
+            .bind(currentUser.employee_id)
+            .all();
 
         return c.json({ projects: results, success: true }, 200);
     } catch (error) {

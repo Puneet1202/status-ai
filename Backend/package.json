@@ -11,6 +11,7 @@
     "seed:tasks": "node scripts/seed-tasks.mjs",
     "test:ai": "node scripts/test-questions.mjs",
     "test:brain": "node scripts/test-brain.mjs",
+    "eval:brain": "node scripts/eval-brain.mjs",
     "check:questions": "node scripts/check-questions.mjs",
     "verify": "node scripts/verify-answers.mjs",
     "test": "node --test tests/*.test.mjs",

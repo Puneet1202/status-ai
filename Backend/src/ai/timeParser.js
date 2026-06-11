@@ -95,12 +95,21 @@ function cleanLabel(raw) {
   // ^-anchored break detector and let breaks slip through as work.
   s = s.replace(/^[\s:;,.\-–—]+/, "");
   // Drop leading connectors/fillers (whole words only — never cut mid-word).
-  s = s.replace(/^(?:and|then|also|so|now|next|ok|okay|to|followed by|shifted to|moved to|spent|did|i|worked on|work on|working on|on|for|the|a|an|,|-|–|—)\b[\s,]*/i, "");
+  // Includes Hinglish pronouns (maine/main/ne/humne/hum) so "maine interview liye"
+  // → "interview liye" (then the trailing-filler pass below → "interview").
+  s = s.replace(/^(?:and|then|also|so|now|next|ok|okay|to|followed by|shifted to|moved to|spent|did|i|worked on|work on|working on|on|for|the|a|an|main|mai|maine|mai ne|mene|ne|humne|hamne|hum|,|-|–|—)\b[\s,]*/i, "");
   // Strip Hinglish clock filler tokens that aren't part of the task.
   s = s.replace(/\b(?:baje|bje|tak)\b/gi, " ").replace(/\s+/g, " ").trim();
-  // Drop a dangling trailing preposition/connector (e.g. "... AI module from", "... and").
-  s = s.replace(/\b(?:from|at|for|to|on|in|and|then)\s*$/i, "").trim();
-  s = s.replace(/[,;:.\-]+$/g, "").trim();
+  // Drop dangling trailing prepositions/connectors AND Hinglish verb-fillers,
+  // repeatedly (e.g. "code review kiya tha fr" → "code review kiya tha" → "…kiya"
+  // → "code review"; "interview liye or" → "interview"). Loop until stable so a
+  // chain of trailing fillers all peel off, not just the last one.
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/\b(?:from|at|for|to|on|in|and|then|or|aur|fr|phir|tha|thi|the|kiya|kia|kiye|ki|kar|kara|karaa|raha|rahi|rahe|liya|lia|liye|le|leke)\s*$/i, "").trim();
+    s = s.replace(/[,;:.\-]+$/g, "").trim();
+  } while (s !== prev);
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -112,10 +121,33 @@ const BREAK_LABEL_RE = /^(?:took |had |take |take a |i took |we took )?(?:a |the
 // NOT mistaken for a break block.
 const PURE_BREAK_RE = /^(?:a |the )?(?:short |quick |small |\d+\s*-?\s*min(?:ute)?s?\s*)?(?:tea |coffee |lunch )?(?:break|rest|lunch)\s*$/i;
 
+// HINGLISH break detector. PURE_BREAK_RE only catches English-shaped labels
+// ("lunch", "lunch break"); it MISSES Hinglish like "maine lunch kiya tha" /
+// "khana khaya" because of the surrounding pronouns/verbs. Here we strip those
+// filler words and, if ONLY a break keyword remains, call it a break. This is
+// safe: "fixed lunch menu bug" keeps non-filler words (fixed/menu/bug) → NOT a
+// break. Break words cover lunch/break/rest/tea/coffee + Hindi khana/bhojan/nashta.
+const BREAK_WORDS = new Set(["lunch", "break", "rest", "tea", "coffee", "khana", "khaana", "khaya", "khaaya", "bhojan", "nashta", "naashta", "breakfast"]);
+const BREAK_FILLERS = new Set([
+  "maine", "main", "mai", "mein", "ne", "mene", "humne", "hamne", "hum",
+  "kiya", "kia", "kiye", "ki", "kar", "kara", "karaa", "karne", "karna",
+  "raha", "rahi", "rahe", "liya", "lia", "liye", "le", "leke",
+  "tha", "thi", "the", "ka", "ke", "ko", "a", "an", "the",
+  "i", "did", "was", "were", "had", "have", "took", "take", "taken", "my", "for", "on", "at",
+]);
+export function isHinglishBreakLabel(text) {
+  const words = String(text || "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (!words.length) return false;
+  const meaningful = words.filter((w) => !BREAK_FILLERS.has(w));
+  // Must contain a break word AND have NO non-break meaningful words left.
+  return meaningful.length > 0 && meaningful.every((w) => BREAK_WORDS.has(w));
+}
+
 // Exposed so the hybrid extractor can re-flag a break the LLM mislabeled as
 // work (defense-in-depth using the SAME tested logic).
 export function isBreakLabel(text) {
-  return PURE_BREAK_RE.test(String(text || "").trim());
+  const t = String(text || "").trim();
+  return PURE_BREAK_RE.test(t) || isHinglishBreakLabel(t);
 }
 
 export function parseWorkBlocks(message) {
@@ -265,16 +297,19 @@ export function parseWorkBlocks(message) {
   const entries = pieces
     .map((p) => {
       const label = labelFor(p);
+      // is_lunch: English ("lunch") OR Hinglish ("maine lunch kiya tha") break →
+      // flagged here, dropped by the add handler. Reliable lunch-skip in both langs.
+      const isBreak = BREAK_LABEL_RE.test(label) || isHinglishBreakLabel(label);
       return {
         start_time: toHHMM(p.start),
         end_time: toHHMM(p.end),
         module_name: deriveModule(label),
         task_description: label,
-        is_lunch: false,
+        is_lunch: isBreak,
       };
     })
-    // Drop any block whose only description is a break phrase (e.g. trailing "tea break").
-    .filter((e) => !BREAK_LABEL_RE.test(e.task_description) || e.task_description === "Work");
+    // Drop any block whose only description is a break phrase (English or Hinglish).
+    .filter((e) => !(BREAK_LABEL_RE.test(e.task_description) || isHinglishBreakLabel(e.task_description)) || e.task_description === "Work");
 
   return { entries };
 }
@@ -289,13 +324,40 @@ export function hasWorkTime(message) {
 // ISO date string, or undefined (caller then defaults to today). Relative words
 // are resolved against `now` (UTC), matching the backend's todayISO().
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
-export function parseEntryDate(message, now = new Date()) {
+// GLOBAL date-format: company India + US dono me hai. US ke users numeric dates
+// MONTH-FIRST likhte hai (05-20-2026); India/Europe/baaki sab DAY-FIRST
+// (20-05-2026). Frontend har request me user ka IANA timezone bhejta hai — usi
+// se PER-USER decide hota hai, koi country hardcode nahi. (US tz = America/* ya
+// Pacific/Honolulu; company ke context me yahi kaafi hai.)
+export function isMonthFirstTz(timeZone) {
+  return /^(America\/|Pacific\/Honolulu|US\/)/.test(String(timeZone || ""));
+}
+
+// Numeric date "A-B-YYYY" ko resolve karo: jo number 12 se bada hai wo PAKKA din
+// hai (ambiguity hi nahi); dono ≤12 ho tab user ke locale (monthFirst) se decide.
+export function resolveNumericDate(a, b, year, monthFirst = false) {
+  let dd, mo;
+  if (a > 12 && b <= 12) { dd = a; mo = b; }        // 20-05 → 20 May (har jagah)
+  else if (b > 12 && a <= 12) { mo = a; dd = b; }   // 05-20 → 20 May (har jagah)
+  else { dd = monthFirst ? b : a; mo = monthFirst ? a : b; } // 05-06 → locale se
+  if (dd < 1 || dd > 31 || mo < 1 || mo > 12) return null;
+  return `${year}-${String(mo).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+}
+
+export function parseEntryDate(message, now = new Date(), monthFirst = false) {
   const m = String(message || "").toLowerCase();
   const iso = (dt) => dt.toISOString().slice(0, 10);
   const shift = (days) => { const x = new Date(now); x.setUTCDate(x.getUTCDate() + days); return iso(x); };
 
   const explicit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (explicit) return explicit[1];
+
+  // Numeric date: "20-05-2026" / "05/20/2026" / "20 - 05 - 2026" — locale-aware.
+  const dmy = m.match(/\b(\d{1,2})\s*[\/\-.]\s*(\d{1,2})\s*[\/\-.]\s*(20\d{2})\b/);
+  if (dmy) {
+    const d = resolveNumericDate(+dmy[1], +dmy[2], dmy[3], monthFirst);
+    if (d) return d;
+  }
   if (/\b(day before yesterday|parso)\b/.test(m)) return shift(-2);
   if (/\b(yesterday|kal|kl)\b/.test(m)) return shift(-1);
   if (/\b(today|aaj|abhi)\b/.test(m)) return iso(now);

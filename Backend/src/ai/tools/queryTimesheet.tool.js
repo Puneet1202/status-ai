@@ -8,7 +8,16 @@
 // → 100% accurate. Times are compared on HH:MM (substr) so old "HH:MM:SS" rows and
 // new "HH:MM" rows match alike.
 
-import { isValidEntryDate } from "./_helpers.js";
+import { isValidEntryDate, calcMinutesFromTimes } from "./_helpers.js";
+
+// SQL expression: duration in minutes. Kuch entries (sir ke form se) me
+// duration_minutes NULL hota hai → tab start/end times se compute karo (overnight-aware).
+const DUR_SQL =
+  "COALESCE(d.duration_minutes, ((CAST(substr(d.end_time,1,2) AS INTEGER)*60 + CAST(substr(d.end_time,4,2) AS INTEGER)) - (CAST(substr(d.start_time,1,2) AS INTEGER)*60 + CAST(substr(d.start_time,4,2) AS INTEGER)) + 1440) % 1440)";
+
+// JS version (display ke liye) — same fallback.
+const durMins = (r) =>
+  Number(r.duration_minutes) > 0 ? Number(r.duration_minutes) : calcMinutesFromTimes(r.start_time, r.end_time);
 
 const name = "query_timesheet";
 
@@ -68,9 +77,9 @@ async function handler(ctx, data) {
     where.push("substr(d.start_time,1,5) <= ? AND substr(d.end_time,1,5) > ?");
     binds.push(HHMM(data.at_time), HHMM(data.at_time));
   }
-  if (Number.isFinite(data.min_minutes)) { where.push("d.duration_minutes > ?"); binds.push(Math.round(data.min_minutes)); }
-  if (Number.isFinite(data.max_minutes)) { where.push("d.duration_minutes < ?"); binds.push(Math.round(data.max_minutes)); }
-  if (Number.isFinite(data.exact_minutes)) { where.push("d.duration_minutes = ?"); binds.push(Math.round(data.exact_minutes)); }
+  if (Number.isFinite(data.min_minutes)) { where.push(`${DUR_SQL} > ?`); binds.push(Math.round(data.min_minutes)); }
+  if (Number.isFinite(data.max_minutes)) { where.push(`${DUR_SQL} < ?`); binds.push(Math.round(data.max_minutes)); }
+  if (Number.isFinite(data.exact_minutes)) { where.push(`${DUR_SQL} = ?`); binds.push(Math.round(data.exact_minutes)); }
 
   const order = data.order === "desc" ? "DESC" : "ASC";
   let sql = `
@@ -90,9 +99,9 @@ async function handler(ctx, data) {
     return { success: true, action: "QUERY_TIMESHEET", reply: `No matching entries found for ${rangeLabel}.`, data: [] };
   }
 
-  const totalMins = results.reduce((s, r) => s + Number(r.duration_minutes || 0), 0);
+  const totalMins = results.reduce((s, r) => s + durMins(r), 0);
   const fmt = (r) =>
-    `• ${r.entry_date} ${HHMM(r.start_time)}–${HHMM(r.end_time)} (${fmtH(r.duration_minutes)}h) · ${r.project_name} — ${r.task_description}`;
+    `• ${r.entry_date} ${HHMM(r.start_time)}–${HHMM(r.end_time)} (${fmtH(durMins(r))}h) · ${r.project_name} — ${r.task_description}`;
   const MAX = 12;
   const shown = results.slice(0, MAX);
   let reply = `Found ${results.length} matching ${results.length === 1 ? "entry" : "entries"} (${rangeLabel}):\n${shown.map(fmt).join("\n")}`;

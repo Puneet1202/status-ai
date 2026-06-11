@@ -26,7 +26,9 @@ test('recent mode LISTS the entries (content + project), not just a total', asyn
 
 test('recent mode with no entries → friendly empty message', async () => {
   const out = await getTool.handler(ctx([]), { recent: true });
-  assert.match(out.reply, /No records found/i);
+  // recent-mode ka empty message "No entries logged yet." hai (date-range mode
+  // me hi "No records found for <range>" aata hai) — test ab usi se match karta hai.
+  assert.match(out.reply, /No entries logged yet/i);
 });
 
 test('date-range mode still works and lists entries', async () => {

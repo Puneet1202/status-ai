@@ -29,21 +29,35 @@ function toAnthropicTools(schemas) {
 // On the happy path Claude returns a tool_use block (the routed action); if it
 // just wants to chat it returns text. Errors propagate so the caller can fall
 // back to the deterministic engine.
-export async function askAnthropic({ apiKey, model, system, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024 }) {
+export async function askAnthropic({ apiKey, model, system, systemStable = null, systemDynamic = null, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024, toolChoice = "auto" }) {
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY missing");
   const client = new Anthropic({ apiKey, timeout: timeoutMs, maxRetries: 1 });
+
+  // System as cacheable blocks. When the caller provides the stable/dynamic split,
+  // the cache breakpoint sits at the END of the STABLE block (rules + tool guidance)
+  // so that big prefix is reused at ~0.1× cost on every call; the tiny DYNAMIC
+  // block (today's date + selected project) follows UN-cached, so changing project
+  // or day never busts the cache. Falls back to a single cached block (back-compat).
+  const systemBlocks = systemStable
+    ? [
+        { type: "text", text: systemStable, cache_control: { type: "ephemeral" } },
+        ...(systemDynamic ? [{ type: "text", text: systemDynamic }] : []),
+      ]
+    : [{ type: "text", text: system || "You are a helpful timesheet assistant.", cache_control: { type: "ephemeral" } }];
 
   const params = {
     model,
     max_tokens: maxTokens,
-    // System carries the routing instructions + today's date + selected project.
-    // cache_control here caches tools + system together (render order: tools→system).
-    system: [{ type: "text", text: system || "You are a helpful timesheet assistant.", cache_control: { type: "ephemeral" } }],
+    // cache_control on the stable block caches tools + stable system together
+    // (render order: tools → system), the largest repeated part of every request.
+    system: systemBlocks,
     messages: [...history, { role: "user", content: message || "" }],
   };
   if (tools && tools.length) {
     params.tools = toAnthropicTools(tools);
-    params.tool_choice = { type: "auto" };
+    // "required" → {type:"any"}: anti-fabrication retry me model ko koi na koi
+    // tool call karna HI hota hai (khud success-text nahi likh sakta).
+    params.tool_choice = toolChoice === "required" ? { type: "any" } : { type: "auto" };
   }
 
   const resp = await client.messages.create(params);

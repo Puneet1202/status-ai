@@ -96,9 +96,17 @@ class D1Database {
  */
 export function makeSqliteD1(filePath = 'keyss-status.prod.db') {
     const raw = new DatabaseSync(filePath);
-    // Keep all data in the single main file (see note above) + tolerate a viewer
-    // holding a brief read lock.
-    raw.exec('PRAGMA journal_mode = DELETE;');
-    raw.exec('PRAGMA busy_timeout = 5000;');
+    // Pehle busy_timeout — agar file kisi aur process (sir ki Next.js website) ke
+    // paas hai to error dene ke bajaye 10s tak WAIT kare.
+    raw.exec('PRAGMA busy_timeout = 10000;');
+    // WAL mode → ek hi DB file ko DO app (AI + sir ki website) ek saath padh/likh
+    // sakte hain bina "database is locked" ke. (DELETE mode poora taala maangta tha,
+    // isliye doosra app khula ho to crash ho jata.) Agar mode already set hai to
+    // ye no-op hai; lock ki wajah se fail ho to chup-chaap continue karo.
+    try {
+        raw.exec('PRAGMA journal_mode = WAL;');
+    } catch {
+        // koi aur process abhi journal mode hold kiye hai — chalega, aage badho.
+    }
     return new D1Database(raw);
 }

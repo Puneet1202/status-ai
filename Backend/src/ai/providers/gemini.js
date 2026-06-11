@@ -13,7 +13,7 @@ function toGeminiTools(schemas) {
   return [{ function_declarations: decls }];
 }
 
-export async function askGemini({ apiKey, model, system, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024 }) {
+export async function askGemini({ apiKey, model, system, message, history = [], tools = null, timeoutMs = 12000, maxTokens = 1024, toolChoice = "auto" }) {
   if (!apiKey) throw new Error("GEMINI_API_KEY missing");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
@@ -29,7 +29,8 @@ export async function askGemini({ apiKey, model, system, message, history = [], 
   };
   if (tools && tools.length) {
     body.tools = toGeminiTools(tools);
-    body.tool_config = { function_calling_config: { mode: "AUTO" } };
+    // "required" → mode ANY: anti-fabrication retry me tool call mandatory.
+    body.tool_config = { function_calling_config: { mode: toolChoice === "required" ? "ANY" : "AUTO" } };
   }
 
   const ctrl = new AbortController();
@@ -50,9 +51,10 @@ export async function askGemini({ apiKey, model, system, message, history = [], 
   const data = await resp.json();
   const parts = data?.candidates?.[0]?.content?.parts || [];
   const fc = parts.find((p) => p.functionCall);
+  // usage = real token counts from Gemini (usageMetadata: promptTokenCount, ...).
   if (fc) {
-    return { toolCall: { name: fc.functionCall.name, arguments: fc.functionCall.args || {} }, text: null };
+    return { toolCall: { name: fc.functionCall.name, arguments: fc.functionCall.args || {} }, text: null, usage: data?.usageMetadata };
   }
   const text = parts.filter((p) => p.text).map((p) => p.text).join("").trim();
-  return { toolCall: null, text };
+  return { toolCall: null, text, usage: data?.usageMetadata };
 }

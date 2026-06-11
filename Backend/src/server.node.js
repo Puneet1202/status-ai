@@ -36,10 +36,15 @@ const env = {
   ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS || '',
   // 🧠 "Brain" (intent routing + extraction). Pick a provider with AI_PROVIDER and
   // set its key — switching is a .env change, no code edit. No key → deterministic.
-  AI_PROVIDER: process.env.AI_PROVIDER || '',           // anthropic | openai | gemini (default anthropic)
+  AI_PROVIDER: process.env.AI_PROVIDER || '',           // anthropic | openai | gemini | groq (default anthropic)
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  GROQ_API_KEY: process.env.GROQ_API_KEY || '',         // FREE tier; OpenAI-compatible (ai-config routes it)
+  // Base-URL overrides for OpenAI-compatible servers (Groq default, or point
+  // 'openai' at Cerebras / a local Ollama). Empty → provider's own default URL.
+  GROQ_BASE_URL: process.env.GROQ_BASE_URL || '',
+  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
   AI_MODEL: process.env.AI_MODEL || '',                 // override model; else provider default
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
@@ -63,9 +68,17 @@ const AI_MODE = (process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN) ? 'REAL 
 
 const port = Number(process.env.PORT || 8787);
 
+// Which BRAIN provider/model is actually live (so a wrong .env is obvious at boot,
+// not only after a confusing reply). Mirrors ai-config's selection logic.
+const BRAIN_PROVIDER = ['anthropic', 'openai', 'gemini', 'groq'].includes(String(env.AI_PROVIDER).toLowerCase())
+  ? String(env.AI_PROVIDER).toLowerCase() : 'anthropic';
+const BRAIN_KEY = { anthropic: env.ANTHROPIC_API_KEY, openai: env.OPENAI_API_KEY, gemini: env.GEMINI_API_KEY, groq: env.GROQ_API_KEY }[BRAIN_PROVIDER];
+const BRAIN_MODEL = env.AI_MODEL || { anthropic: 'claude-haiku-4-5', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', groq: 'llama-3.3-70b-versatile' }[BRAIN_PROVIDER];
+
 serve({ fetch: (req) => app.fetch(req, env), port }, (info) => {
   console.log(`✅ KEYSS live →  http://localhost:${info.port}`);
   console.log(`   DB: ${DB_FILE}  (single file — no copy)`);
   console.log(`   AI: ${AI_MODE}`);
+  console.log(`   BRAIN: ${BRAIN_KEY ? `${BRAIN_PROVIDER} · ${BRAIN_MODEL}` : `OFF (no key for "${BRAIN_PROVIDER}") → deterministic engine`}`);
   console.log(`   OTP email: ${(process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) ? 'SendGrid' : 'DEV (printed to this terminal)'}`);
 });

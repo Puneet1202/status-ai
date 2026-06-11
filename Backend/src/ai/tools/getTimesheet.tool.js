@@ -1,7 +1,12 @@
 // FILE: backend/src/ai/tools/getTimesheet.tool.js
 // Read tool — fully parameterized. Replaces the old raw-LLM-SQL path.
 
-import { isValidEntryDate, todayISO } from "./_helpers.js";
+import { isValidEntryDate, todayISO, calcMinutesFromTimes } from "./_helpers.js";
+
+// Duration ALWAYS start/end times se nikaalo — kuch entries (sir ke "Enter Status"
+// form se bani) me duration_minutes NULL hota hai, to us column pe bharosa nahi.
+const durMins = (r) =>
+  Number(r.duration_minutes) > 0 ? Number(r.duration_minutes) : calcMinutesFromTimes(r.start_time, r.end_time);
 
 const name = "get_timesheet_logs";
 
@@ -93,18 +98,19 @@ async function handler(ctx, data) {
     return {
       success: true,
       action: "GET_TIMESHEET",
-      reply: recent ? "No records found — you haven't logged any entries yet." : `No records found for ${rangeLabel}.`,
+      reply: recent ? "No entries logged yet." : `No records found for ${rangeLabel}.`,
       data: [],
     };
   }
 
-  const totalMinutes = results.reduce((sum, r) => sum + parseInt(r.duration_minutes || 0, 10), 0);
+  const totalMinutes = results.reduce((sum, r) => sum + durMins(r), 0);
   const fmt = (r) =>
-    `• ${r.entry_date} ${r.start_time}–${r.end_time} (${(parseInt(r.duration_minutes || 0, 10) / 60).toFixed(1)}h) · ${r.project_name} — ${r.task_description}`;
+    `• ${r.entry_date} ${r.start_time}–${r.end_time} (${(durMins(r) / 60).toFixed(1)}h) · ${r.project_name} — ${r.task_description}`;
 
   // List the actual entries (not just a total). Recent rows are already newest-
-  // first and capped; for a wide date range show the most recent few + a count.
-  const MAX_LIST = 8;
+  // first and capped; for a date range show up to 20 most recent + a count of the
+  // rest (so a month/date query shows a meaningful list, not just a handful).
+  const MAX_LIST = 20;
   const shown = recent ? results : results.slice(-MAX_LIST);
   const hidden = recent ? 0 : results.length - shown.length;
   const header = recent

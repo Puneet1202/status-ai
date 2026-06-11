@@ -38,6 +38,11 @@ const schema = {
 
 const hrs = (mins) => (Number(mins || 0) / 60).toFixed(1);
 
+// Duration in minutes — duration_minutes NULL ho (sir ke form se bani entries) to
+// start/end times se compute (overnight-aware). Isse SUM/totals hamesha sahi.
+const DUR_SQL =
+  "COALESCE(d.duration_minutes, ((CAST(substr(d.end_time,1,2) AS INTEGER)*60 + CAST(substr(d.end_time,4,2) AS INTEGER)) - (CAST(substr(d.start_time,1,2) AS INTEGER)*60 + CAST(substr(d.start_time,4,2) AS INTEGER)) + 1440) % 1440)";
+
 // Pretty label for the analysed window.
 function rangeLabel(from, to) {
   if (from && to) return `${from} → ${to}`;
@@ -46,9 +51,9 @@ function rangeLabel(from, to) {
   return "all time";
 }
 
-// ctx = { db, employeeId, ... }
+// ctx = { db, employeeId, isOrgViewer, ... }
 async function handler(ctx, data) {
-  const { db, employeeId } = ctx;
+  const { db, employeeId, isOrgViewer } = ctx;
   if (!employeeId) {
     return { reply: "Your account isn't linked to an employee record, so I can't analyse your hours." };
   }
@@ -56,6 +61,54 @@ async function handler(ctx, data) {
   // ── Filters (date range optional; scope is ALWAYS the logged-in employee) ──
   const fromDate = isValidEntryDate(data.from_date) ? data.from_date : null;
   const toDate = isValidEntryDate(data.to_date) ? data.to_date : null;
+
+  // ── ORG LEADERBOARD (admin/HR only) — totals PER EMPLOYEE over the period ──
+  // "Sabse zyada kisne kaam kiya / compare employees" = EK SQL (GROUP BY
+  // employee_id), 14 alag-alag tool calls nahi — isliye 100% accurate, instant,
+  // aur model ke paas invent karne ki koi jagah nahi. Normal employee ke liye
+  // ye flag chup-chaap ignore hota hai (neeche apna hi scope chalta hai).
+  if (data.compare_employees === true && isOrgViewer) {
+    const w = [];
+    const b = [];
+    if (fromDate) { w.push("d.entry_date >= ?"); b.push(fromDate); }
+    if (toDate) { w.push("d.entry_date <= ?"); b.push(toDate); }
+    if (data.project_name?.trim()) { w.push("LOWER(p.name) LIKE LOWER(?)"); b.push(`%${data.project_name.trim()}%`); }
+    const label = rangeLabel(fromDate, toDate);
+
+    // SCOPE: sirf ACTIVE employees (users.is_active = 1) — wahi 14-18 log jo
+    // directory (list_employees) me dikhte hai. Warna purane/deleted seeded
+    // employees (DB me ~195) leaderboard me aa jaate hai (jaise "Manoj Kumar
+    // 37250 hrs") jo ab company me hai hi nahi. JOIN users isse rok deta hai.
+    const { results } = await db
+      .prepare(
+        `SELECT e.name nm, COALESCE(SUM(${DUR_SQL}),0) mins, COUNT(*) cnt
+           FROM daily_status_entries d
+           JOIN projects p ON p.id = d.project_id
+           JOIN users u ON u.employee_id = d.employee_id AND u.is_active = 1
+           JOIN employee e ON e.id = d.employee_id
+           ${w.length ? "WHERE " + w.join(" AND ") : ""}
+          GROUP BY d.employee_id
+          ORDER BY mins DESC`
+      )
+      .bind(...b)
+      .all();
+
+    if (!results || results.length === 0) {
+      return { success: true, action: "ANALYZE_TIMESHEET", reply: `No logged hours found for ${label}.` };
+    }
+
+    const MAX = 15;
+    const shown = results.slice(0, MAX);
+    const lines = shown.map((r, i) => `${i + 1}. ${r.nm} — ${hrs(r.mins)} hrs (${r.cnt} ${r.cnt === 1 ? "entry" : "entries"})`);
+    // Tie bhi sahi dikhe: top ke barabar waale SAB naam call-out me aate hai.
+    const topMins = Number(results[0].mins);
+    const tops = results.filter((r) => Number(r.mins) === topMins).map((r) => r.nm);
+
+    let reply = `🏆 Hours by employee (${label}):\n${lines.join("\n")}`;
+    if (results.length > MAX) reply += `\n…and ${results.length - MAX} more.`;
+    reply += `\n\nTop: ${tops.join(", ")} (${hrs(topMins)} hrs).`;
+    return { success: true, action: "ANALYZE_TIMESHEET", reply, data: shown };
+  }
 
   const where = ["d.employee_id = ?"];
   const binds = [employeeId];
@@ -71,7 +124,7 @@ async function handler(ctx, data) {
   // ── Single overall total ──
   if (group === "none") {
     const row = await db
-      .prepare(`SELECT COALESCE(SUM(d.duration_minutes),0) mins, COUNT(*) cnt ${FROM}`)
+      .prepare(`SELECT COALESCE(SUM(${DUR_SQL}),0) mins, COUNT(*) cnt ${FROM}`)
       .bind(...binds)
       .first();
     if (!row || row.cnt === 0) {
@@ -96,7 +149,7 @@ async function handler(ctx, data) {
   const order = group === "project" || group === "module" ? "mins DESC" : "grp ASC";
 
   const { results } = await db
-    .prepare(`SELECT ${groupExpr} grp, COALESCE(SUM(d.duration_minutes),0) mins, COUNT(*) cnt ${FROM} GROUP BY ${groupExpr} ORDER BY ${order}`)
+    .prepare(`SELECT ${groupExpr} grp, COALESCE(SUM(${DUR_SQL}),0) mins, COUNT(*) cnt ${FROM} GROUP BY ${groupExpr} ORDER BY ${order}`)
     .bind(...binds)
     .all();
 

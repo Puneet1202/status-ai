@@ -8,8 +8,8 @@ export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
 // 🧠 "BRAIN" PROVIDER — the reliable LLM that routes intent + extracts args
 // (see ../brainRouter.js). Everything is ENV-DRIVEN so switching the PROVIDER or
 // MODEL is a .env change, NOT a code change:
-//   AI_PROVIDER=anthropic|openai|gemini   ← which company's model (default anthropic)
-//   ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY  ← key for the chosen one
+//   AI_PROVIDER=anthropic|openai|gemini|groq   ← which company's model (default anthropic)
+//   ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY / GROQ_API_KEY  ← key for the chosen one
 //   AI_MODEL=<model id>                   ← override the model (else provider default)
 //   AI_BRAIN=off                          ← kill-switch (force deterministic mode)
 // Brain is ON only when the SELECTED provider has a key; else the app runs the
@@ -22,20 +22,32 @@ const PROVIDER_DEFAULTS = {
   anthropic: 'claude-haiku-4-5', // top tool-calling, fast, cheap
   openai: 'gpt-4o-mini',          // ~7x cheaper than Haiku
   gemini: 'gemini-2.0-flash',     // ~10x cheaper
+  groq: 'llama-3.3-70b-versatile', // FREE tier, OpenAI-compatible, solid tool-calling
 };
 export const DEFAULT_BRAIN_MODEL = PROVIDER_DEFAULTS.anthropic; // kept for back-compat
 
 // Which provider runs the brain (AI_PROVIDER); defaults to anthropic.
 export function getProvider(env) {
   const p = String(env?.AI_PROVIDER || 'anthropic').toLowerCase();
-  return ['anthropic', 'openai', 'gemini'].includes(p) ? p : 'anthropic';
+  return ['anthropic', 'openai', 'gemini', 'groq'].includes(p) ? p : 'anthropic';
 }
 
 // The API key for the selected provider.
 export function getProviderKey(env, provider = getProvider(env)) {
   if (provider === 'openai') return env?.OPENAI_API_KEY || '';
   if (provider === 'gemini') return env?.GEMINI_API_KEY || '';
+  if (provider === 'groq') return env?.GROQ_API_KEY || '';
   return env?.ANTHROPIC_API_KEY || '';
+}
+
+// Base URL for OpenAI-compatible providers. Groq speaks the OpenAI protocol, so
+// it reuses the openai adapter with its own URL. OPENAI_BASE_URL lets the plain
+// 'openai' provider point at ANY other OpenAI-compatible server too (Cerebras,
+// Ollama on an office machine, etc.) — still just a .env change, no code edit.
+export function getProviderBaseUrl(env, provider = getProvider(env)) {
+  if (provider === 'groq') return env?.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
+  if (provider === 'openai') return env?.OPENAI_BASE_URL || '';
+  return '';
 }
 
 // ON when the chosen provider has a key, unless AI_BRAIN=off forces it off.
