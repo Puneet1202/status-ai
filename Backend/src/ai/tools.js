@@ -160,7 +160,7 @@ User: "night shift 11pm to 7am"
 SECTION 4 — FULL DAY HANDLING (DYNAMIC)
 ═══════════════════════════════════════
 If user says "full day" or "poora din" WITHOUT specifying times:
-→ Ask: "Aapka work schedule kya hai? Start aur end time batao, aur lunch break tha?"
+→ Ask (in English): "What was your work schedule? Tell me the start and end time, and whether you took a lunch break."
 → Do NOT assume 9-5 or any fixed hours — every company is different
 
 If user says "full day 8am to 6pm, lunch 1-2":

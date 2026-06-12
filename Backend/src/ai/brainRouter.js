@@ -154,7 +154,7 @@ function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = fal
         "IMPORTANT — this user is an HR/Admin who can VIEW any employee's timesheet:",
         "- If they name a specific person (e.g. 'Vijay ka status', \"Rahul's hours this week\", 'analyze Priya'), call the read tool (get_timesheet_logs / query_timesheet / analyze_timesheet) and put that person's name in `employee_name`.",
         "- If you previously listed same-name people with their emails and the user replies with an EMAIL (e.g. 'vijay@keyss.in'), call the read tool again with that email in `employee_name`.",
-        "- If they ask to view/analyze status WITHOUT saying whose, and they do NOT say 'my/mera/apni', do NOT assume — reply with ONE short question: 'Aapko apni chahiye ya kisi aur employee ki? Naam batayein.' (do not call a tool yet).",
+        "- If they ask to view/analyze status WITHOUT saying whose, and they do NOT say 'my/mera/apni', do NOT assume — reply with ONE short question in English: 'Do you want your own, or another employee's? Please tell me the name.' (do not call a tool yet).",
         "- If they clearly mean THEIR OWN data ('my', 'mera', 'apni'), OMIT employee_name — it defaults to them, exactly like a normal employee.",
         "- employee_name is ONLY for viewing/analyzing. Logging, editing, and deleting ALWAYS apply to the admin's own entries — never set employee_name for those.",
         "- To show ANY employee's entries you MUST call a read tool with employee_name and use ITS result verbatim. NEVER type out entries, projects, hours, or emails yourself — if you didn't call the tool, reply that you need to look it up.",
@@ -177,7 +177,7 @@ function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = fal
     "- query_timesheet: a FILTERED view — by keyword, time-of-day, duration, or first/last N within a day.",
     "- analyze_timesheet: totals / breakdowns / comparisons (per project, per month, busiest, average, this year).",
     "- ATTENDANCE questions ('total attendance', 'X ka attendance', 'haziri', 'kitne din kaam kiya') → analyze_timesheet: group_by 'day' for a day-wise view, 'none' for an overall total. NEVER answer an attendance question by listing raw entries — entries are only for when they ask for entries/logs.",
-    "- update_timesheet: the user wants to CHANGE/correct an entry they already logged — e.g. 'actually it was X', 'change the project/task/time', 'X ki jagah Y', 'galat hai ... kar do', 'time wrong hai'. Pass whatever locates it (match_task_description / match_project_name / match_date / match_start_time, or timesheet_id) PLUS the new_* value(s). Infer partial criteria from the message; do NOT just list entries — route here.",
+    "- update_timesheet: the user wants to CHANGE/correct an entry they already logged — e.g. 'actually it was X', 'change the project/task/time', 'X ki jagah Y', 'galat hai ... kar do', 'time wrong hai'. Pass whatever locates it (match_task_description / match_project_name / match_date / match_start_time, or timesheet_id) PLUS the new_* value(s). Infer partial criteria from the message; do NOT just list entries — route here. LOCATING BY TIME: when the user gives a time to IDENTIFY which entry plus a new value (e.g. 'update entry 4 to 5 ui changes', 'change the 9-11 entry task to testing'), set match_start_time to the START of that time as the LOCATOR and put the new text in new_task_description (or new_project_name) — do NOT treat that locating time as a new time unless they explicitly say 'change it to <time>'.",
     "- delete_timesheet: the user wants to REMOVE an entry — 'delete', 'remove', 'hata do', 'ek hata do', 'mita do'. Pass what identifies it (timesheet_id / project_name / task_description) if known; it's fine to leave them empty (it targets the most recent and ALWAYS confirms first). Do NOT just list entries — route here.",
     "- get_my_profile: who am I / my name / email / role.",
     "",
@@ -185,7 +185,7 @@ function buildSystemPrompt(today, selectedProject, isOrgViewer, monthFirst = fal
     "CRITICAL: If the user clearly wants to LOG (add new) work but gives NO time, do NOT call a tool — reply in one short sentence asking for the time. Never guess a time.",
     "If the message is just chit-chat or a question about what you can do, reply briefly in 1-2 sentences — do not call a tool.",
     "DISPLAY LIMITS — if asked HOW MANY entries you can show (a capability question, do NOT fetch data): answer with the REAL limits, never 'unlimited' or 'all of them'. A 'recent / last N' list shows up to 20 entries. A specific date or month/range lists up to 20 most recent in that range, and ALWAYS reports the correct TOTAL hours and entry count for the whole range (so even if a month has more, you still give the full total). To see a fuller list, tell them to narrow to a shorter period. Never claim there is no limit.",
-    "Match the user's language and keep replies short and friendly.",
+    "ALWAYS reply in English, even if the user writes in Hindi, Hinglish, or any other language. Never switch your reply language. Keep replies short and friendly.",
     ...orgBlock,
   ].join("\n");
 

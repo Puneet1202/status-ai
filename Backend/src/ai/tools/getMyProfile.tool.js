@@ -15,21 +15,47 @@ const schema = {
   parameters: { type: "object", properties: {} }, // no inputs — identity is from the token
 };
 
-// ctx = { db, user, env, ... }  — user = verified JWT { id, name, email, role }
+// ctx = { db, user, employeeId, env, ... } — user = verified JWT { id, name, email, role }
 async function handler(ctx) {
   const u = ctx?.user || {};
   if (!u.name && !u.email && !u.role) {
     return { success: false, action: "GET_PROFILE", reply: "I couldn't read your profile from your session — please log in again." };
   }
 
-  const bits = [];
-  if (u.name) bits.push(`your name is **${u.name}**`);
-  if (u.email) bits.push(`email **${u.email}**`);
-  if (u.role) bits.push(`role **${u.role}**`);
+  // Designation + joining date are NOT in the JWT — pull them from the DB, but
+  // ONLY for the logged-in person (ctx.employeeId, from the verified token). This
+  // is self-only by construction: there's no input to ask for anyone else.
+  let designation = null;
+  let joiningDate = null;
+  if (ctx?.db && ctx.employeeId) {
+    try {
+      const row = await ctx.db
+        .prepare(
+          `SELECT e.joining_date, d.designation AS designation
+             FROM employee e
+             LEFT JOIN designation d ON d.id = e.designation_id
+            WHERE e.id = ?`
+        )
+        .bind(ctx.employeeId)
+        .first();
+      if (row) {
+        designation = row.designation || null;
+        joiningDate = row.joining_date || null;
+      }
+    } catch (e) {
+      console.warn("[get_my_profile DB lookup failed]", e?.message || e);
+    }
+  }
 
-  // "your name is X, email Y, role Z."
-  const reply = `Here's your profile — ${bits.join(", ")}. 😊`;
-  return { success: true, action: "GET_PROFILE", reply };
+  // Clean, professional card (no markdown `**` — the chat UI shows it literally).
+  const lines = ["Here's your profile 😊"];
+  if (u.name) lines.push(`• Name: ${u.name}`);
+  if (u.role) lines.push(`• Role: ${u.role}`);
+  if (designation) lines.push(`• Designation: ${designation}`);
+  if (u.email) lines.push(`• Email: ${u.email}`);
+  if (joiningDate) lines.push(`• Joined: ${joiningDate}`);
+
+  return { success: true, action: "GET_PROFILE", reply: lines.join("\n") };
 }
 
 export default { name, schema, handler };

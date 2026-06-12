@@ -34,10 +34,10 @@ const schema = {
 async function handler(ctx, _data) {
   const { db, employeeId, isOrgViewer } = ctx;
   if (!isOrgViewer) {
-    return { reply: "Doosre employees ki profile sirf HR/Admin dekh sakte hain. Apni jaankari ke liye poochhiye: 'who am I'. 🙂" };
+    return { reply: "Only HR/Admin can view other employees' profiles. To see your own details, ask: 'who am I'. 🙂" };
   }
   if (!employeeId) {
-    return { reply: "Kis employee ke baare me jaanna hai? Naam ya email batayein." };
+    return { reply: "Which employee would you like to know about? Please give a name or email." };
   }
 
   const row = await db
@@ -54,7 +54,7 @@ async function handler(ctx, _data) {
     .first();
 
   if (!row) {
-    return { reply: "Is employee ka record nahi mila. Naam ya email se dobara try karein." };
+    return { reply: "I couldn't find that employee's record. Please try again with a name or email." };
   }
 
   const lines = [

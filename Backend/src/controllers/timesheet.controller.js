@@ -188,7 +188,7 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
@@ -229,6 +229,38 @@ export const aiChatHandler = async (c) => {
         // specific permission check karte hai → admin DB me OFF kare to AGLE message
         // pe AI khud mana kar deta, koi alag sync/config nahi. (auto-sync built-in)
         const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+
+        // ── EDIT-CHIP exact update: frontend sends the just-saved row's id, so we
+        // update THAT exact entry (no locating by start-time → no "5 matches /
+        // confirm", no project/task re-select). Format: "update entry HH:MM to HH:MM
+        // <new text>". The id makes it precise; end-time + description may change.
+        const editCmd = editTimesheetId != null
+            && String(message).match(/^\s*(?:update|edit)\s+entry\s+\d{1,2}:\d{2}\s+to\s+(\d{1,2}:\d{2})\s*(.*)$/i);
+        if (editCmd) {
+            const upd = { timesheet_id: editTimesheetId, new_end_time: editCmd[1] };
+            const newDesc = editCmd[2].trim();
+            if (newDesc) upd.new_task_description = newDesc;
+            const out = await dispatchTool("update_timesheet", upd, ctx);
+            return c.json(out, 200);
+        }
+
+        // ── EDIT WHOLE DAY (replace): the frontend "Edit" button sends the ids of
+        // the entries being edited + the edited blocks as a fresh multi-block message.
+        // DELETE those exact rows, then the normal add flow below re-saves the edited
+        // blocks (under the restored project). Guard: only when the new message has a
+        // time block, so an empty/garbled edit never wipes entries.
+        if (Array.isArray(replaceEntryIds) && replaceEntryIds.length > 0 && user?.employee_id
+            && /\d{1,2}\s*(?::\d{2})?\s*(?:to|till|se|[-–—])\s*\d/i.test(String(message))) {
+            try {
+                for (const rid of replaceEntryIds) {
+                    await db.prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?")
+                        .bind(rid, user.employee_id).run();
+                }
+            } catch (e) {
+                console.warn("[edit-replace delete failed]", e?.message || e);
+            }
+            // fall through → aiChat routes the edited blocks to add_timesheet_entries
+        }
 
         // ── Confirm-intercept: a pending action (delete/update) + a yes/confirm ──
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
@@ -410,18 +442,53 @@ export const getProjects = async (c) => {
         const currentUser = c.get('user');
 
         // Chatbot me har user APNA OWN time log karta hai — to role chahe koi bhi ho
-        // (HR/Admin/Employee), hamesha LOGGED-IN user ke ASSIGNED projects do. Ye sir
+        // (HR/Admin/Employee), default me LOGGED-IN user ke ASSIGNED projects do. Ye sir
         // ke "Enter Status" form jaisा hi hai (Prachi/HR ko bhi sirf uske assigned
         // dikhte hain) aur fully DB-driven (project_assignments → employee_id). Pehle
         // HR/Admin ko SAARE company projects milte the → AI me doosron ke projects
         // dikh jate the (galat).
+        let targetEmployeeId = currentUser.employee_id;
+
+        // ── ADD-FOR-OTHERS scope ──────────────────────────────────────────────
+        // HR/Admin jab "Viewing: <X>" pill ke saath '@'-project picker khole, to use
+        // X ke ASSIGNED projects dikhne chahiye (X ka status log karna hai), apne nahi.
+        // Pehle yahan hamesha apne hi projects aate the → dusre employee ka status
+        // enter karte waqt galat (apne) projects/tasks dikhte the. Gate add-for-others
+        // jaisा hi: org-viewer (all_employee_attendance) + enter_status DONO. viewAs =
+        // us employee ka email (frontend sticky pill se). Normal employee / bina
+        // permission → chup-chaap apna hi scope (security).
+        const viewAs = String(c.req.query('viewAs') || '').trim();
+        if (viewAs && viewAs !== (currentUser.email || '')) {
+            try {
+                const permRows = await db.prepare(
+                    `SELECT p.name FROM users u
+                       JOIN role_permissions rp ON rp.role_id = u.role_id
+                       JOIN permissions p ON p.id = rp.permission_id
+                      WHERE u.id = ?`
+                ).bind(currentUser.id).all();
+                const perms = new Set((permRows.results || []).map((r) => r.name));
+                if (perms.has('all_employee_attendance') && perms.has('enter_status')) {
+                    const tgt = await db.prepare(
+                        `SELECT e.id
+                           FROM employee e
+                           JOIN users u ON u.employee_id = e.id
+                          WHERE u.email = ? AND u.is_active = 1
+                          LIMIT 1`
+                    ).bind(viewAs).first();
+                    if (tgt && tgt.id != null) targetEmployeeId = tgt.id;
+                }
+            } catch (e) {
+                console.warn('[getProjects viewAs resolve failed]', e?.message || e);
+            }
+        }
+
         const { results } = await db
             .prepare(`SELECT DISTINCT p.id, p.name
                         FROM projects p
                         JOIN project_assignments pa ON pa.project_id = p.id
                        WHERE pa.employee_id = ?
                        ORDER BY p.name ASC`)
-            .bind(currentUser.employee_id)
+            .bind(targetEmployeeId)
             .all();
 
         return c.json({ projects: results, success: true }, 200);

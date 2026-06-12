@@ -145,4 +145,25 @@ ALLOWED_ORIGINS=http://localhost:3000
 
 ---
 
-_Kuch bhi push/commit nahi kiya gaya. Sab local changes hain._
+---
+
+## 🆕 Session update — 2026-06-12 (chatbot UX + reliability)
+
+Ye saare changes `Backend/src/ai/*` aur `Backend/src/controllers/timesheet.controller.js` me hain.
+Sab **universal** hain (employee/HR/admin/superadmin sabke liye same); privilege sirf DB permission se decide hoti hai.
+
+1. **AM/PM puchhna (sirf jab confuse ho):** bare `4 to 5` jaise (1–7 ghanta, bina am/pm) time pe AI `🌅 AM` / `🌆 PM` chips deta hai. Clear time (`18:00`, `6pm`, `04 to 05`, `9-11`) → seedha save. `chat.js` me `ambiguousAmPm()`.
+2. **Hamesha English reply:** AI input koi bhi bhasha (Hindi/Hinglish) samajhta hai par jawab **sirf English** me. Saare deterministic replies English + `brainRouter.js`/`tools.js` prompt me "always English" directive. (Pehle `brainRouter` "match user's language" kehta tha — wahi root cause tha.)
+3. **`get_my_permissions` professional:** markdown `**` hata diya (UI literal `**` dikhata tha), dashboard permissions ko NAAM se nahi sirf **count** se dikhaya, baseline line (apne hours + profile). `enter_status` sub-menu me "Log for a team member" sirf org-viewer (`all_employee_attendance`) ko — plain employee ko nahi.
+4. **`get_my_profile`:** `**` hata; ab **designation + joining date** bhi (DB se, sirf apna).
+5. **Self-overlap bug fix:** ek hi time-block jo description me "and"/"&" se 2 ban jaata tha (e.g. `11-12 ai testing and bug fix`) → ab same start+end blocks **merge** hote hain; bogus "11:00–12:00 overlaps 11:00–12:00" nahi.
+6. **Time + project selected → seedha log:** model "what did you work on?" nahi poochhega jab task already selected ho (`chat.js` brain fall-through).
+7. **"Log my hours" message professional:** @ project + task select + 2-hour/block rule, valid example (deterministic, model nahi).
+8. **Edit window (post-save):** `add_timesheet_entries` ab saved entries ki **id + time + project + tasks** return karta hai → frontend "✏️ Edit" button deta hai.
+9. **Whole-day EDIT = replace:** frontend `replaceEntryIds` bhejta hai → controller un rows ko **delete** karke edited blocks **dobara save** karta hai (same project/task). Guard: message me time na ho to kuch delete nahi (accidental wipe se bachav).
+10. **Update locator am/pm-tolerant:** `update_timesheet` start-time ko `09:00` ya `21:00` dono se match karta hai (model misread se bachav) + `brainRouter` ko "time = locator" guidance.
+11. **`getProjects` add-for-others scope:** HR/Admin "Viewing: X" ke saath `@`-project picker khole to **X ke** assigned projects aate hain (apne nahi). Gate: `all_employee_attendance` + `enter_status`. Normal employee → apne hi (security).
+
+> Rate-limit (info, koi change nahi): AI chat per-user **20/min** (env `AI_RATE_PER_MIN`, default 20) — `timesheet.controller.js` `aiRateLimitOk()`. In-memory 60s sliding window + optional Cloudflare limiter.
+
+_Note: `Backend/keyss-status.prod.db` (binary) commit me shaamil nahi — woh data hai, code nahi._

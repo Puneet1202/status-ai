@@ -55,7 +55,7 @@ async function handler(ctx, data) {
   if (!isOrgViewer) {
     return {
       reply:
-        "Employee directory sirf HR/Admin dekh sakte hain. Main aapki apni timesheet me help kar sakta hoon. 🙂",
+        "The employee directory is available to HR/Admin only. I can help you with your own timesheet. 🙂",
     };
   }
 
@@ -107,7 +107,7 @@ async function handler(ctx, data) {
     return {
       success: true,
       action: "LIST_EMPLOYEES",
-      reply: `Koi active employee nahi mila${suffix}.`,
+      reply: `No active employees found${suffix}.`,
       data: [],
     };
   }
@@ -128,10 +128,10 @@ async function handler(ctx, data) {
     return {
       success: true,
       action: "LIST_EMPLOYEES",
-      reply: `Aapke paas ${results.length} active employee hain${suffix}.`,
+      reply: `You have ${results.length} active employees${suffix}.`,
       data: results,
       options: employeeOptions,
-      optionsTitle: "Kisi ek ko chunein (ya 'My own hours'):",
+      optionsTitle: "Pick someone (or 'My own hours'):",
     };
   }
 
@@ -157,7 +157,7 @@ async function handler(ctx, data) {
     reply,
     data: results,
     options: employeeOptions,
-    optionsTitle: "Kisi ek ko chunein (ya 'My own hours'):",
+    optionsTitle: "Pick someone (or 'My own hours'):",
   };
 }
 

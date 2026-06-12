@@ -30,10 +30,17 @@ const PERMISSION_INFO = {
   },
   enter_status: {
     label: "⏱️ Status & Hours Entry",
-    desc: "Log work hours — your own, or for a team member after you select them.",
+    // Description user ki capability ke hisaab se: team-member wala promise SIRF
+    // org-viewer (all_employee_attendance) ko. Plain employee ko sirf apne hours.
+    desc: (org) =>
+      org
+        ? "Log work hours — your own, or for a team member after you select them."
+        : "Log your own work hours.",
     actions: [
       { label: "⏱️ Log my hours", value: "log my hours" },
-      { label: "👥 Log for a team member", value: "show employees" },
+      // ⚠️ Add-for-others — SIRF org-viewer (all_employee_attendance). Plain
+      // employee (sirf enter_status) ko ye option KABHI nahi dikhna chahiye.
+      { label: "👥 Log for a team member", value: "show employees", orgOnly: true },
       { label: "📋 My recent logs", value: "my recent logs" },
     ],
   },
@@ -46,7 +53,9 @@ const PERMISSION_INFO = {
   },
 };
 
-// Auto friendly-name fallback for permissions not in PERMISSION_INFO.
+// Auto friendly-name fallback for a permission not in PERMISSION_INFO (only used
+// in the "you don't have X" sub-menu guard — top-level list never names the
+// dashboard-only permissions, it just COUNTS them).
 function pretty(p) {
   return p.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -62,13 +71,22 @@ async function handler(ctx, data) {
     const info = PERMISSION_INFO[area];
     // Security: open a permission's mode only if the user actually HAS it.
     if (!info || !have(area)) {
-      return { reply: `You don't have the **${pretty(area)}** permission, so I can't show its actions.` };
+      return { reply: `You don't have the "${pretty(area)}" permission, so I can't show its actions.` };
     }
+    // Org-viewer-only actions (jaise "Log for a team member" = add-for-others) ko
+    // non-org user ke liye HATAO. Gate = all_employee_attendance (ctx.isOrgViewer)
+    // — same boundary jis pe backend add-for-others/list_employees ko rokta hai.
+    // Plain employee ko ye option dikhna hi nahi chahiye (strict). Frontend ko
+    // sirf {label, value} bhejo (internal orgOnly flag strip).
+    const actions = info.actions
+      .filter((a) => !a.orgOnly || ctx.isOrgViewer)
+      .map(({ label, value }) => ({ label, value }));
+    const desc = typeof info.desc === "function" ? info.desc(ctx.isOrgViewer) : info.desc;
     return {
       success: true,
       action: "MY_PERMISSIONS",
-      reply: `${info.label}\n${info.desc}\n\nWhat would you like to do?`,
-      options: info.actions,
+      reply: `${info.label}\n${desc}\n\nWhat would you like to do?`,
+      options: actions,
       optionsTitle: "Select an option:",
     };
   }
@@ -79,16 +97,36 @@ async function handler(ctx, data) {
     return { reply: "You don't have any special permissions assigned — you can manage your own timesheet. ⏱️" };
   }
 
-  // AI-actionable permissions (have actions here). Dashboard-only ones are part of
-  // the total count but not listed — they're managed on the website, not here.
+  // aiPerms = yahan AI me usable; otherPerms = dashboard pe managed. UI markdown
+  // bold (**...**) render NAHI karta — to plain text rakho (warna literal `**`
+  // dikhta hai, ganda). Aur dashboard-only permissions ko NAAM se list mat karo —
+  // sirf GINTI batao (user feedback: "Add Employee" dikhana confusing tha). Total
+  // = AI-usable + dashboard, dono ka count saaf.
   const aiPerms = all.filter((p) => PERMISSION_INFO[p]);
+  const otherPerms = all.filter((p) => !PERMISSION_INFO[p]);
+  const total = all.length;
+  const plural = total === 1 ? "" : "s";
 
-  const lines = [`You have **${all.length} permissions** in total.`];
+  const lines = ["🔐 Your Access", ""];
+
+  // Count summary — professional, bina internal permission naam ke.
   if (aiPerms.length) {
-    lines.push(`Here's what you can do with me right now 👇\n`);
-    aiPerms.forEach((p) => lines.push(`  • ${PERMISSION_INFO[p].label}`));
+    lines.push(`You have ${total} permission${plural} in total — ${aiPerms.length} usable here with me${otherPerms.length ? ", the rest managed on the dashboard" : ""}.`);
+    lines.push("");
+    lines.push("What you can do with me:");
+    aiPerms.forEach((p) => lines.push(`  ${PERMISSION_INFO[p].label}`));
   } else {
-    lines.push(`None of them are available here in the assistant — they're managed on the dashboard.`);
+    lines.push(`You have ${total} permission${plural} in total — these are managed on the dashboard, not here in the assistant.`);
+  }
+
+  // Baseline (har logged-in user) — apne hours log/view + apna profile. Isse
+  // employee ko saaf rahe ki sirf "Status Search" tak limited nahi hai.
+  lines.push("");
+  lines.push("You can always log & view your own hours and check your own profile too. ⏱️");
+
+  if (aiPerms.length) {
+    lines.push("");
+    lines.push("Tap an area below to see its actions 👇");
   }
 
   return {
@@ -96,8 +134,9 @@ async function handler(ctx, data) {
     action: "MY_PERMISSIONS",
     reply: lines.join("\n"),
     // Chip click → "perm:<area>" deterministic route (chat.js) → opens the sub-menu.
+    // Chips sirf AI-usable areas ke (dashboard-only ke yahan koi action nahi).
     options: aiPerms.map((p) => ({ label: PERMISSION_INFO[p].label, value: `perm:${p}` })),
-    optionsTitle: "Tap an area to see its actions:",
+    optionsTitle: aiPerms.length ? "Tap an area to see its actions:" : undefined,
   };
 }
 

@@ -93,6 +93,21 @@ function extractNewFields(data) {
   return f;
 }
 
+// A start-time locator like "4 to 5" is am/pm-AMBIGUOUS: it may have been LOGGED
+// as 04:00 but the model can read a later "update 4 to 5 …" as 16:00 (or the
+// reverse). So when locating by start time we also try the 12-hour counterpart —
+// the real entry is found regardless of how the hour was interpreted. Also
+// normalizes "4:00" → "04:00". Multiple hits → the handler's confirm step asks.
+function startTimeVariants(raw) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw || "").trim());
+  if (!m) return [String(raw || "").trim()];
+  const h = +m[1];
+  const norm = `${String(h).padStart(2, "0")}:${m[2]}`;
+  const altH = h >= 12 ? h - 12 : h + 12;
+  const alt = `${String(altH).padStart(2, "0")}:${m[2]}`;
+  return alt === norm ? [norm] : [norm, alt];
+}
+
 // Find candidate rows for the requested edit. Returns an array (0..N rows).
 async function findCandidates(db, employeeId, data) {
   const id = data.timesheet_id || data.entry_id;
@@ -126,8 +141,9 @@ async function findCandidates(db, employeeId, data) {
       b.push(data.match_date.trim());
     }
     if (data.match_start_time?.trim()) {
-      q += ` AND d.start_time = ?`;
-      b.push(data.match_start_time.trim());
+      const variants = startTimeVariants(data.match_start_time.trim());
+      q += ` AND d.start_time IN (${variants.map(() => "?").join(", ")})`;
+      b.push(...variants);
     }
     q += ` ORDER BY d.created_at DESC LIMIT 5`;
     const { results } = await db.prepare(q).bind(...b).all();

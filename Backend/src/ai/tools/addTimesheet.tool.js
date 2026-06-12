@@ -106,8 +106,8 @@ async function handler(ctx, data) {
       console.warn("[addTimesheet project-options failed]", e?.message || e);
     }
     return {
-      reply: "Please select a project first! Niche se chunein ya '@' type karein.",
-      ...(projectOptions.length ? { options: projectOptions, optionsTitle: "Apna project chunein:" } : {}),
+      reply: "Please select a project first — pick one below or type '@'.",
+      ...(projectOptions.length ? { options: projectOptions, optionsTitle: "Choose your project:" } : {}),
     };
   }
 
@@ -158,8 +158,12 @@ async function handler(ctx, data) {
   // Product decision: SAVE the valid blocks and only FLAG the bad ones, so a
   // single bad block never forces the user to re-enter the whole day.
   const problems = [];
-  const seen = new Set();
-  const valid = [];
+  // Key = "start|end". Blocks with the SAME time get MERGED, not duplicated —
+  // because a single block whose description has "and"/"&" (e.g. "11-12 ai testing
+  // and solve bug issue") sometimes comes back from the model as TWO 11–12 rows.
+  // That's not a real overlap; it's one block with a two-part description. Merging
+  // here kills the bogus "11:00–12:00 overlaps 11:00–12:00" error at the source.
+  const byTime = new Map();
 
   for (const e of entriesToBatch) {
     // Derive an end time from duration if the legacy single-entry path supplied one.
@@ -185,13 +189,31 @@ async function handler(ctx, data) {
       continue;
     }
 
-    // Drop exact duplicates within this single message.
-    const key = `${startTime}|${endTime}|${(e.task_description || "").trim().toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    valid.push({ ...e, start_time: startTime, end_time: endTime, _mins: mins });
+    const key = `${startTime}|${endTime}`;
+    const desc = (e.task_description || "").trim();
+    const existing = byTime.get(key);
+    if (existing) {
+      // Same time block again → merge its description (skip exact-dup text).
+      const low = desc.toLowerCase();
+      if (desc && !existing._descs.has(low)) {
+        existing._descs.add(low);
+        existing.task_description = existing.task_description
+          ? `${existing.task_description}, ${desc}`
+          : desc;
+      }
+      continue;
+    }
+    byTime.set(key, {
+      ...e,
+      start_time: startTime,
+      end_time: endTime,
+      _mins: mins,
+      task_description: desc,
+      _descs: new Set(desc ? [desc.toLowerCase()] : []),
+    });
   }
+
+  const valid = [...byTime.values()];
 
   // Overlap is relational — if the would-be-saved blocks clash we can't pick a
   // winner, so block the write and ask the user to adjust (nothing saved here).
@@ -227,7 +249,7 @@ async function handler(ctx, data) {
         );
         if (clashes) {
           problems.push(
-            `• ${v.start_time}–${v.end_time} ("${v.task_description || "work"}") — is din ki kisi pehle se logged entry se overlap karta hai; time adjust karein.`
+            `• ${v.start_time}–${v.end_time} ("${v.task_description || "work"}") — overlaps an entry already logged for this day; please adjust the time.`
           );
         } else {
           clean.push(v);
@@ -306,6 +328,22 @@ async function handler(ctx, data) {
 
   await db.batch(statements);
 
+  // Just-saved rows ki IDs nikaalo (frontend ke EDIT window ke liye → exact update,
+  // taaki "09:00" jaisे same start-time wali PURANI entries se confuse na ho). Same
+  // din + same start-time UNIQUE hota hai (overlap check do entries ek hi time pe
+  // banne nahi deta), to start_time → id reliable map hai.
+  let idByStart = new Map();
+  try {
+    const ph = valid.map(() => "?").join(", ");
+    const idRows = await db
+      .prepare(`SELECT id, start_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ? AND start_time IN (${ph})`)
+      .bind(employeeId, entryDate, ...valid.map((v) => v.start_time))
+      .all();
+    idByStart = new Map((idRows.results || []).map((r) => [String(r.start_time).slice(0, 5), r.id]));
+  } catch (e) {
+    console.warn("[addTimesheet id-fetch failed]", e?.message || e);
+  }
+
   // Deterministic receipt — no extra LLM call.
   const summaryLines = valid
     .map(
@@ -329,6 +367,17 @@ async function handler(ctx, data) {
     success: true,
     action: "ADD_MULTIPLE_TIMESHEETS",
     reply,
+    // For the frontend's post-save EDIT window: the just-saved blocks (time + text)
+    // so an "Edit" chip can pre-fill an update command. Only the cleanly-saved ones.
+    savedEntries: valid.map((e) => ({
+      id: idByStart.get(e.start_time) ?? null,
+      start_time: e.start_time,
+      end_time: e.end_time,
+      task_description: e.task_description?.trim() || "Work update",
+    })),
+    project: targetProjectName,
+    projectId,
+    tasks: Array.isArray(selectedTasks) ? selectedTasks : [],
   };
   } catch (err) {
     // A single malformed block (e.g. unparseable time deep in the batch)

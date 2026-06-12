@@ -85,7 +85,7 @@ async function handler(ctx, data) {
     let from = data.from, to = data.to;
     if (from > to) [from, to] = [to, from]; // tolerant of swapped bounds
     const days = datesInRange(from, to);
-    if (days.length === 0) return { reply: "Date range samajh nahi aaya. Sahi from/to (YYYY-MM-DD) batayein." };
+    if (days.length === 0) return { reply: "I couldn't read that date range. Please give a valid from/to (YYYY-MM-DD)." };
 
     // Each employee's distinct filled-dates within the range.
     const filledRows =

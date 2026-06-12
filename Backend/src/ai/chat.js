@@ -58,6 +58,40 @@ function looksLikeTimeBlock(text) {
         || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(t);
 }
 
+// ── AM/PM AMBIGUITY — ask (via chips) ONLY when genuinely unsure ─────────────
+// A bare hour like "4 to 5" could mean 04:00 OR 16:00. When the message has
+// EXACTLY ONE time range whose START hour is 1–7 written WITHOUT any am/pm (and no
+// other clock hint), we can't know which is meant — so instead of guessing (and
+// saving the wrong time) we offer two chips ("4 AM" / "4 PM") that RE-SEND the same
+// message with an explicit meridiem. Clear inputs are NOT ambiguous → no question:
+//   • 8–12 (morning) and 13–23 (already 24-hour)         → not asked
+//   • "04 to 05" (leading zero = explicit 24-hour)        → not asked
+//   • "6pm", "6 baje", "18:00"                            → not asked
+//   • break-word messages (lunch/break follow-ups)        → not asked
+// Returns { hour, amValue, pmValue } or null.
+function ambiguousAmPm(message) {
+    const text = String(message || '');
+    if (/\b(lunch|break|rest|tea|khana|khaana|nashta|naashta)\b/i.test(text)) return null;
+    if (/\d\s*(?:am|pm|a\.?m\.?|p\.?m\.?|baje|o.?clock|noon|midnight)\b/i.test(text)) return null;
+    const RE = /(\d{1,2})(?::(\d{2}))?\s*(?:-|–|—|to|till|se)\s*(\d{1,2})(?::(\d{2}))?/gi;
+    const matches = [...text.matchAll(RE)];
+    if (matches.length !== 1) return null; // only the simple single-range case
+    const mm = matches[0];
+    if (mm[1].length === 2 && mm[1][0] === '0') return null; // "04" = explicit 24-hour
+    const h1 = +mm[1];
+    if (h1 < 1 || h1 > 7) return null; // 8–12 morning / 13–23 already 24h → not ambiguous
+    const m1 = mm[2] ? `:${mm[2]}` : '';
+    const m2 = mm[4] ? `:${mm[4]}` : '';
+    const h2 = mm[3];
+    const before = text.slice(0, mm.index);
+    const tail = text.slice(mm.index + mm[0].length);
+    return {
+        hour: h1,
+        amValue: `${before}${h1}${m1}am to ${h2}${m2}am${tail}`.replace(/\s+/g, ' ').trim(),
+        pmValue: `${before}${h1}${m1}pm to ${h2}${m2}pm${tail}`.replace(/\s+/g, ' ').trim(),
+    };
+}
+
 // =========================================================================
 // 🔗 MULTI-TURN DESCRIPTION CARRY
 // When a follow-up message is basically just a time ("9 to 11"), the parsed
@@ -421,18 +455,18 @@ const CAPABILITY_INTENT = /\bwhat (can|do) (you|u) do\b|\bwhat can i (do|ask)\b|
 
 function getCapabilityReply(isOrgViewer) {
     const lines = [
-        "Main aapki timesheet ka assistant hu. Ye kar sakta hu:",
-        "• Hours log karna — e.g. \"9 to 11 fixed login bug\"",
-        "• Entries dekhna (aaj / is hafte / kisi date ki) aur filter karna",
+        "I'm your timesheet assistant. Here's what I can do:",
+        "• Log hours — e.g. \"9 to 11 fixed login bug\"",
+        "• Show entries (today / this week / a specific date) and filter them",
         "• Analyze — totals, per-project/month breakdown, busiest, average",
-        "• Entries edit / delete karna (confirm ke saath)",
-        "• Profile batana (naam / email / role)",
+        "• Edit / delete entries (with confirmation)",
+        "• Tell you your profile (name / email / role)",
     ];
     if (isOrgViewer) {
-        lines.push("• HR/Admin: kisi bhi employee ki timesheet dekhna/analyze + employee list/count");
+        lines.push("• HR/Admin: view or analyze any employee's timesheet + employee list/count");
     }
     lines.push("");
-    lines.push("Main leave, payroll, ya HR settings NAHI handle karta — wo website pe hai. 🙂");
+    lines.push("I don't handle leave, payroll, or HR settings — those are on the website. 🙂");
     return lines.join("\n");
 }
 
@@ -478,6 +512,46 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             return { action: { name: 'get_my_permissions', data: {} } };
         }
 
+        // ── EDIT-CHIP command → deterministic UPDATE (no model) ──────────────────
+        // The post-save "Edit" chip pre-fills exactly "update entry HH:MM to HH:MM
+        // <new text>". Route it straight to update_timesheet so the flaky model can't
+        // misread it as an ADD (which would wrongly ask for a project). Locate by the
+        // start time; the entry's existing project/task stay — only end-time and/or
+        // description change. This is the reliable path for the edit window.
+        const EDIT_CMD = cleanMessage.match(/^\s*(?:update|edit)\s+entry\s+(\d{1,2}:\d{2})\s+to\s+(\d{1,2}:\d{2})\s*(.*)$/i);
+        if (EDIT_CMD) {
+            const upd = { match_start_time: EDIT_CMD[1], new_end_time: EDIT_CMD[2] };
+            const newDesc = EDIT_CMD[3].trim();
+            if (newDesc) upd.new_task_description = newDesc;
+            return { action: { name: 'update_timesheet', data: upd } };
+        }
+
+        // ── "Log my hours" / self-log intent with NO time → deterministic ask ────
+        // The "Log my hours" chip sends "log my hours" (koi time nahi). Model ke
+        // bharose chhoda to wo EXAMPLE khud banata hai jo 2-ghante/block rule TODTA
+        // hai (e.g. "10:00-13:00" = 3 hrs — invalid). Isliye yahan code se jawab
+        // dete hai: sahi prompt jo 2-hour cap bhi bataye aur sirf VALID (≤2h)
+        // example de. Fires only when there's NO time signal and not delete/update.
+        const LOG_NO_TIME =
+            /\b(log|add|enter|fill|record|likho?|bharo?)\b[\w\s'"-]*\b(hours?|status|time|ghante|kaam|work)\b/i.test(cleanMessage) ||
+            /^\s*(log|add|enter|fill)\s+(my\s+)?(hours?|status|time)\s*$/i.test(cleanMessage);
+        const hasAnyTimeSignal =
+            looksLikeTimeBlock(cleanMessage) ||
+            /(?:^|[^a-z0-9])\d{1,2}\b/i.test(cleanMessage) ||
+            /\bo.?clock\b|\bbaje\b|:\d{2}\b|\d\s*[ap]\.?m\b/i.test(cleanMessage);
+        if (LOG_NO_TIME && !hasAnyTimeSignal && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            return {
+                reply:
+                    `Sure — let's log your hours. Here's how:\n\n` +
+                    `1️⃣ Type @ and pick your project (e.g. "@121M").\n` +
+                    `2️⃣ Select at least one task from the list that opens.\n` +
+                    `3️⃣ Send the time and what you did — e.g. "9 to 11 fixed the login bug".\n\n` +
+                    `⏱️ Each time block can be at most 2 hours (less is fine). For a longer day, split it:\n` +
+                    `"9-11 API work, 11-1 testing, 2-4 bug fixes"\n\n` +
+                    `A project and at least one task are required — without them the entry won't be saved.`,
+            };
+        }
+
         // Capability / out-of-scope / directory — deterministic (reliable + 0 tokens),
         // so the flaky free model never greets or mis-tools these. All skip when the
         // message has a time block (that's a work log, not a meta question).
@@ -486,7 +560,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 return { reply: getCapabilityReply(isOrgViewer) };
             }
             if (OUT_OF_SCOPE_INTENT.test(cleanMessage)) {
-                return { reply: "Main sirf timesheet ka kaam karta hu (hours log/view/analyze). Leave, holiday, ya payroll main handle nahi karta — uske liye website use karein. 🙂" };
+                return { reply: "I only handle timesheets (log/view/analyze hours). I don't manage leave, holidays, or payroll — please use the website for those. 🙂" };
             }
             if (DIRECTORY_INTENT.test(cleanMessage)) {
                 return { action: { name: 'list_employees', data: {} } };
@@ -532,6 +606,26 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 // role kya hai) — entries DUMP mat karo (user feedback: entries tabhi
                 // jab khud maange). Sticky viewer pill isi se set hota hai.
                 return { action: { name: 'get_employee_info', data: { employee_name: em[1] } } };
+            }
+        }
+
+        // ── AM/PM DISAMBIGUATION (deterministic, no LLM) ─────────────────────────
+        // The user is LOGGING with a bare, genuinely-ambiguous hour ("4 to 5"). Ask
+        // AM or PM via two chips that re-send the SAME message with an explicit
+        // meridiem — so we NEVER save a guessed (possibly wrong) time. Only for
+        // logging turns: skip reads (HARD_GET) / edits / deletes. Runs BEFORE the
+        // brain so the model can't save the guess first.
+        if (!DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) && !HARD_GET.test(cleanMessage)) {
+            const amb = ambiguousAmPm(cleanMessage);
+            if (amb) {
+                return {
+                    reply: `Quick check — did you mean ${amb.hour} AM or ${amb.hour} PM?`,
+                    options: [
+                        { label: `🌅 ${amb.hour} AM`, value: amb.amValue },
+                        { label: `🌆 ${amb.hour} PM`, value: amb.pmValue },
+                    ],
+                    optionsTitle: "Select AM or PM:",
+                };
             }
         }
 
@@ -604,7 +698,17 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                     if (modelEntries.length > 0) return routed; // exotic format the regex missed — handler still validates
                     return { reply: "Got it — what time did you work on that? e.g. \"9 to 11\"." };
                 }
-                if (routed) return routed;
+                // Brain returned a non-action REPLY (a clarifying question). If the
+                // message ALREADY has a time block AND a project is selected, it's a
+                // valid log — e.g. "12 to 1" under the selected project/task. Don't
+                // let the model ask "what did you work on?" (the selected task IS the
+                // context). Fall through to the deterministic ADD below, which logs
+                // it. Otherwise (no time / no project) the model's reply stands.
+                if (routed && !routed.action && looksLikeTimeBlock(cleanMessage) && selectedProject) {
+                    // fall through to deterministic engine ↓
+                } else if (routed) {
+                    return routed;
+                }
             } catch (e) {
                 console.warn('[claude-brain failed → deterministic fallback]', e?.message || e);
             }
