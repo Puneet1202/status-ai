@@ -94,9 +94,12 @@ export function getBrainModel(env) {
 
 // Small, FAST model for casual/natural conversation (greetings, chit-chat).
 // The 70B is too slow over REST for chat (caused WORKERS_AI_TIMEOUT on "hey");
-// this 8B replies in ~0.5-1s — dynamic AND fast. Used ONLY for small talk;
+// this small model replies in ~0.5-1s — dynamic AND fast. Used ONLY for small talk;
 // structured/tool work still uses CHAT_MODEL where accuracy matters.
-export const CHAT_MODEL_FAST = '@cf/meta/llama-3.1-8b-instruct';
+// NOTE: '@cf/meta/llama-3.1-8b-instruct' was DEPRECATED by Cloudflare 2026-05-30
+// (REST error 410), which broke greetings → canned fallback. Switched to the
+// current Llama 3.2 3B (small + fast + still available).
+export const CHAT_MODEL_FAST = '@cf/meta/llama-3.2-3b-instruct';
 // Short leash for the casual call — if even the small model stalls, the caller
 // falls back to a friendly canned line, so the user NEVER sees a timeout.
 export const FAST_TIMEOUT_MS = 8000;
