@@ -19,6 +19,7 @@ import { getProvider, getProviderKey, getProviderBaseUrl, getBrainModel, getBrai
 import { askAnthropic } from "./providers/anthropic.js";
 import { askOpenAI } from "./providers/openai.js";
 import { askGemini } from "./providers/gemini.js";
+import { traceBrain } from "./trace.js";
 
 // One adapter per provider — all take { apiKey, model, system, message, history,
 // tools, timeoutMs } and return { toolCall, text }. Groq is OpenAI-compatible,
@@ -40,6 +41,9 @@ const BRAIN_TOOLS = new Set([
   "list_employees",
   "get_employee_info",
   "get_pending_status",
+  "get_my_projects",
+  "get_my_tasks",
+  "get_my_leaves",
 ]);
 
 // HR/Admin-ONLY tools. Hidden from a normal employee's toolset entirely (the
@@ -48,6 +52,30 @@ const ORG_ONLY_TOOLS = new Set(["list_employees", "get_employee_info", "get_pend
 
 // Read tools jinme org-viewer kisi aur employee ko target kar sakta hai.
 const READ_TOOLS = new Set(["get_timesheet_logs", "query_timesheet", "analyze_timesheet"]);
+
+// =========================================================================
+// TOKEN SAVER — offer the brain ONLY the tools relevant to THIS message.
+// Sending all ~10 tool schemas every call costs ~2800 input tokens. One message
+// needs one kind of action, so we narrow the toolset by a quick intent scan.
+// SAFETY FIRST: we narrow ONLY when EXACTLY ONE intent clearly matches. If the
+// message is ambiguous (0 or 2+ intents), we send the FULL set — so accuracy is
+// never traded for tokens; the worst case is just "no saving", never a wrong tool.
+// =========================================================================
+const INTENT_BUCKETS = [
+  { tools: ["delete_timesheet"], re: /\b(delete|remove|erase|discard|hata|mita)\b/i },
+  { tools: ["update_timesheet"], re: /\b(update|edit|correct|modify|change|badal|sahi\s*kar|galat)\b/i },
+  { tools: ["get_timesheet_logs", "query_timesheet", "analyze_timesheet"], re: /\b(show|list|view|fetch|display|history|report|summary|total|average|busiest|how\s+many|how\s+much|kitne|kitna|dikhao|dikhana|batao|recent|latest|aakhri|today|yesterday|kal|week|hafte|month|mahine|attendance|haziri)\b|\d{4}-\d{2}-\d{2}/i },
+  { tools: ["get_my_profile"], re: /\b(who\s*am\s*i|my\s+(name|email|role|profile|designation)|mera\s+naam|meri\s+email|mera\s+role)\b/i },
+  { tools: ["list_employees", "get_employee_info", "get_pending_status"], org: true, re: /\b(employees?|kaun|who\s+is|joined|join\s+hua|pending|directory|staff|team\s+member)\b/i },
+  { tools: ["add_timesheet_entries"], re: /\d|\bse\b|\bto\b|\bbaje\b|\bbje\b|worked|kaam|fixed|developed|tested|did\b|task/i },
+];
+
+// Returns a Set of tool names to offer, or null = "send everything" (ambiguous).
+function relevantToolNames(message, isOrgViewer) {
+  const m = String(message || "").toLowerCase();
+  const matched = INTENT_BUCKETS.filter((b) => (!b.org || isOrgViewer) && b.re.test(m));
+  return matched.length === 1 ? new Set(matched[0].tools) : null; // exactly 1 → narrow; else full set
+}
 
 // org-viewer ke liye read tools me `employee_name` param JOD dete hai. Normal
 // employee ko ye param dikhta hi nahi → wo kisi aur ko target kar hi nahi sakta.
@@ -106,6 +134,7 @@ function logTokens(provider, model, usage, tag = "", ms = 0) {
   const output = usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0;
   const total = usage.total_tokens ?? usage.totalTokenCount ?? (input + output);
   _tokenTotals.input += input; _tokenTotals.output += output; _tokenTotals.total += total;
+  traceBrain({ input, output, total }); // feed the per-message trace box
   // tok/sec = output tokens generate hone ki speed (standard "speed" metric).
   const speed = ms ? `${(output / (ms / 1000)).toFixed(1)} tok/s` : "?";
   const rss = `${(process.memoryUsage().rss / 1024 / 1024).toFixed(0)} MB`;
@@ -221,6 +250,15 @@ export async function routeWithBrain(env, message, window, selectedProject, time
   const system = `${stable}\n${dynamic}`;
   const history = sanitizeHistory(window);
 
+  // TOKEN SAVER: offer only the tools relevant to this message (null = all).
+  const allTools = brainToolSchemas(isOrgViewer);
+  const want = relevantToolNames(message, isOrgViewer);
+  const narrowed = want ? allTools.filter((s) => want.has((s.function || s).name)) : null;
+  const tools = (narrowed && narrowed.length) ? narrowed : allTools; // empty narrow → safety full set
+  if (tools.length < allTools.length) {
+    console.log(`[tool saver] offered ${tools.length}/${allTools.length} tools (${[...want].join(', ')})`);
+  }
+
   const req = {
     apiKey: getProviderKey(env, provider),
     baseUrl: getProviderBaseUrl(env, provider) || undefined,
@@ -230,7 +268,7 @@ export async function routeWithBrain(env, message, window, selectedProject, time
     systemDynamic: dynamic,
     message,
     history,
-    tools: brainToolSchemas(isOrgViewer),
+    tools,
     timeoutMs: getBrainTimeout(env),
   };
   const _t0 = Date.now();

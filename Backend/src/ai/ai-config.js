@@ -1,8 +1,25 @@
 // backend/src/ai/ai-config.js
 
-// Production Core Models Reference
-export const CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
-export const EMBEDDING_MODEL = '@cf/baai/bge-large-en-v1.5';
+// =========================================================================
+// HOW MANY MODELS — one .env knob, code adjusts automatically.
+//   AI_MODELS=3  → BRAIN + CHAT + FAST   (3 separate models — best speed/cost)
+//   AI_MODELS=2  → BRAIN(=CHAT) + FAST   (chat reuses the brain; fast stays separate)
+//   AI_MODELS=1  → ONE model does everything (simplest)
+// Default = 3. A per-role override below (AI_CF_MODEL / AI_FAST_MODEL) ALWAYS wins.
+// =========================================================================
+function modelCount(env) {
+  const n = parseInt(env?.AI_MODELS, 10);
+  return [1, 2, 3].includes(n) ? n : 3;
+}
+
+// CHAT model — text replies + LLM work-block extraction.
+//   AI_MODELS<3 → chat reuses the BRAIN model (so AI_CF_MODEL is ignored at 1-2).
+//   AI_MODELS=3 → use AI_CF_MODEL (or the default below).
+const DEFAULT_CF_CHAT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+export function getChatModel(env) {
+  if (modelCount(env) < 3) return getBrainModel(env);
+  return (env && env.AI_CF_MODEL) || DEFAULT_CF_CHAT_MODEL;
+}
 
 // =========================================================================
 // 🧠 "BRAIN" PROVIDER — the reliable LLM that routes intent + extracts args
@@ -95,11 +112,19 @@ export function getBrainModel(env) {
 // Small, FAST model for casual/natural conversation (greetings, chit-chat).
 // The 70B is too slow over REST for chat (caused WORKERS_AI_TIMEOUT on "hey");
 // this small model replies in ~0.5-1s — dynamic AND fast. Used ONLY for small talk;
-// structured/tool work still uses CHAT_MODEL where accuracy matters.
+// structured/tool work still uses the CF chat model where accuracy matters.
+// ENV-DRIVEN: AI_FAST_MODEL=<@cf/... slug>  ← change from .env, no code edit.
 // NOTE: '@cf/meta/llama-3.1-8b-instruct' was DEPRECATED by Cloudflare 2026-05-30
-// (REST error 410), which broke greetings → canned fallback. Switched to the
+// (REST error 410), which broke greetings → canned fallback. Default is now the
 // current Llama 3.2 3B (small + fast + still available).
-export const CHAT_MODEL_FAST = '@cf/meta/llama-3.2-3b-instruct';
+// FAST model — greetings / small talk.
+//   AI_MODELS=1 → fast reuses the BRAIN model (so AI_FAST_MODEL is ignored at 1).
+//   AI_MODELS=2 or 3 → use AI_FAST_MODEL (or the default below).
+const DEFAULT_CF_FAST_MODEL = '@cf/meta/llama-3.2-3b-instruct';
+export function getFastModel(env) {
+  if (modelCount(env) < 2) return getBrainModel(env);
+  return (env && env.AI_FAST_MODEL) || DEFAULT_CF_FAST_MODEL;
+}
 // Short leash for the casual call — if even the small model stalls, the caller
 // falls back to a friendly canned line, so the user NEVER sees a timeout.
 export const FAST_TIMEOUT_MS = 8000;

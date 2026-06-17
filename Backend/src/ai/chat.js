@@ -11,8 +11,9 @@ import { getToolSchemas } from './tools/index.js';
 import { parseEntryDate, isMonthFirstTz, resolveNumericDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
 import { todayISO } from './tools/_helpers.js';
-import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, CHAT_MODEL_FAST, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
+import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, getFastModel, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
 import { routeWithBrain } from './brainRouter.js';
+import { traceRoute } from './trace.js';
 
 // =========================================================================
 // 🎯 DETERMINISTIC INTENT HINTS
@@ -35,6 +36,17 @@ const SOFT_GET = /\b(report|summary)\b/i;
 // Broad signal — used only to gate the model's get_timesheet call (anti-hallucination).
 const GET_INTENT = /\b(show|list|view|fetch|display|history|report|summary|total|how many|how much|kitne|kitna|logged|my hours|my entries|dikhao|dikhana|dikhaiye|batao|recent|latest|aakhri|this week|last week|this month|last month|yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2})\b/i;
 
+// Aggregate/breakdown signals (totals, per-X, monthly, busiest, a year). Module-
+// scope so the deterministic analytics path can run BEFORE the brain (token-free
+// breakdown chips) AND as the brain-disabled fallback below.
+// NOTE: a BARE year is intentionally NOT an analytics signal — "march 2026" is a
+// month READ, not a year total. A year only widens the range INSIDE an analytics
+// query that already has a real signal (e.g. "hours per project 2026").
+const ANALYTICS_INTENT = /\bbreak\s?downs?\b|\b(?:per|each|by|wise)\s*(?:projects?|month|module|categor\w+|year|day)\b|\b(?:projects?|month|module|year|day)\s*wise\b|\bmonthly\b|\byearly\b|\bwhich\s+(?:project|month|module|year|day)\b|\bmost\s+(?:hours|time|productive)\b|\bbusiest\b|\baverage\b|\bavg\b|\bcompare\b|\bversus\b|\bvs\b|\bthis year\b|\blast year\b|\bhar\s+(?:project|mahin[ae]|din|saal)\b|\bkis project\b|\bsabse\s+(?:zyada|kam)\b|\boverall\b|\ball[\s-]?time\b/i;
+// Comparison/leaderboard signals need the brain (it sets compare_employees for
+// org-viewers). Keep these OUT of the early deterministic short-circuit.
+const COMPARE_SIGNAL = /\bcompare\b|\bversus\b|\bvs\b|\bsabse\s+(?:zyada|kam)\b|\bwho\s+worked\b|\bleaderboard\b|\bkisne\b/i;
+
 // Deterministic "show my recent/last entries" read — reliable, no LLM. Fires only
 // for a clear recent-history phrase that has NO time block (so it can never catch
 // an ADD) and isn't a delete/update. Handles "last entry", "last log dikhao",
@@ -52,8 +64,12 @@ const PERIOD = /\b(today|aaj|yesterday|kal|kl|parso|this week|last week|this mon
 // saath kabhi time-range nahi ho sakta), warna "20 - 05" ko 20:00→05:00 samajh
 // kar date-search bhi work-log ban jata tha (project maangta, read skip hota).
 const NUMERIC_DATE_RE = /\b\d{1,2}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*(?:20\d{2}|\d{2})\b/g;
+// ISO dates too ("2026-05-01 to 2026-05-31") — a date RANGE is not a time block.
+// Strip them first so "...01 to 2026..." isn't misread as a 01→2026 time range
+// (this is what made the date-range breakdown/list chips skip the deterministic path).
+const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/g;
 function looksLikeTimeBlock(text) {
-    const t = String(text || '').replace(NUMERIC_DATE_RE, ' ');
+    const t = String(text || '').replace(ISO_DATE_RE, ' ').replace(NUMERIC_DATE_RE, ' ');
     return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(t)
         || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(t);
 }
@@ -194,6 +210,65 @@ function isSmallTalk(message) {
     );
 }
 
+// A greeting / "what can you do" turn (vs thanks/ok/bye) — these get quick-action
+// chips so a new user instantly sees what to tap, no typing needed.
+function isGreeting(message) {
+    const m = String(message || '').toLowerCase().trim().replace(/[!.,?]+$/g, '').trim();
+    return (
+        /^(hi+|hey+|hello+|helo+|hii+|yo|hola|namaste|hye|sup|wassup|whats? ?up)$/.test(m) ||
+        /^good ?(morning|afternoon|evening|day)$/.test(m) ||
+        /^(kaise|kese) ?ho/.test(m) ||
+        /\b(help|what can (you|u) do|kya kar sakte|options|menu)\b/.test(m)
+    );
+}
+
+// One-tap starters shown with a greeting — the common things a user wants,
+// including LOG (add) and FIND (filter) helpers.
+function quickActionChips() {
+    return {
+        options: [
+            { label: "📝 Add entry", value: "how do i add an entry" },
+            { label: "🔎 Find entry", value: "how do i find an entry" },
+            { label: "📊 Total hours", value: "show my total hours" },
+            { label: "📅 Last month", value: "show last month entries" },
+        ],
+        optionsTitle: "Quick start — tap one:",
+    };
+}
+
+// "How to add" help — just the format + the required steps (no time-slot chips:
+// tapping a bare time logged a half-formed entry, so we keep it text-only).
+function addHelpReply() {
+    return {
+        reply:
+            "📝 To log work, type the time + what you did — e.g.\n" +
+            "   \"9 to 11 fixed the login bug\"\n\n" +
+            "1) Type @ to pick a project\n" +
+            "2) Select at least one task — this is required, or it won't submit\n" +
+            "3) Type the time + what you did, then press Enter\n\n" +
+            "⏱️ Each entry can be at most 2 hours (2 hours or less). Split longer work into 2-hour blocks — e.g. \"9 to 11\" then \"11 to 1\".",
+    };
+}
+
+// "How to find" help — shows filter examples as one-tap chips.
+function findHelpReply() {
+    return {
+        reply:
+            "🔎 You can filter your entries lots of ways:\n" +
+            "   • by keyword — \"AI tasks\", \"testing work\"\n" +
+            "   • by time — \"morning entries\", \"before 10am\"\n" +
+            "   • by length — \"tasks over 2 hours\"\n" +
+            "   • by date — \"last month\", \"June\", \"2026-05-26\"",
+        options: [
+            { label: "📅 This month", value: "show this month entries" },
+            { label: "🌅 Morning entries", value: "morning entries this month" },
+            { label: "⏱️ Over 2 hours", value: "tasks over 2 hours this month" },
+            { label: "🕘 Recent entries", value: "show my last 5 entries" },
+        ],
+        optionsTitle: "Try one:",
+    };
+}
+
 // Deterministic small-talk reply — NO model call, so greetings are instant and
 // can NEVER hit WORKERS_AI_TIMEOUT. Picks a friendly line based on the category.
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
@@ -260,8 +335,11 @@ function parseGetRange(message, base, monthFirst = false) {
     const m = String(message || '').toLowerCase();
     const today = isoDate(base);
 
-    const isoHit = m.match(/\b(\d{4}-\d{2}-\d{2})\b/);
-    if (isoHit) return { from_date: isoHit[1], to_date: isoHit[1] };
+    // TWO ISO dates = an explicit range ("from 2026-03-01 to 2026-03-31", the
+    // month-drill chips). ONE ISO date = that single day.
+    const isoAll = m.match(/\b\d{4}-\d{2}-\d{2}\b/g);
+    if (isoAll && isoAll.length >= 2) return { from_date: isoAll[0], to_date: isoAll[1] };
+    if (isoAll && isoAll.length === 1) return { from_date: isoAll[0], to_date: isoAll[0] };
 
     // Numeric date: "20-05-2026" (India, day-first) / "05/20/2026" (US, month-first)
     // — user ke TIMEZONE se decide hota hai (global company: India + US dono).
@@ -303,6 +381,20 @@ function parseGetRange(message, base, monthFirst = false) {
         return { from_date: isoDate(firstThisMonth), to_date: today };
     }
 
+    // MONTH NAME ("June", "March 2026", "june ka data", "in feb"). Year = the one
+    // given, else the current year. ("may" is skipped when it's "may I/maybe/may be"
+    // so a polite phrasing isn't read as the month of May.)
+    const MONTHS = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
+    const monthHit = m.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/);
+    if (monthHit && !(monthHit[1] === 'may' && /\bmaybe\b|\bmay\s+(?:i|be)\b/.test(m))) {
+        const mo = MONTHS[monthHit[1]];
+        const yrM = m.match(/\b(20\d{2})\b/);
+        const yr = yrM ? parseInt(yrM[1], 10) : base.getUTCFullYear();
+        const start = new Date(Date.UTC(yr, mo, 1, 12));
+        const end = new Date(Date.UTC(yr, mo + 1, 0, 12)); // 0th of next month = last day
+        return { from_date: isoDate(start), to_date: isoDate(end) };
+    }
+
     return { recent: true };
 }
 
@@ -331,10 +423,12 @@ function parseAnalyticsRange(message, base, monthFirst = false) {
         const y = base.getUTCFullYear() - 1;
         return { from_date: `${y}-01-01`, to_date: `${y}-12-31` };
     }
+    // Concrete date / period / MONTH NAME first — so "march 2026" resolves to MARCH,
+    // not the whole year. A bare year only applies when no month/period was named.
+    const r = parseGetRange(message, base, monthFirst); // week/month/yesterday/today/ISO/month-name
+    if (!r.recent) return r;
     const yr = !hasFullDate && m.match(/\b(20[0-2]\d)\b(?!-)/);
     if (yr) return { from_date: `${yr[1]}-01-01`, to_date: `${yr[1]}-12-31` };
-    const r = parseGetRange(message, base, monthFirst); // reuse week/month/yesterday/today/ISO
-    if (!r.recent) return r;
     return {}; // no period named → all-time
 }
 
@@ -631,9 +725,24 @@ export async function aiChat(env, userId, message, history = [], selectedProject
 
         const window = buildSlidingWindow(history);
 
+        // Guided-help chips ("📝 Add entry" / "🔎 Find entry") — deterministic, no
+        // model. Add-help is skipped if the message already has a time block (that's
+        // a real log, not a help request).
+        if (/\bhow (?:do i |to )?add\b|\badd (?:an? )?entry\b|\bhow (?:do i |to )?log\b/i.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
+            traceRoute('add-help → DETERMINISTIC (no brain, 0 tokens)');
+            return addHelpReply();
+        }
+        if (/\bhow (?:do i |to )?(?:find|filter|search)\b|\bfind (?:an? )?entry\b/i.test(cleanMessage)) {
+            traceRoute('find-help → DETERMINISTIC (no brain, 0 tokens)');
+            return findHelpReply();
+        }
+
         // ── Social turn: the model writes a natural reply, but with NO tools
         // attached so it physically cannot hallucinate a get/add/delete call. ──
         if (isSmallTalk(cleanMessage)) {
+            traceRoute('small-talk → FAST model (chat.js, no tools)');
+            // Greetings get quick-action chips so the user sees what to tap.
+            const chips = isGreeting(cleanMessage) ? quickActionChips() : {};
             // DYNAMIC + FAST: a small 8B model replies naturally in ~0.5-1s (the 70B
             // was too slow → WORKERS_AI_TIMEOUT on "hey"). If even the fast model
             // stalls/errors, fall back to a friendly canned line so the user NEVER
@@ -641,12 +750,200 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             try {
                 const casual = await askCloudflareAI(
                     getCasualPrompt(), cleanMessage, window, env, null,
-                    { model: CHAT_MODEL_FAST, timeoutMs: FAST_TIMEOUT_MS }
+                    { model: getFastModel(env), timeoutMs: FAST_TIMEOUT_MS }
                 );
-                return { reply: (typeof casual === 'string' && casual.trim()) ? casual.trim() : cannedSmallTalkReply(cleanMessage) };
+                return { reply: (typeof casual === 'string' && casual.trim()) ? casual.trim() : cannedSmallTalkReply(cleanMessage), ...chips };
             } catch (e) {
                 console.warn('[small-talk fast-model failed → canned fallback]', e?.message || e);
-                return { reply: cannedSmallTalkReply(cleanMessage) };
+                return { reply: cannedSmallTalkReply(cleanMessage), ...chips };
+            }
+        }
+
+        // ── MY PROJECTS (assigned) — deterministic, before analytics so "which
+        // projects do I work on" lists assignments, not an hours breakdown. Excludes
+        // hours/time queries (those are analytics: "hours per project").
+        if (
+            !/\b(hours?|time|total|breakdown|per\s+project)\b/i.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) &&
+            (/\b(?:my|mere|meri)\s+projects?\b/i.test(cleanMessage) ||
+             /\bhow many projects?\b/i.test(cleanMessage) ||
+             /\bkitne projects?\b/i.test(cleanMessage) ||
+             /\bassigned (?:to me|projects?)\b/i.test(cleanMessage) ||
+             /\bprojects? (?:assigned|am i (?:assigned|on)|do i (?:have|work)|i work on)\b/i.test(cleanMessage) ||
+             /\bwhich projects? (?:do i|am i|i)\b/i.test(cleanMessage))
+        ) {
+            traceRoute('my-projects → DETERMINISTIC (no brain, 0 tokens)');
+            return { action: { name: 'get_my_projects', data: {} } };
+        }
+
+        // ── MY TASKS (assigned) — deterministic. Excludes hours/time (analytics) and
+        // the "project_tasks" UI chips. Optional status filter (todo / in progress / done).
+        if (
+            !/\b(hours?|time|total|breakdown)\b/i.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage) &&
+            // `tas+ks?` tolerates common typos: task / tasks / tassk / tasssk.
+            (/\b(?:my|mere|meri)\s+tas+ks?\b/i.test(cleanMessage) ||
+             /\bhow many tas+ks?\b/i.test(cleanMessage) ||
+             /\bkitne tas+ks?\b/i.test(cleanMessage) ||
+             /\btas+ks? (?:assigned|am i (?:assigned|on)|do i have|i have)\b/i.test(cleanMessage) ||
+             /\b(?:my )?(?:pending|open|todo|to-?do|in progress) tas+ks?\b/i.test(cleanMessage) ||
+             /\bassigned tas+ks?\b/i.test(cleanMessage))
+        ) {
+            const sM = cleanMessage.match(/\b(to-?do|in progress|done|completed|pending)\b/i);
+            const status = sM ? { todo: 'To Do', 'to-do': 'To Do', 'in progress': 'In Progress', done: 'Done', completed: 'Done' }[sM[1].toLowerCase()] : null;
+            // Project picker chip → "my tasks for <Project>". Extract the project name.
+            const projM = cleanMessage.match(/\btas+ks?\s+(?:for|of|under)\s+(.+?)\s*$/i);
+            const data = {};
+            if (status) data.status = status;
+            if (projM && projM[1].trim()) data.project_name = projM[1].trim();
+            traceRoute('my-tasks → DETERMINISTIC (no brain, 0 tokens)');
+            return { action: { name: 'get_my_tasks', data } };
+        }
+
+        // ── MY LEAVES — deterministic. Leave balance + applications (self-only).
+        if (
+            !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) &&
+            !/\b(apply|application form|request leave|take leave)\b/i.test(cleanMessage) && // applying is a UI action
+            (/\b(?:my )?leaves?\b/i.test(cleanMessage) ||
+             /\bleave balance\b/i.test(cleanMessage) ||
+             /\b(?:chhutti|chutti|chuttiyan|chutiya?n)\b/i.test(cleanMessage) ||
+             /\bhow many leaves?\b/i.test(cleanMessage) ||
+             /\bkitni (?:chhutti|chutti|leave)/i.test(cleanMessage) ||
+             /\bleaves? (?:left|remaining|balance|taken)\b/i.test(cleanMessage))
+        ) {
+            const yM = cleanMessage.match(/\b(20[0-3]\d)\b/);
+            const stM = cleanMessage.match(/\b(pending|approved|rejected)\b/i);
+            const lvRange = parseAnalyticsRange(cleanMessage, nowInTz(timeZone), monthFirst); // last month / June / ISO / on a date
+            const allTime = /\b(since joining|joined|all[\s-]?time|so far|ab\s*tak|abtak|till now|now till)\b/i.test(cleanMessage) ||
+                /\bkitni (?:leave|chhutti|chutti)\s*(?:li|le li|li hai)?\b/i.test(cleanMessage);
+            const ld = {};
+            // Priority: status → period → all-time → plain summary.
+            if (stM) ld.status = stM[1].toLowerCase();
+            else if (lvRange.from_date) { ld.from_date = lvRange.from_date; ld.to_date = lvRange.to_date; }
+            else if (allTime) ld.all_time = true;
+            else if (yM) ld.year = parseInt(yM[1], 10);
+            traceRoute('my-leaves → DETERMINISTIC (no brain, 0 tokens)');
+            return { action: { name: 'get_my_leaves', data: ld } };
+        }
+
+        // ── EARLY DETERMINISTIC ANALYTICS (token-free) ────────────────────────
+        // Clear breakdown/aggregate queries (the "By project/month/day" chips, "hours
+        // per project", "monthly breakdown", "overall total") are settled HERE, BEFORE
+        // the brain — so a chip tap costs 0 tokens and replies instantly (no 12s brain
+        // wait). Comparison/leaderboard ("sabse zyada kisne") is excluded → it still
+        // uses the brain (which sets compare_employees for org-viewers). Delete/update/
+        // time-logs are excluded too. The same parse runs as a fallback further below.
+        if (
+            ANALYTICS_INTENT.test(cleanMessage) &&
+            !COMPARE_SIGNAL.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage)
+        ) {
+            traceRoute('analytics → DETERMINISTIC (no brain, 0 tokens)');
+            const base = nowInTz(timeZone);
+            const offM = cleanMessage.match(/\boffset\s+(\d+)\b/i); // pagination "Show more" chips
+            return { action: { name: 'analyze_timesheet', data: { ...parseAnalyticsRange(cleanMessage, base, monthFirst), group_by: parseGroupBy(cleanMessage), ...(offM ? { offset: parseInt(offM[1], 10) } : {}) } } };
+        }
+
+        // ── EARLY READ PAGINATION (token-free) ────────────────────────────────
+        // The "Show more" ENTRY chips carry an explicit "offset N" (real users never
+        // type that). Settle these in code BEFORE the brain so paging an entry list
+        // is instant + free. Analytics-offset chips are handled just above, so this
+        // only catches plain entry-list paging. Excludes delete/update/time-logs.
+        const offReadM = cleanMessage.match(/\boffset\s+(\d+)\b/i);
+        if (
+            offReadM &&
+            GET_VERB.test(cleanMessage) &&
+            !ANALYTICS_INTENT.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage)
+        ) {
+            traceRoute('read pagination → DETERMINISTIC (no brain, 0 tokens)');
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+            range.offset = parseInt(offReadM[1], 10);
+            return { action: { name: 'get_timesheet_logs', data: range } };
+        }
+
+        // ── EARLY DETERMINISTIC READ (token-free) ─────────────────────────────
+        // Concrete date/period list queries — today, yesterday, this/last week,
+        // this/last month, a month NAME ("June", "March 2026"), a specific date, or
+        // a date RANGE — settle in code BEFORE the brain → instant + 0 tokens (no
+        // 12s brain wait). Safety: only fires when the parser RESOLVED a concrete
+        // range (or the user clearly wants recent/last entries). Ambiguous phrasings,
+        // FILTERED queries (morning/duration), future dates, logs, edits and deletes
+        // all fall through to the brain, which still understands anything.
+        // ── EARLY DETERMINISTIC FILTER (token-free) ───────────────────────────
+        // Keyword / time-of-day / duration / first-N / point-in-time queries (with
+        // ANY date range — month name, week, ISO range, etc.) settle in code before
+        // the brain. STRONG filters (duration / at-time / first-N / explicit clock)
+        // route directly; WEAK ones (bare keyword, vague "morning") need a read
+        // signal AND no time block, so a log ("9-11 ai work") is never hijacked.
+        if (!DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            const earlyFilters = parseFilters(cleanMessage, nowInTz(timeZone), monthFirst);
+            if (earlyFilters) {
+                const strong = earlyFilters._strong;
+                delete earlyFilters._strong;
+                const READ_SIG =
+                    GET_VERB.test(cleanMessage) ||
+                    /\?\s*$/.test(cleanMessage) ||
+                    /\b(show|list|display|only|filter|find|which|what|first|last|between|chronological|doing|working|in progress|tasks?|activit\w*|entr\w*)\b/i.test(cleanMessage);
+                // A WEAK filter (bare keyword / vague word) is only a SEARCH when the
+                // message is SHORT or STARTS with a read verb. A long day-narrative
+                // ("Started the day with dataset prep... chatbot... tested...") is a
+                // LOG that happens to contain keywords — it must NOT become a filter.
+                const startsReadVerb = /^\s*(show|list|view|display|find|filter|search|get|what|which|how\s+(many|much)|kitne|kitna|dikha\w*|batao|give|gimme)\b/i.test(cleanMessage);
+                const isShortQuery = cleanMessage.trim().split(/\s+/).length <= 8;
+                if (strong || (READ_SIG && !looksLikeTimeBlock(cleanMessage) && (startsReadVerb || isShortQuery))) {
+                    traceRoute('filter → DETERMINISTIC (no brain, 0 tokens)');
+                    return { action: { name: 'query_timesheet', data: earlyFilters } };
+                }
+            }
+        }
+
+        const FUTURE_GET_RE = /\btom+or+ow?\b|\btomoro\b|\btmrw?\b|\bday after tomorrow\b|\bnext (?:week|month|day|\d+\s*days?)\b|\baane ?wala kal\b/i;
+        const earlyReadIntent =
+            GET_VERB.test(cleanMessage) ||
+            (PERIOD.test(cleanMessage) && GET_NOUN.test(cleanMessage)) ||
+            (RECENT_WORD.test(cleanMessage) && ENTRY_WORD.test(cleanMessage));
+
+        // FUTURE read ("tomorrow", "next week") — nothing logged ahead. Friendly
+        // reply in code (no brain). Excludes logs (a time block) and edits/deletes,
+        // so "log tomorrow 9-11" still routes to add, not here.
+        if (
+            FUTURE_GET_RE.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage) &&
+            (earlyReadIntent || cleanMessage.trim().split(/\s+/).length <= 5)
+        ) {
+            traceRoute('future read → DETERMINISTIC (no brain, 0 tokens)');
+            return { reply: "I can only show hours you've already logged — there's nothing for a future date yet. 🙂 Want today's or this week's logs instead?" };
+        }
+        if (
+            !ANALYTICS_INTENT.test(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !looksLikeTimeBlock(cleanMessage) &&
+            !FUTURE_GET_RE.test(cleanMessage) &&
+            !parseFilters(cleanMessage, nowInTz(timeZone), monthFirst)
+        ) {
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+            const wantsRecent = RECENT_WORD.test(cleanMessage) && ENTRY_WORD.test(cleanMessage);
+            const concretePeriod = !!range.from_date; // resolved a real date / period / month
+            const wordCount = cleanMessage.trim().split(/\s+/).length;
+            // Fire when: an explicit read names a period, OR the message is a SHORT
+            // bare-period query ("last month", "June", "yesterday") — ≤5 words so a
+            // long work description that merely mentions a month is NOT hijacked.
+            const fire =
+                (earlyReadIntent && (concretePeriod || (range.recent && wantsRecent))) ||
+                (concretePeriod && wordCount <= 5);
+            if (fire) {
+                if (range.recent) { const lim = recentLimit(cleanMessage); if (lim) range.limit = lim; }
+                traceRoute('read → DETERMINISTIC (no brain, 0 tokens)');
+                return { action: { name: 'get_timesheet_logs', data: range } };
             }
         }
 
@@ -669,6 +966,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // parser (model decides intent; proven code does the time math), and fall
         // back to the model's own entries only if regex can't read the format.
         if (isBrainEnabled(env)) {
+            traceRoute('work request → BRAIN (brainRouter.js → tools)');
             try {
                 const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone, isOrgViewer, viewAs);
                 if (routed?.action?.name === 'add_timesheet_entries') {
@@ -734,13 +1032,10 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         }
 
         // ── DETERMINISTIC ANALYTICS (reliable, no LLM) — totals / breakdowns /
-        // comparisons over the user's OWN data. Fires on clear aggregate signals
-        // (breakdown, per/which project|month|module|year, most, average, a year,
-        // "this/last year", "overall"). Code parses the dimension + range; the
-        // analyze tool does the SUM/GROUP BY → accurate even over years of data.
-        // Runs BEFORE the plain get-read so "hours per project this year" becomes a
-        // breakdown, not a list. A bare year inside an ISO date is excluded.
-        const ANALYTICS_INTENT = /\bbreak\s?downs?\b|\b(?:per|each|by|wise)\s*(?:projects?|month|module|categor\w+|year|day)\b|\b(?:projects?|month|module|year|day)\s*wise\b|\bmonthly\b|\byearly\b|\bwhich\s+(?:project|month|module|year|day)\b|\bmost\s+(?:hours|time|productive)\b|\bbusiest\b|\baverage\b|\bavg\b|\bcompare\b|\bversus\b|\bvs\b|\bthis year\b|\blast year\b|\b20[0-2]\d\b(?!-)|\bhar\s+(?:project|mahin[ae]|din|saal)\b|\bkis project\b|\bsabse\s+(?:zyada|kam)\b|\boverall\b|\ball[\s-]?time\b/i;
+        // comparisons over the user's OWN data. Fires on clear aggregate signals.
+        // Also runs as the EARLY short-circuit above (before the brain) so breakdown
+        // chips are token-free; this copy is the brain-disabled fallback. Code parses
+        // the dimension + range; the analyze tool does the SUM/GROUP BY.
         if (
             ANALYTICS_INTENT.test(cleanMessage) &&
             !DELETE_INTENT.test(cleanMessage) &&
@@ -778,7 +1073,11 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 // logging, so it routes ONLY with a read signal AND no time block — a
                 // time block means the user is LOGGING ("9-11 ai work", "9 to 11 last
                 // minute bug fixes"), not asking to filter.
-                if (strong || (READ_SIGNAL && !looksLikeTimeBlock(cleanMessage))) {
+                // Weak filter only counts as a SEARCH on a short query or one that
+                // starts with a read verb — a long day-narrative log is not a filter.
+                const startsReadVerb = /^\s*(show|list|view|display|find|filter|search|get|what|which|how\s+(many|much)|kitne|kitna|dikha\w*|batao|give|gimme)\b/i.test(cleanMessage);
+                const isShortQuery = cleanMessage.trim().split(/\s+/).length <= 8;
+                if (strong || (READ_SIGNAL && !looksLikeTimeBlock(cleanMessage) && (startsReadVerb || isShortQuery))) {
                     return { action: { name: 'query_timesheet', data: filters } };
                 }
             }
@@ -888,10 +1187,12 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             UPDATE_INTENT.test(cleanMessage) ||
             GET_INTENT.test(cleanMessage);
         if (!needsTools) {
+            traceRoute('conversational (no CRUD) → FAST model (chat.js, no tools)');
+            const chips = isGreeting(cleanMessage) ? quickActionChips() : {};
             try {
                 const casual = await askCloudflareAI(
                     getCasualPrompt(), cleanMessage, window, env, null,
-                    { model: CHAT_MODEL_FAST, timeoutMs: FAST_TIMEOUT_MS }
+                    { model: getFastModel(env), timeoutMs: FAST_TIMEOUT_MS }
                 );
                 // Even the casual model can leak a tool-call dump → salvage it into a
                 // real add instead of showing raw JSON.
@@ -900,10 +1201,10 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                     console.log('[salvaged text tool-call · casual path]', JSON.stringify(salvaged.data.entries));
                     return { action: salvaged };
                 }
-                return { reply: (typeof casual === 'string' && casual.trim()) ? casual.trim() : cannedSmallTalkReply(cleanMessage) };
+                return { reply: (typeof casual === 'string' && casual.trim()) ? casual.trim() : cannedSmallTalkReply(cleanMessage), ...chips };
             } catch (e) {
                 console.warn('[conversational fast-model failed → canned]', e?.message || e);
-                return { reply: cannedSmallTalkReply(cleanMessage) };
+                return { reply: cannedSmallTalkReply(cleanMessage), ...chips };
             }
         }
 

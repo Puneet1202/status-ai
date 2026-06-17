@@ -13,15 +13,23 @@ import { serve } from '@hono/node-server';
 import app from './index.js';
 import { makeSqliteD1 } from './db/sqliteAdapter.js';
 import { makeWorkersAI, makeStubAI } from './ai/providers/cloudflareRest.js';
+import { getChatModel, getFastModel } from './ai/ai-config.js';
 
 // --- chhota .env loader (koi extra package nahi chahiye) ---
+// Handles inline comments too:  KEY=value   # comment  → value (comment stripped).
 function loadEnvFile(path = '.env') {
   if (!existsSync(path)) return;
   for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
-    const m = /^\s*([\w.]+)\s*=\s*(.*)\s*$/.exec(line);
+    const m = /^\s*([\w.]+)\s*=\s*(.*?)\s*$/.exec(line);
     if (!m) continue;
     const key = m[1];
-    const val = m[2].trim().replace(/^['"]|['"]$/g, '');
+    let val = m[2];
+    const quoted = /^(['"])([\s\S]*)\1\s*(?:#.*)?$/.exec(val);
+    if (quoted) {
+      val = quoted[2];                  // quoted → keep inside verbatim
+    } else {
+      val = val.replace(/\s+#.*$/, '').trim(); // unquoted → drop " # inline comment"
+    }
     if (!(key in process.env)) process.env[key] = val;
   }
 }
@@ -46,7 +54,10 @@ const env = {
   GROQ_BASE_URL: process.env.GROQ_BASE_URL || '',
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
   OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL || '',   // local Ollama (default :11434/v1); set to a heavy-laptop/cloud IP to offload
-  AI_MODEL: process.env.AI_MODEL || '',                 // override model; else provider default
+  AI_MODEL: process.env.AI_MODEL || '',                 // override BRAIN model; else provider default
+  // Cloudflare Workers AI model overrides — change the model from .env, no code edit.
+  AI_CF_MODEL: process.env.AI_CF_MODEL || '',           // CF chat/extraction model (default @cf/meta/llama-3.3-70b-instruct-fp8-fast)
+  AI_FAST_MODEL: process.env.AI_FAST_MODEL || '',       // CF small-talk model (default @cf/meta/llama-3.2-3b-instruct)
   AI_BRAIN_TIMEOUT_MS: process.env.AI_BRAIN_TIMEOUT_MS || '', // brain timeout override; 0 = NO LIMIT (slow local Ollama debug)
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
@@ -86,5 +97,14 @@ serve({ fetch: (req) => app.fetch(req, env), port }, (info) => {
   console.log(`   DB: ${DB_FILE}  (single file — no copy)`);
   console.log(`   AI: ${AI_MODE}`);
   console.log(`   BRAIN: ${BRAIN_KEY ? `${BRAIN_PROVIDER} · ${BRAIN_MODEL}` : `OFF (no key for "${BRAIN_PROVIDER}") → deterministic engine`}`);
+  if (BRAIN_KEY && BRAIN_PROVIDER === 'cloudflare') {
+    const count = [1, 2, 3].includes(parseInt(env.AI_MODELS, 10)) ? parseInt(env.AI_MODELS, 10) : 3;
+    const chat = getChatModel(env);
+    const fast = getFastModel(env);
+    console.log(`   MODELS: ${count} running`);
+    // Only print a model line when it's actually a SEPARATE model (not the brain).
+    if (chat !== BRAIN_MODEL) console.log(`   CHAT:  ${chat}   — text replies + extraction`);
+    if (fast !== BRAIN_MODEL) console.log(`   FAST:  ${fast}   — greetings / small talk`);
+  }
   console.log(`   OTP email: ${(process.env.SENDGRID_API_KEY && process.env.SENDGRID_FROM_EMAIL) ? 'SendGrid' : 'DEV (printed to this terminal)'}`);
 });

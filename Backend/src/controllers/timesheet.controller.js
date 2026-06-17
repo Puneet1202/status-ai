@@ -2,9 +2,11 @@
 // V5.0 - REGISTRY DISPATCH | SHARED HELPERS | GLOBAL READY
 
 import { aiChat } from '../ai/chat.js';
+import { traceBegin, traceEnd } from '../ai/trace.js';
 import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
 import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
+import { executeOverwrite } from '../ai/tools/addTimesheet.tool.js';
 import { sendReportNotification } from '../services/reportNotifier.js';
 import {
     resolveProjectId,
@@ -272,9 +274,32 @@ export const aiChatHandler = async (c) => {
             const out = await executeUpdate(ctx, pendingAction);
             return c.json(out, 200);
         }
+        // Overlap → "Yes, update existing" / "No, keep existing" chips ka response.
+        if (pendingAction?.action === "OVERWRITE_TIMESHEET") {
+            const declining = /^(no|nahi|nahin|cancel|rehne|rakho|keep|nope)\b/i.test(message.trim());
+            if (declining) {
+                return c.json({
+                    reply: "Okay — the existing entry is unchanged. Send a different time if you want to log this separately, or tap below to review what's already logged.",
+                    options: [{ label: "📋 View today's entries", value: "show my entries for today" }],
+                    optionsTitle: "What next?",
+                }, 200);
+            }
+            if (isConfirming) {
+                const out = await executeOverwrite(ctx, pendingAction);
+                return c.json(out, 200);
+            }
+        }
 
         // ── Single AI round-trip → tool call or conversational reply ──
-        const result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs);
+        // traceBegin/End wrap the whole turn so the console prints one MESSAGE
+        // TRACE box (route + brain/tool call counts + tokens) per message.
+        traceBegin(message);
+        let result;
+        try {
+            result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs);
+        } finally {
+            traceEnd();
+        }
 
         // "Log MY hours" / self-intent in a LOGGING context → clear any "Viewing: X"
         // pill so a follow-up "9-11 ..." logs for SELF, not the viewed teammate.

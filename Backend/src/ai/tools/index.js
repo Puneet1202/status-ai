@@ -18,8 +18,12 @@ import listEmployees from "./listEmployees.tool.js";
 import getEmployeeInfo from "./getEmployeeInfo.tool.js";
 import getPendingStatus from "./getPendingStatus.tool.js";
 import getMyPermissions from "./getMyPermissions.tool.js";
+import getMyProjects from "./getMyProjects.tool.js";
+import getMyTasks from "./getMyTasks.tool.js";
+import getMyLeaves from "./getMyLeaves.tool.js";
+import { traceTool } from "../trace.js";
 
-const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile, analyzeTimesheet, queryTimesheet, listEmployees, getEmployeeInfo, getPendingStatus, getMyPermissions];
+const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile, analyzeTimesheet, queryTimesheet, listEmployees, getEmployeeInfo, getPendingStatus, getMyPermissions, getMyProjects, getMyTasks, getMyLeaves];
 
 // name -> module
 export const REGISTRY = Object.fromEntries(MODULES.map((m) => [m.name, m]));
@@ -68,6 +72,7 @@ async function findEmployeesByName(db, q) {
 
 // Single dispatch entry-point. ctx = { db, user, employeeId, env, selectedProject, today }.
 export async function dispatchTool(toolName, args, ctx) {
+  traceTool(toolName); // record the tool call in the per-message trace box
   const tool = REGISTRY[toolName];
   if (!tool) {
     return { reply: "I can't perform that action yet." };

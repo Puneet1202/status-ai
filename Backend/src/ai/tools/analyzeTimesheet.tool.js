@@ -32,6 +32,7 @@ const schema = {
       },
       project_name: { type: "string", description: "Optional: restrict to this project (partial match)." },
       module_name: { type: "string", description: "Optional: restrict to this module/category." },
+      offset: { type: "number", description: "Pagination: rows to skip in a grouped breakdown (e.g. 10 for the next page). Default 0." },
     },
   },
 };
@@ -49,6 +50,44 @@ function rangeLabel(from, to) {
   if (from) return `since ${from}`;
   if (to) return `up to ${to}`;
   return "all time";
+}
+
+// One-tap breakdown chips for a total. The value is a plain phrase the brain
+// routes back to analyze_timesheet (group_by) — and it carries the SAME date
+// window so tapping a chip keeps the period the user was looking at.
+function followUpChips(from, to, exclude) {
+  const range = from && to ? ` from ${from} to ${to}` : from ? ` since ${from}` : to ? ` up to ${to}` : "";
+  // NOTE: values START with "show" so the chatbot's client-side guard treats them
+  // as READ queries (not work-logs) — otherwise a value containing dates + "to"
+  // (e.g. "...from 2026-03-01 to 2026-03-31") trips the "select a project" toast.
+  // `exclude` drops the chip for the view you're already on (no redundant chip).
+  const all = [
+    { key: "project", label: "📊 By project", value: `show hours per project${range}` },
+    { key: "month", label: "🗓️ By month", value: `show hours by month${range}` },
+    { key: "day", label: "📅 By day", value: `show hours by day${range}` },
+  ];
+  return {
+    options: all.filter((c) => c.key !== exclude).map(({ label, value }) => ({ label, value })),
+    optionsTitle: "Break it down:",
+  };
+}
+
+// Drill-down chips for a "by month" breakdown: one chip per month that has data.
+// Tapping a month re-runs analyze for THAT month's days (from its 1st to last day).
+function monthDrillChips(rows) {
+  const opts = rows
+    .map((r) => String(r.grp))
+    .filter((g) => /^\d{4}-\d{2}$/.test(g))
+    .slice(0, 12)
+    .map((g) => {
+      const [y, m] = g.split("-").map(Number);
+      const last = new Date(y, m, 0).getDate(); // day 0 of next month = last day
+      const me = `${g}-${String(last).padStart(2, "0")}`;
+      const nm = new Date(y, m - 1, 1).toLocaleString("en-US", { month: "short" });
+      // "show" prefix → client guard treats it as a read query, not a work-log.
+      return { label: `${nm} ${y}`, value: `show hours by day from ${g}-01 to ${me}` };
+    });
+  return opts.length ? { options: opts, optionsTitle: "See a month's days:" } : {};
 }
 
 // ctx = { db, employeeId, isOrgViewer, ... }
@@ -130,10 +169,14 @@ async function handler(ctx, data) {
     if (!row || row.cnt === 0) {
       return { success: true, action: "ANALYZE_TIMESHEET", reply: `No logged hours found for ${label}.` };
     }
+    // FOLLOW-UP CHIPS: after an overall total, offer one-tap breakdowns so the user
+    // doesn't have to guess how to ask ("how long?"). Each chip RE-runs analyze with
+    // a group_by, keeping the SAME date range so context isn't lost.
     return {
       success: true,
       action: "ANALYZE_TIMESHEET",
       reply: `📊 Total: ${hrs(row.mins)} hrs across ${row.cnt} ${row.cnt === 1 ? "entry" : "entries"} (${label}).`,
+      ...followUpChips(fromDate, toDate),
     };
   }
 
@@ -160,22 +203,37 @@ async function handler(ctx, data) {
   const totalMins = results.reduce((s, r) => s + Number(r.mins || 0), 0);
   const heading = { day: "by day", month: "by month", year: "by year", project: "by project", module: "by module" }[group];
 
-  // Cap the printed list; summarise the rest so a 15-year monthly query stays readable.
-  const MAX = 15;
-  const shown = results.slice(0, MAX);
-  const hidden = results.length - shown.length;
+  // PAGINATION — show PAGE rows at a time; a "Show more" chip loads the next page.
+  // Listing is pure SQL and analyze chip-clicks route deterministically, so every
+  // page is free (no model / no tokens). The TOTAL line always reflects ALL rows.
+  const PAGE = 10;
+  const offset = Math.max(0, parseInt(data.offset, 10) || 0);
+  const shown = results.slice(offset, offset + PAGE);
+  const more = offset + PAGE < results.length;
   const lines = shown.map((r) => `• ${r.grp} — ${hrs(r.mins)} hrs (${r.cnt})`);
 
-  let reply = `📊 Hours ${heading} (${label}):\n${lines.join("\n")}`;
-  if (hidden > 0) reply += `\n…and ${hidden} more.`;
+  const span = results.length > PAGE ? ` — ${offset + 1}–${offset + shown.length} of ${results.length}` : "";
+  let reply = `📊 Hours ${heading} (${label})${span}:\n${lines.join("\n")}`;
   reply += `\n\nTotal: ${hrs(totalMins)} hrs across ${results.length} ${group}${results.length === 1 ? "" : "s"}.`;
 
-  // For project/module, the first row is the biggest → call it out ("which X most").
-  if ((group === "project" || group === "module") && results.length > 1) {
+  // For project/module, the first row is the biggest → call it out (only on page 1).
+  if ((group === "project" || group === "module") && results.length > 1 && offset === 0) {
     reply += `\nTop: ${shown[0].grp} (${hrs(shown[0].mins)} hrs).`;
   }
 
-  return { success: true, action: "ANALYZE_TIMESHEET", reply, data: results };
+  // Chips: a "Show more" page chip (if rows remain) PLUS pivot/drill chips so the
+  // user can page through OR switch view — all without scrolling back up.
+  const nav = group === "month" ? monthDrillChips(results) : followUpChips(fromDate, toDate, group);
+  const opts = [];
+  if (more) {
+    const next = offset + PAGE;
+    const phrase = { day: "by day", month: "by month", year: "by year", project: "per project", module: "by module" }[group];
+    const rangeStr = fromDate && toDate ? ` from ${fromDate} to ${toDate}` : fromDate ? ` since ${fromDate}` : toDate ? ` up to ${toDate}` : "";
+    opts.push({ label: `⤵️ Show next ${Math.min(PAGE, results.length - next)}`, value: `show hours ${phrase}${rangeStr} offset ${next}` });
+  }
+  if (nav.options) opts.push(...nav.options);
+  const extra = opts.length ? { options: opts, optionsTitle: more ? "More — or break it down:" : nav.optionsTitle } : {};
+  return { success: true, action: "ANALYZE_TIMESHEET", reply, data: results, ...extra };
 }
 
 export default { name, schema, handler };

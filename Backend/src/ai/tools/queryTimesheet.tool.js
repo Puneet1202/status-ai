@@ -56,13 +56,16 @@ async function handler(ctx, data) {
     return { reply: "Your account isn't linked to an employee record, so I can't pull your entries." };
   }
 
-  // Date window — default to today (most filter questions mean "today").
-  let fromDate = isValidEntryDate(data.from_date) ? data.from_date : today;
-  let toDate = isValidEntryDate(data.to_date) ? data.to_date : fromDate;
-  if (fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
+  // Date window — when the user NAMED a date/period, scope to it; when they did
+  // NOT (e.g. "AI tasks", "chatbot work"), search ALL-TIME so the filter actually
+  // finds their matching work instead of only today (today is often empty).
+  let fromDate = isValidEntryDate(data.from_date) ? data.from_date : null;
+  let toDate = isValidEntryDate(data.to_date) ? data.to_date : (fromDate || null);
+  if (fromDate && toDate && fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
 
-  const where = ["d.employee_id = ?", "d.entry_date BETWEEN ? AND ?"];
-  const binds = [employeeId, fromDate, toDate];
+  const where = ["d.employee_id = ?"];
+  const binds = [employeeId];
+  if (fromDate && toDate) { where.push("d.entry_date BETWEEN ? AND ?"); binds.push(fromDate, toDate); }
 
   if (data.keyword?.trim()) {
     where.push("(LOWER(d.task_description) LIKE ? OR LOWER(COALESCE(d.module_name,'')) LIKE ?)");
@@ -94,21 +97,62 @@ async function handler(ctx, data) {
 
   const { results } = await db.prepare(sql).bind(...binds).all();
 
-  const rangeLabel = fromDate === toDate ? fromDate : `${fromDate} → ${toDate}`;
+  const rangeLabel = !fromDate ? "all time" : (fromDate === toDate ? fromDate : `${fromDate} → ${toDate}`);
   if (!results || results.length === 0) {
-    return { success: true, action: "QUERY_TIMESHEET", reply: `No matching entries found for ${rangeLabel}.`, data: [] };
+    return {
+      success: true,
+      action: "QUERY_TIMESHEET",
+      reply: `No matching entries found${rangeLabel === "all time" ? "" : ` for ${rangeLabel}`}.\n\n💡 Try a wider date range — or to LOG work, just type the time + task, e.g. "9 to 11 testing".`,
+      options: [
+        { label: "📅 This month", value: "show this month entries" },
+        { label: "🗓️ Last month", value: "show last month entries" },
+        { label: "🕘 Recent entries", value: "show my last 5 entries" },
+      ],
+      optionsTitle: "Try one:",
+      data: [],
+    };
   }
 
   const totalMins = results.reduce((s, r) => s + durMins(r), 0);
-  const fmt = (r) =>
-    `• ${r.entry_date} ${HHMM(r.start_time)}–${HHMM(r.end_time)} (${fmtH(durMins(r))}h) · ${r.project_name} — ${r.task_description}`;
-  const MAX = 12;
-  const shown = results.slice(0, MAX);
-  let reply = `Found ${results.length} matching ${results.length === 1 ? "entry" : "entries"} (${rangeLabel}):\n${shown.map(fmt).join("\n")}`;
-  if (results.length > shown.length) reply += `\n…and ${results.length - shown.length} more.`;
-  reply += `\n\nTotal: ${fmtH(totalMins)} hrs across ${results.length} ${results.length === 1 ? "entry" : "entries"}.`;
+  const clip = (s) => { const x = String(s || "").replace(/\s+/g, " ").trim(); return x.length > 70 ? x.slice(0, 70).trimEnd() + "…" : x; };
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const niceDate = (iso) => { const [y, mo, d] = iso.split("-"); return `${parseInt(d, 10)} ${MONTHS[parseInt(mo, 10) - 1]} ${y}`; };
 
-  return { success: true, action: "QUERY_TIMESHEET", reply, data: results };
+  const MAX = 25;
+  const shown = results.slice(0, MAX);
+  // GROUP BY DAY — clean, scannable: one date heading, then that day's matches.
+  const days = [];
+  for (const r of shown) {
+    let g = days[days.length - 1];
+    if (!g || g.date !== r.entry_date) { g = { date: r.entry_date, rows: [] }; days.push(g); }
+    g.rows.push(r);
+  }
+  const block = days
+    .map((g) => {
+      const lines = g.rows
+        .map((r) => `   • ${HHMM(r.start_time)}–${HHMM(r.end_time)} · ${fmtH(durMins(r))}h · ${r.project_name} — ${clip(r.task_description)}`)
+        .join("\n");
+      return `📅 ${niceDate(g.date)}\n${lines}`;
+    })
+    .join("\n\n");
+
+  let reply = `🔎 ${results.length} matching ${results.length === 1 ? "entry" : "entries"} (${rangeLabel}):\n\n${block}`;
+  if (results.length > shown.length) reply += `\n\n…and ${results.length - shown.length} more — narrow the dates to see them.`;
+  reply += `\n\n— Total: ${fmtH(totalMins)} hrs across ${results.length} ${results.length === 1 ? "entry" : "entries"}.`;
+
+  // Follow-up suggestion chips — common next steps after a filtered view.
+  return {
+    success: true,
+    action: "QUERY_TIMESHEET",
+    reply,
+    data: results,
+    options: [
+      { label: "📊 Total hours", value: "show my total hours" },
+      { label: "📈 By project", value: "show hours per project" },
+      { label: "🕘 Recent entries", value: "show my last 5 entries" },
+    ],
+    optionsTitle: "Next:",
+  };
 }
 
 export default { name, schema, handler };

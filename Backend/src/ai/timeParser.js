@@ -270,14 +270,19 @@ export function parseWorkBlocks(message) {
     for (const r of ranges) if (r.end <= idx && r.end > e) e = r.end;
     return e;
   };
-  const SENT = /[.;\n]| then | followed by | shifted to | moved to | after that |\bthen\b/i;
+  // A block's description runs to the NEXT time range (already bounded by
+  // nextStart), so it may span several LINES and sentences — common when users put
+  // the time on one line and the description on the lines below it. We therefore
+  // join newlines into spaces and split ONLY at an explicit "new activity"
+  // connector (then / followed by / moved to), NOT at '.' or newline (which used
+  // to truncate multi-line descriptions to empty → wrong text from history).
+  const ACTIVITY_CONN = / then | followed by | shifted to | moved to | after that |\bthen\b/i;
   const MAX_DESC = 400;
+  const flat = (s) => String(s || "").replace(/\s*\n\s*/g, " ");
 
   function labelFor(piece) {
-    // AFTER: text until the next time range ("TIME description" format).
-    const after = text
-      .slice(piece.endIdx, Math.min(nextStart(piece.index), piece.endIdx + MAX_DESC))
-      .split(SENT)[0];
+    // AFTER: text until the next time range ("TIME\n description..." or "TIME desc").
+    const after = flat(text.slice(piece.endIdx, Math.min(nextStart(piece.index), piece.endIdx + MAX_DESC))).split(ACTIVITY_CONN)[0];
     const lblA = cleanLabel(after);
     // This block's OWN label is purely a break ("1 to 2 lunch") → drop it; do
     // NOT let the previous block's text rescue it as work.
@@ -285,7 +290,7 @@ export function parseWorkBlocks(message) {
     if (lblA && !BREAK_LABEL_RE.test(lblA)) return lblA;
 
     // BEFORE: prose "description from TIME" — text since the previous range.
-    const before = text.slice(prevEnd(piece.index), piece.index).split(SENT).pop();
+    const before = flat(text.slice(prevEnd(piece.index), piece.index)).split(ACTIVITY_CONN).pop();
     const lblB = cleanLabel(before);
     if (lblB && !BREAK_LABEL_RE.test(lblB)) return lblB;
 

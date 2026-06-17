@@ -1,7 +1,7 @@
 // FILE: backend/src/ai/providers/cloudflare.js
 // V2.5 - REFACTORED WORKERS AI INTEGRATION WITH POLYMORPHIC TOOL RUNNER
 
-import { CHAT_MODEL, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, AI_TIMEOUT_MS } from '../ai-config.js';
+import { getChatModel, MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, AI_TIMEOUT_MS } from '../ai-config.js';
 
 /**
  * Hard timeout guard around any promise. If the edge model stalls past `ms`,
@@ -83,7 +83,7 @@ export async function askCloudflareAI(systemPrompt, message, history = [], env, 
 
     // Allow the caller to pick a faster model / shorter timeout for casual chat.
     // Defaults preserve the original behaviour (70B model, full AI_TIMEOUT_MS).
-    const model = opts.model || CHAT_MODEL;
+    const model = opts.model || getChatModel(env);
     const timeoutMs = opts.timeoutMs || AI_TIMEOUT_MS;
 
     const messages = normalizeMessages([

@@ -46,6 +46,10 @@ const schema = {
         type: "string",
         description: "Optional. Filter by project name (partial match). Example: AI Project.",
       },
+      offset: {
+        type: "number",
+        description: "Pagination: entries to skip in a date-range list (e.g. 8 for the next page). Default 0.",
+      },
     },
   },
 };
@@ -104,24 +108,53 @@ async function handler(ctx, data) {
   }
 
   const totalMinutes = results.reduce((sum, r) => sum + durMins(r), 0);
-  const fmt = (r) =>
-    `• ${r.entry_date} ${r.start_time}–${r.end_time} (${(durMins(r) / 60).toFixed(1)}h) · ${r.project_name} — ${r.task_description}`;
+  const hhmm = (s) => String(s || "").slice(0, 5);              // "09:00:00" → "09:00"
+  const clip = (s) => { const x = String(s || "").replace(/\s+/g, " ").trim(); return x.length > 70 ? x.slice(0, 70).trimEnd() + "…" : x; };
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const niceDate = (iso) => { const [y, mo, d] = iso.split("-"); return `${parseInt(d, 10)} ${MONTHS[parseInt(mo, 10) - 1]} ${y}`; };
 
-  // List the actual entries (not just a total). Recent rows are already newest-
-  // first and capped; for a date range show up to 20 most recent + a count of the
-  // rest (so a month/date query shows a meaningful list, not just a handful).
-  const MAX_LIST = 20;
-  const shown = recent ? results : results.slice(-MAX_LIST);
-  const hidden = recent ? 0 : results.length - shown.length;
+  // PAGINATION — a page at a time; a "Show more" chip loads the next (routed
+  // deterministically → free). Date-range lists stay CHRONOLOGICAL (month start
+  // first, as the SQL returns); "recent" stays newest-first. No reversing.
+  const ordered = results;
+  const PAGE = 10;
+  const offset = recent ? 0 : Math.max(0, parseInt(data.offset, 10) || 0);
+  const shown = recent ? ordered : ordered.slice(offset, offset + PAGE);
+  const more = !recent && offset + PAGE < ordered.length;
+
+  // GROUP BY DAY — a date heading once, then that day's time-ranges under it.
+  const days = [];
+  for (const r of shown) {
+    let g = days[days.length - 1];
+    if (!g || g.date !== r.entry_date) { g = { date: r.entry_date, rows: [] }; days.push(g); }
+    g.rows.push(r);
+  }
+  const block = days
+    .map((g) => {
+      const lines = g.rows
+        .map((r) => `   • ${hhmm(r.start_time)}–${hhmm(r.end_time)} · ${(durMins(r) / 60).toFixed(1)}h · ${r.project_name} — ${clip(r.task_description)}`)
+        .join("\n");
+      return `📅 ${niceDate(g.date)}\n${lines}`;
+    })
+    .join("\n\n");
+
+  const span = !recent && ordered.length > PAGE ? ` · ${offset + 1}–${offset + shown.length} of ${ordered.length}` : "";
   const header = recent
     ? `Your last ${results.length} ${results.length === 1 ? "entry" : "entries"}:`
-    : `${rangeLabel}:`;
+    : `🗓️ ${rangeLabel}${span}`;
 
-  let reply = `${header}\n${shown.map(fmt).join("\n")}`;
-  if (hidden > 0) reply += `\n…and ${hidden} earlier ${hidden === 1 ? "entry" : "entries"}.`;
-  reply += `\n\nTotal: ${(totalMinutes / 60).toFixed(1)} hrs (${totalMinutes} mins) across ${results.length} ${results.length === 1 ? "entry" : "entries"}.`;
+  let reply = `${header}\n\n${block}\n\n— Total: ${(totalMinutes / 60).toFixed(1)} hrs across ${results.length} ${results.length === 1 ? "entry" : "entries"}.`;
 
-  return { success: true, action: "GET_TIMESHEET", reply, data: results };
+  let extra = {};
+  if (more) {
+    const next = offset + PAGE;
+    const [f, to] = rangeLabel.split(" to ");
+    extra = {
+      options: [{ label: `⤵️ Show next ${Math.min(PAGE, ordered.length - next)}`, value: `show entries from ${f} to ${to} offset ${next}` }],
+      optionsTitle: "More:",
+    };
+  }
+  return { success: true, action: "GET_TIMESHEET", reply, data: results, ...extra };
 }
 
 export default { name, schema, handler };

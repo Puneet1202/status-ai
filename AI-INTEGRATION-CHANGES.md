@@ -167,3 +167,53 @@ Sab **universal** hain (employee/HR/admin/superadmin sabke liye same); privilege
 > Rate-limit (info, koi change nahi): AI chat per-user **20/min** (env `AI_RATE_PER_MIN`, default 20) — `timesheet.controller.js` `aiRateLimitOk()`. In-memory 60s sliding window + optional Cloudflare limiter.
 
 _Note: `Backend/keyss-status.prod.db` (binary) commit me shaamil nahi — woh data hai, code nahi._
+
+---
+
+## 🆕 Session update — 2026-06-17 (Cloudflare AI, token-saving, personal-info tools, format)
+
+Saare changes `backend/src/ai/*`, `backend/src/controllers/timesheet.controller.js`, `backend/src/server.node.js`, `backend/.env` me. Frontend (company repo) ke 2 chhote fixes alag se neeche.
+
+### A. Models & config (sab env-driven)
+1. **Deprecated fast-model fix:** `@cf/meta/llama-3.1-8b-instruct` (CF ne 2026-05-30 ko deprecate kiya, "hey" pe REST 410) → **`@cf/meta/llama-3.2-3b-instruct`**.
+2. **Models env-driven (ek knob):** `AI_MODELS=1|2|3` se code khud adjust — `3`=BRAIN+CHAT+FAST alag, `2`=BRAIN(+CHAT)+FAST, `1`=ek model sab. Optional override: `AI_CF_MODEL`, `AI_FAST_MODEL`. `ai-config.js` me `getChatModel()/getFastModel()/modelCount()`. Current = **2 model** (heavy brain + chhota fast).
+3. **`.env` saaf + professional** (sections, short comments). **Loader fix** (`server.node.js`): ab inline `# comment` strip hota hai (pehle comment model-name me ghus ke "No such model" deta tha).
+4. **Boot banner:** BRAIN + CHAT + FAST + `MODELS: N` print (sirf utne model jitne chal rahe).
+5. **Dead code hata:** `features/embedding.js` (unused, supabase) + `EMBEDDING_MODEL`.
+
+### B. Token-saving + speed (deterministic-first, brain skip)
+6. **Tool-saver:** har message pe sirf **relevant tools** ki schema bheji jaati hai (clear single intent → narrow; ambiguous → full set). ~2800 input-token ka tool-JSON bachta hai. `brainRouter.js` `relevantToolNames()`. Accuracy safe (fallback = full).
+7. **Deterministic-first routing (0 token, instant, no 12s brain wait)** — clear queries brain se PEHLE settle: **analytics breakdowns**, **reads** (today/yesterday/last month/month-name/date-range), **filters** (keyword/time-of-day/duration), **my-projects/tasks/leaves**. Leaderboard/compare + ambiguous + logs/edits → brain (jaisa tha).
+8. **Per-message TRACE box** (`trace.js`): har message ke baad route + brain-call count + tool count + tokens print.
+
+### C. Date/period + filter (comprehensive)
+9. **Month NAME support:** `June`, `March 2026`, `feb ka data` → us mahine ki range. (`parseGetRange`)
+10. **`march 2026` fix:** pehle pura saal ka total deta tha (bare-year analytics) → ab MARCH read. Bare year ANALYTICS_INTENT se hata; `parseAnalyticsRange` month ko year se pehle.
+11. **ISO date-range bug fix** (`looksLikeTimeBlock`): `2026-05-01 to 2026-05-31` ko "01 to 2026" time-block samajhta tha → ISO dates strip. (date-range chips/queries ab deterministic + free).
+12. **Bina-date filter → ALL-TIME** (pehle sirf "today" → khaali). `query_timesheet`.
+13. **Weak-filter guard:** lambi day-narrative (jisme "chatbot/tasks" jaise shabd ho) ab **filter (search) nahi** banti — log path pe jaati hai. Sirf chhota (≤8 word) ya read-verb se shuru → filter.
+14. **Future guard:** `tomorrow`/`next week` → friendly "future ka nahi hai" (deterministic).
+
+### D. Chips / UX
+15. **Breakdown follow-up chips** (analyze total ke neeche `By project/month/day`), **month drill-down chips** (`By month` → har month tap → us month ke din), **pagination** (`⤵️ Show next N`) — sab deterministic (0 token).
+16. **Greeting quick-action chips** (`hey` → `Add entry / Find entry / Total hours / Last month`). **Add-help** (format + 2-hour rule) aur **Find-help** (filter examples) — deterministic.
+17. **Filter results** ke neeche suggestion chips; **empty filter** → "kaise add karein" guidance.
+
+### E. Professional format (entry lists + filters)
+18. **Grouped by day** (📅 date heading + us din ki time-ranges), **chronological** (mahine ki starting se, no reverse), HH:MM (no seconds), description clip, clean total. `getTimesheet.tool.js` + `queryTimesheet.tool.js`.
+
+### F. Naye PERSONAL-INFO tools (sab self-scoped / role-safe)
+> Sab `ctx.employeeId` (JWT) pe hard-scoped — koi `employee_name`/`employee_id` param kaam nahi karta (injection test pass). READ_SCOPED_TOOLS me NAHI → "doosre ko dekho" path inpe nahi lagta. Sirf apna data, kabhi kisi aur ka nahi.
+19. **`get_my_projects`** — assigned projects (count + list). "how many projects i assign", "my projects".
+20. **`get_my_tasks`** — assigned tasks (status-wise). **Multi-project picker:** multiple projects ho to per-project count + project chips → tap → us project ke tasks (exact match). Status filter (todo/in progress/done).
+21. **`get_my_leaves`** — balance (allotted/taken/remaining per category) + applications. Modes: **status** (pending/approved/rejected), **period** ("last month leave li thi", "on 2026-05-12" → leave ya present), **all-time** ("since joining / ab tak kitni leave li" → total approved). Clear empty-state message.
+> Attendance = `analyze_timesheet` (by day) se kaafi cover.
+
+### G. Parsing fix
+22. **Multi-line description** (`timeParser.js`): time ek line + description agli line(s) pe → ab poora block description capture hota hai (newline→space, next-time tak). Pehle khaali ho ke history se galat text ("How do i add an entry") bhar jata tha.
+
+### Frontend (company repo `react-keyss-status/src/components/AIChatbot.jsx`) — manually push
+- **ISO date strip** guard me: `entries from 2026-05-01 to 2026-05-31` pe "Select a project first" toast nahi aata.
+- **Log = time RANGE** (do time, `9-11`/`9 to 11`); single time (`before 10am`, `between 9am and 12pm`) = FILTER, project nahi maangta.
+
+> Rate-limit unchanged: per-user **20/min** (env `AI_RATE_PER_MIN`). Sab tools deterministic SQL → data hamesha DB ke barabar (no hallucination).

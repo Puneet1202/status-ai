@@ -228,14 +228,19 @@ async function handler(ctx, data) {
   // ── DB-OVERLAP: naye block DB me pehle se logged entries se clash to nahi? ────
   // Upar wala detectOverlap sirf ISI message ke blocks check karta hai. Ye check
   // EXISTING entries se bachata hai — jaise alag-alag message me pehle 9-9:30,
-  // phir 9-10 (jo overlap karta hai). Clash waale block flag hote hai, clean save.
+  // phir 9-10 (jo overlap karta hai). Clash waale block ab REJECT nahi hote —
+  // unhe "overwrite confirm" me bheja jaata hai (user Yes kare to purani entry
+  // replace ho jaati hai), clean blocks normal save ho jaate hai.
+  let clashingBlocks = []; // blocks jo existing entries se takra rahe hai
+  let overwriteIds = [];   // existing rows ke ids jinhe overwrite (delete) karna hoga
   try {
     const ex = await db
-      .prepare("SELECT start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
+      .prepare("SELECT id, start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
       .bind(employeeId, entryDate)
       .all();
     const existing = (ex.results || [])
       .map((r) => ({
+        id: r.id,
         start_time: String(r.start_time || "").slice(0, 5),
         end_time: String(r.end_time || "").slice(0, 5),
       }))
@@ -243,18 +248,24 @@ async function handler(ctx, data) {
 
     if (existing.length) {
       const clean = [];
+      const idSet = new Set();
       for (const v of valid) {
-        const clashes = existing.some((e) =>
+        const clashed = existing.filter((e) =>
           detectOverlap([e, { start_time: v.start_time, end_time: v.end_time }])
         );
-        if (clashes) {
-          problems.push(
-            `• ${v.start_time}–${v.end_time} ("${v.task_description || "work"}") — overlaps an entry already logged for this day; please adjust the time.`
-          );
+        if (clashed.length) {
+          clashingBlocks.push({
+            start_time: v.start_time,
+            end_time: v.end_time,
+            task_description: v.task_description,
+            module_name: v.module_name,
+          });
+          clashed.forEach((e) => idSet.add(e.id));
         } else {
           clean.push(v);
         }
       }
+      overwriteIds = [...idSet];
       valid.length = 0;
       valid.push(...clean);
     }
@@ -262,8 +273,39 @@ async function handler(ctx, data) {
     console.warn("[addTimesheet DB-overlap check failed]", e?.message || e);
   }
 
-  // Nothing valid to save → report only the problems.
+  // Clash hua to ek overwrite-confirm descriptor banao: Yes chip "yes" bhejega →
+  // controller executeOverwrite() call karega (purani rows delete + ye blocks save).
+  const overwriteAction =
+    clashingBlocks.length > 0
+      ? {
+          action: "OVERWRITE_TIMESHEET",
+          entry_date: entryDate,
+          project_name: targetProjectName,
+          selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [],
+          entries: clashingBlocks,
+          overwriteIds,
+        }
+      : null;
+  const overwriteChips = overwriteAction
+    ? {
+        options: [
+          { label: "✅ Yes, update existing", value: "yes" },
+          { label: "✖ No, keep existing", value: "no" },
+        ],
+        optionsTitle: "This time clashes with an entry already logged. Update it?",
+      }
+    : {};
+  const clashText = clashingBlocks
+    .map((b) => `• ${b.start_time}–${b.end_time} ("${b.task_description || "work"}")`)
+    .join("\n");
+
+  // Nothing clean to save → either ask to overwrite the clash, or just report problems.
   if (valid.length === 0) {
+    if (overwriteAction) {
+      let reply = `⚠️ This overlaps an entry already logged for this day:\n${clashText}\n\nTap "Yes, update existing" to overwrite it with the new time, or "No" to keep the existing one.`;
+      if (problems.length > 0) reply += `\n\nAlso couldn't save:\n${problems.join("\n")}`;
+      return { reply, pendingAction: overwriteAction, ...overwriteChips };
+    }
     return { reply: `I couldn't save those entries:\n${problems.join("\n")}` };
   }
 
@@ -363,10 +405,18 @@ async function handler(ctx, data) {
     reply += `\n\n⚠️ Not saved — please fix and resend just these:\n${problems.join("\n")}`;
   }
 
+  // Some blocks clashed with existing entries → offer to overwrite them.
+  if (overwriteAction) {
+    reply += `\n\n⚠️ These overlap an entry already logged:\n${clashText}\n\nTap "Yes, update existing" to overwrite, or "No" to keep the existing one.`;
+  }
+
   return {
     success: true,
     action: "ADD_MULTIPLE_TIMESHEETS",
     reply,
+    ...(overwriteAction
+      ? { pendingAction: overwriteAction, options: overwriteChips.options, optionsTitle: overwriteChips.optionsTitle }
+      : {}),
     // For the frontend's post-save EDIT window: the just-saved blocks (time + text)
     // so an "Edit" chip can pre-fill an update command. Only the cleanly-saved ones.
     savedEntries: valid.map((e) => ({
@@ -388,6 +438,39 @@ async function handler(ctx, data) {
         "I couldn't save those entries — one of the time blocks looked off. Please re-send with clear start and end times for each block.",
     };
   }
+}
+
+// Confirm-overwrite: user ne overlap pe "Yes" chuna. Purani clashing rows delete
+// karke wahi blocks dobara save karte hai (deletion ke baad overlap reh nahi jaata,
+// to normal handler clean save kar deta hai — saara project/task linking reuse).
+export async function executeOverwrite(ctx, pendingAction) {
+  const { db, employeeId } = ctx;
+  if (!employeeId) {
+    return { reply: "Your account isn't linked to an employee record, so I can't update entries." };
+  }
+  const ids = Array.isArray(pendingAction?.overwriteIds) ? pendingAction.overwriteIds : [];
+  try {
+    for (const rid of ids) {
+      await db
+        .prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?")
+        .bind(rid, employeeId)
+        .run();
+    }
+  } catch (e) {
+    console.warn("[overwrite delete failed]", e?.message || e);
+  }
+  const ctx2 = {
+    ...ctx,
+    selectedProject: pendingAction.project_name || ctx.selectedProject,
+    selectedTasks: Array.isArray(pendingAction.selectedTasks)
+      ? pendingAction.selectedTasks
+      : ctx.selectedTasks || [],
+  };
+  return handler(ctx2, {
+    entry_date: pendingAction.entry_date,
+    project_name: pendingAction.project_name,
+    entries: pendingAction.entries,
+  });
 }
 
 export default { name, schema, handler };

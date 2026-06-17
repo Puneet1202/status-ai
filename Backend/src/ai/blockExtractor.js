@@ -15,7 +15,7 @@
 //   { start_time, end_time, task_description, module_name, is_lunch }
 
 import { parseWorkBlocks, deriveModule, isBreakLabel } from "./timeParser.js";
-import { CHAT_MODEL, EXTRACTION_MODE, EXTRACT_TIMEOUT_MS } from "./ai-config.js";
+import { getChatModel, EXTRACTION_MODE, EXTRACT_TIMEOUT_MS } from "./ai-config.js";
 
 const EXTRACT_PROMPT = `You convert a worker's free-text status update into a STRICT JSON array of work blocks.
 
@@ -77,7 +77,7 @@ export async function llmExtractBlocks(message, env) {
   let response;
   try {
     response = await withTimeout(
-      env.AI.run(CHAT_MODEL, {
+      env.AI.run(getChatModel(env), {
         messages: [
           { role: "system", content: EXTRACT_PROMPT },
           { role: "user", content: message },
