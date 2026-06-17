@@ -93,7 +93,9 @@ function cleanLabel(raw) {
   // Strip leading separators first — the structured "TIME: description" format
   // leaves a leading ":" (e.g. ": Lunch Break") that would otherwise defeat the
   // ^-anchored break detector and let breaks slip through as work.
-  s = s.replace(/^[\s:;,.\-–—]+/, "");
+  // Brackets/parens too — "(9to11)\nReviewed…" leaves a leading ")" before the
+  // description; "[9 to 11] testing" leaves "]". Strip them so the saved text is clean.
+  s = s.replace(/^[\s:;,.()\[\]{}\-–—]+/, "");
   // Drop leading connectors/fillers (whole words only — never cut mid-word).
   // Includes Hinglish pronouns (maine/main/ne/humne/hum) so "maine interview liye"
   // → "interview liye" (then the trailing-filler pass below → "interview").
@@ -108,7 +110,7 @@ function cleanLabel(raw) {
   do {
     prev = s;
     s = s.replace(/\b(?:from|at|for|to|on|in|and|then|or|aur|fr|phir|tha|thi|the|kiya|kia|kiye|ki|kar|kara|karaa|raha|rahi|rahe|liya|lia|liye|le|leke)\s*$/i, "").trim();
-    s = s.replace(/[,;:.\-]+$/g, "").trim();
+    s = s.replace(/[,;:.()\[\]{}\-]+$/g, "").trim();
   } while (s !== prev);
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1);

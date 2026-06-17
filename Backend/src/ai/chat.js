@@ -70,7 +70,9 @@ const NUMERIC_DATE_RE = /\b\d{1,2}\s*[\/\-.]\s*\d{1,2}\s*[\/\-.]\s*(?:20\d{2}|\d
 const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/g;
 function looksLikeTimeBlock(text) {
     const t = String(text || '').replace(ISO_DATE_RE, ' ').replace(NUMERIC_DATE_RE, ' ');
-    return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|\bto\b|\bse\b|\btill\b)\s*\d/i.test(t)
+    // to/se/till are NOT \b-anchored: users glue them ("9to11", "9se11", "(9to11)").
+    // The required leading \d and trailing \d keep this from matching inside words.
+    return /\d{1,2}\s*(?::\d{2})?\s*(?:[-–—]|→|to|se|till)\s*\d/i.test(t)
         || /\b\d{1,2}(?::\d{2})?\s*(?:am|pm|baje)\b/i.test(t);
 }
 
@@ -86,7 +88,10 @@ function looksLikeTimeBlock(text) {
 //   • break-word messages (lunch/break follow-ups)        → not asked
 // Returns { hour, amValue, pmValue } or null.
 function ambiguousAmPm(message) {
-    const text = String(message || '');
+    // Numeric/ISO DATES pehle hata do — "3-06-2026" ek date hai, time-range nahi.
+    // Warna "3-06" ko "3 to 6" samajh kar AM/PM puchne lagta tha ("check status
+    // 3-06-2026" pe). Stripping = wahi guard jo looksLikeTimeBlock me hai.
+    const text = String(message || '').replace(ISO_DATE_RE, ' ').replace(NUMERIC_DATE_RE, ' ');
     if (/\b(lunch|break|rest|tea|khana|khaana|nashta|naashta)\b/i.test(text)) return null;
     if (/\d\s*(?:am|pm|a\.?m\.?|p\.?m\.?|baje|o.?clock|noon|midnight)\b/i.test(text)) return null;
     const RE = /(\d{1,2})(?::(\d{2}))?\s*(?:-|–|—|to|till|se)\s*(\d{1,2})(?::(\d{2}))?/gi;
@@ -206,13 +211,19 @@ function salvageTextToolCall(textOut) {
 // =========================================================================
 const WORK_SIGNAL = /(\d|log|hour|hrs|worked|work on|kaam|task|project|delete|remove|update|change|edit|show|list|report|status|entry|entries|timesheet|break|lunch|shift|am\b|pm\b)/i;
 
+// Typo-tolerant GREETING matcher. Real users mistype hi/hey/hello a LOT —
+// "hlo", "hlw", "hloooo", "hlww", "hyy", "helo". Without this they fell through to
+// the BRAIN (tokens + no quick-chips), so greetings behaved inconsistently. The
+// hl+[ow]+ branch covers the whole hello/hlo/hlw family; h[iy]+ covers hi/hii/hy/hyy.
+const GREETING_RE = /^(?:h+(?:i+|e+y+|ay+|ello+|elo+|lo+|lw+|llo+)|h[iy]+|hl+[ow]+|hey+|hii+|hello+|helo+|namaste|hola|yo+|hye|hy+|sup|wassup|whats? ?up)$/i;
+
 function isSmallTalk(message) {
     const m = message.toLowerCase().trim().replace(/[!.,?]+$/g, '').trim();
     if (!m || m.length > 40) return false;
     if (WORK_SIGNAL.test(m)) return false; // any work signal → let the AI handle it
 
     return (
-        /^(hi+|hey+|hello+|helo+|hii+|yo|hola|namaste|hye|sup|wassup|whats? ?up)$/.test(m) ||
+        GREETING_RE.test(m) ||
         /^good ?(morning|afternoon|evening|night|day)$/.test(m) ||
         /^(thanks|thank ?you|thank ?u|thx|tysm|ty|shukriya|dhanyavaad)$/.test(m) ||
         /^how ?(are|r) ?(you|u|ya|things)/.test(m) ||
@@ -227,7 +238,7 @@ function isSmallTalk(message) {
 function isGreeting(message) {
     const m = String(message || '').toLowerCase().trim().replace(/[!.,?]+$/g, '').trim();
     return (
-        /^(hi+|hey+|hello+|helo+|hii+|yo|hola|namaste|hye|sup|wassup|whats? ?up)$/.test(m) ||
+        GREETING_RE.test(m) ||
         /^good ?(morning|afternoon|evening|day)$/.test(m) ||
         /^(kaise|kese) ?ho/.test(m) ||
         /\b(help|what can (you|u) do|kya kar sakte|options|menu)\b/.test(m)
@@ -309,13 +320,24 @@ function cannedSmallTalkReply(message) {
 // 🧠 SHORT-TERM WORKING MEMORY — sliding window of the last N messages.
 // Keeps the model context-aware without blowing the token budget.
 // =========================================================================
+// Model ko badi entry-dumps yaad rakhne ki zaroorat nahi — usse sirf "kya karna
+// hai" decide karna hai, 20 entries ki full detail nahi chahiye. Large assistant
+// replies (> 400 chars) ko ek short summary se replace karo history mein taaki
+// input tokens kam ho. User UI pe full dekh sakta hai, model ko sirf context mile.
+const HISTORY_ASSISTANT_CAP = 400;
+function trimForHistory(content, role) {
+    if (role !== 'assistant') return content;
+    const c = String(content || '').trim();
+    if (c.length <= HISTORY_ASSISTANT_CAP) return c;
+    // Keep first 300 chars (the key reply/action info) + a note that it was trimmed.
+    return c.slice(0, 300).trimEnd() + ' … [response truncated for context]';
+}
+
 function buildSlidingWindow(history) {
     let safe = (Array.isArray(history) ? history : [])
-        // accept only well-formed {role, content} turns
         .filter(h => h && typeof h.content === 'string' && h.content.trim())
         .slice(-MAX_HISTORY_MESSAGES);
 
-    // FIX (was always 0): measure .content length, evict OLDEST until in budget.
     let total = safe.reduce((s, h) => s + h.content.length, 0);
     while (total > MAX_TOTAL_CHARS && safe.length > 1) {
         total -= safe[0].content.length;
@@ -323,7 +345,7 @@ function buildSlidingWindow(history) {
     }
     return safe.map(h => ({
         role: h.role === 'assistant' ? 'assistant' : 'user',
-        content: h.content,
+        content: trimForHistory(h.content, h.role === 'assistant' ? 'assistant' : 'user'),
     }));
 }
 
@@ -483,6 +505,34 @@ function parseFilters(message, base, monthFirst = false) {
         ['ai development', 'ai'], ['\\bai\\b', 'ai']];
     for (const [pat, kw] of KW) { if (new RegExp(pat).test(m)) { f.keyword = kw; break; } }
 
+    // ── DYNAMIC keyword (0 tokens) ────────────────────────────────────────────
+    // Descriptions are FREE-TEXT — any task/person/project name ("onboarding",
+    // "priyanka", "telephonic interview"). A hardcoded KW list can't cover them, so
+    // when nothing canned matched, pull the search term from an EXPLICIT search
+    // structure. query_timesheet does LIKE %keyword% (substring), so we return the
+    // single MOST DISTINCTIVE word — one salient word beats a brittle multi-word
+    // phrase (word order in the DB may differ). Conservative patterns only → a plain
+    // date read ("last month") yields NOTHING, so existing routing stays intact.
+    if (!f.keyword) {
+        const STOP = /^(show|list|view|display|fetch|give|get|find|search|filter|all|my|me|the|entries|entry|task|tasks|work|kaam|logs?|log|hours?|total|today|yesterday|tomorrow|aaj|kal|this|last|next|week|month|year|recent|latest|morning|afternoon|evening|night|before|after|between|status|timesheet|data|please|about|regarding|related|with|for|on|of|and|wala|wale|wali)$/i;
+        const pick = (phrase) => {
+            const words = String(phrase || '')
+                .toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/)
+                .filter((w) => w.length >= 3 && !STOP.test(w));
+            return words.length ? words.sort((a, b) => b.length - a.length)[0] : null; // longest = most distinctive
+        };
+        let km;
+        if ((km = m.match(/\b(?:about|regarding|related to|related|containing|contains|mentioning|matching|having|on the topic of)\s+([a-z0-9][a-z0-9\s-]{2,40})/i))) {
+            const kw = pick(km[1]); if (kw) f.keyword = kw;
+        } else if ((km = m.match(/\b([a-z0-9][a-z0-9\s-]{2,40}?)\s+(?:related|wala|wale|wali)\b/i))) {
+            const kw = pick(km[1]); if (kw) f.keyword = kw;
+        } else if ((km = m.match(/\b(?:search|find|filter|look ?up|dhund\w*|khoj\w*)\s+(?:for\s+|me\s+|the\s+)?([a-z0-9][a-z0-9\s-]{2,40})/i))) {
+            const kw = pick(km[1]); if (kw) f.keyword = kw;
+        } else if ((km = m.match(/\b([a-z][a-z0-9-]{2,}(?:\s+[a-z][a-z0-9-]{2,})?)\s+(?:tasks?|entr\w*|logs?|work|kaam)\b/i))) {
+            const kw = pick(km[1]); if (kw) f.keyword = kw; // "<X> tasks/entries" (X = content word)
+        }
+    }
+
     // duration: more/less/exactly N hour|min
     const dur = m.match(/(more than|over|longer than|greater than|at least|less than|under|shorter than|at most|exactly|exact)\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m)\b/);
     if (dur) {
@@ -505,6 +555,16 @@ function parseFilters(message, base, monthFirst = false) {
     if ((mm = m.match(/end(?:ed|ing)?\s+before\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.end_before = t; explicitTOD = true; } }
     if ((mm = m.match(/between\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+and\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) {
         const a = to24h(mm[1]); const b = to24h(mm[2]); if (a) { f.start_after = a; explicitTOD = true; } if (b) { f.start_before = b; explicitTOD = true; }
+    }
+    // "at/from/during/in 9 to 11" → entries INSIDE that clock window (start ≥ a,
+    // end ≤ b). This is a READ filter ("show ... at 9 to 11"), distinct from a LOG
+    // ("9 to 11 bug fix") by the leading at/from/during/in word. Only when no other
+    // window already set.
+    if (f.start_after === undefined && f.start_before === undefined && f.end_before === undefined) {
+        if ((mm = m.match(/\b(?:at|from|during|in)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:to|till|until|and|-|–|—)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) {
+            const a = to24h(mm[1]); const b = to24h(mm[2]);
+            if (a && b) { f.start_after = a; f.end_before = b; explicitTOD = true; }
+        }
     }
     if (f.start_before === undefined && f.start_after === undefined && !/lunch|morning|afternoon/.test(m)) {
         if ((mm = m.match(/\bbefore\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/))) { const t = to24h(mm[1]); if (t) { f.start_before = t; explicitTOD = true; } }
@@ -549,6 +609,45 @@ function recentLimit(message) {
     return null;
 }
 
+// ── FUZZY TYPO-CORRECTION for command words (0 tokens) ──────────────────────
+// Users mistype a LOT ("staatus", "shwo", "yeaterday", "attendence", "entres").
+// Instead of hand-patching every regex word-by-word, we typo-correct the handful of
+// CORE command words up-front (edit-distance 1) so EVERY downstream router sees the
+// right word. Applied ONLY to non-log messages (a time block = a real log → never
+// touch its description). Conservative: only words ≥4 chars, exactly 1 edit away from
+// a known command word, and not already a valid command word.
+const CMD_VOCAB = ['status','show','list','view','display','fetch','entries','entry','timesheet','attendance','total','hours','today','yesterday','tomorrow','week','month','year','recent','latest','leave','leaves','project','projects','task','tasks','profile','current','employee','employees','delete','remove','update','edit','morning','afternoon','evening','before','after','between','analyze','breakdown','connect','filter','search','permission','permissions'];
+const CMD_SET = new Set(CMD_VOCAB);
+function lev1(a, b) {
+    // returns true if edit distance between a,b is exactly 1 (else false). Cheap:
+    // lengths must differ by ≤1; bail as soon as a 2nd difference appears.
+    const m = a.length, n = b.length;
+    if (Math.abs(m - n) > 1) return false;
+    if (a === b) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < m && j < n) {
+        if (a[i] === b[j]) { i++; j++; continue; }
+        if (++edits > 1) return false;
+        if (m > n) i++;          // deletion from a
+        else if (m < n) j++;     // insertion into a
+        else { i++; j++; }       // substitution
+    }
+    if (i < m || j < n) edits++; // trailing extra char
+    return edits === 1;
+}
+function fuzzyFixCommandWords(text) {
+    return String(text || '').replace(/[A-Za-z]{4,}/g, (w) => {
+        const lw = w.toLowerCase();
+        if (CMD_SET.has(lw)) return w; // already a valid command word
+        for (const v of CMD_VOCAB) {
+            if (lev1(lw, v)) {
+                return w[0] === w[0].toUpperCase() ? v.charAt(0).toUpperCase() + v.slice(1) : v;
+            }
+        }
+        return w;
+    });
+}
+
 // "what is my name", "who am I", "mera naam", "my email/role" → answer from the
 // logged-in token (get_my_profile), NOT the flaky model which guesses a "name"
 // out of the words ("ky hai" → "Kyhai"). Deterministic + exact + safe.
@@ -586,9 +685,9 @@ const DIRECTORY_INTENT = /\b(how many|number of|count of|total(?: number)? of)\s
 // work-log like "fixed the leave module" won't trigger). Time-block also skips it.
 const OUT_OF_SCOPE_INTENT = /\b(apply|applied|applying|book|request|take|cancel|approve|lagao|laga do|chahiye)\b[\s\w]*\b(leave|leaves|holiday|vacation|time ?off|chutti|chhutti)\b|\b(leave|chutti|chhutti|holiday)\b[\s\w]*\b(apply|lagao|laga do|book|chahiye|approve)\b|\b(payroll|payslip|salary slip)\b/i;
 
-export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false, viewAs = null) {
+export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false, viewAs = null, selectedTasks = []) {
     try {
-        const cleanMessage = (message || '').trim();
+        let cleanMessage = (message || '').trim();
         // Numeric-date format user ke timezone se: US → month-first (05-20-2026),
         // India/baaki → day-first (20-05-2026). Global company, per-user sahi.
         const monthFirst = isMonthFirstTz(timeZone);
@@ -596,6 +695,14 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // Guardrail: single-message length.
         if (cleanMessage.length > MAX_MESSAGE_CHARS) {
             return { reply: "Message too long. Please keep your request under 4000 characters." };
+        }
+
+        // Typo-correct CORE command words on NON-LOG messages so misspellings route
+        // correctly ("staatus"→"status", "yeaterday"→"yesterday", "attendence"→
+        // "attendance"). Logs (a time block) are LEFT UNTOUCHED — never corrupt a work
+        // description. 0 tokens, runs before every deterministic router below.
+        if (!looksLikeTimeBlock(cleanMessage)) {
+            cleanMessage = fuzzyFixCommandWords(cleanMessage);
         }
 
         // Profile question → reply from the verified login. Skip if there's a time
@@ -676,7 +783,9 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             // (attendance/attendence/sttendance) + Hindi (haziri). Period diya ho
             // to wahi, warna THIS MONTH (website ke calendar jaisa mental model).
             // Sticky viewer controller me lagta hai → selected employee ka hi aayega.
-            const ATTENDANCE_INTENT = /\b\w{0,2}t+end[ae]n[cs]e\w*\b|\bhaziri\b|\bhajiri\b|\bupasthiti\b/i;
+            // [ae]nd tolerates the common "attAndance" misspelling (a instead of e),
+            // plus attendence/atendance — so a typo never falls through to the brain.
+            const ATTENDANCE_INTENT = /\b\w{0,2}t+[ae]nd[ae]n[cs]e\w*\b|\bhaziri\b|\bhajiri\b|\bupasthiti\b/i;
             if (ATTENDANCE_INTENT.test(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
                 const base = nowInTz(timeZone);
                 const r = parseAnalyticsRange(cleanMessage, base, monthFirst);
@@ -693,6 +802,37 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             }
             if (/^\s*hours by project(?:\s*\(?\s*all[\s-]?time\s*\)?)?\s*$/i.test(cleanMessage)) {
                 return { action: { name: 'analyze_timesheet', data: { group_by: 'project' } } };
+            }
+            // "total hours" / "how much/many hours" / "kitne ghante" anywhere in the
+            // message → analyze TOTAL (not a recent-entries dump). Broad on purpose so
+            // "how much total hours", "total hours this month" all work — not just the
+            // exact chip text. Period named → that range, else all-time. group_by picks
+            // up "per project/month" if present. (Inside !looksLikeTimeBlock → a log is
+            // never hijacked.)
+            if (/\b(hours?|hrs|ghant[ae])\b/i.test(cleanMessage) &&
+                /\b(total|kitne|kitna|how many|how much|sum|overall)\b/i.test(cleanMessage) &&
+                !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+                traceRoute('total-hours → DETERMINISTIC (no brain, 0 tokens)');
+                const r = parseAnalyticsRange(cleanMessage, nowInTz(timeZone), monthFirst);
+                return { action: { name: 'analyze_timesheet', data: { ...(r.from_date ? { from_date: r.from_date, to_date: r.to_date } : {}), group_by: parseGroupBy(cleanMessage) } } };
+            }
+            // "(my/current/today's) STATUS" → is app me ek "status" = ek timesheet
+            // entry (status_app / daily_status_entries), to "current/today's status" ka
+            // matlab AAJ kya logged hai. AI ko khud samajhna chahiye — ab deterministic
+            // (0 tokens). Period diya ho (yesterday/last week) to wahi, warna TODAY.
+            // Org-viewer ke liye controller sticky viewAs scope laga deta hai.
+            if (
+                !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) &&
+                // st+a+tus tolerates typos: status / staatus / sttatus / staaatus.
+                (/\b(?:current|today'?s?|aaj\s*k[ae]?|abhi\s*k[ae]?|mera|meri|my)\s+st+a+tus\b/i.test(cleanMessage) ||
+                 /\bst+a+tus\s+(?:today|abhi|now|aaj)\b/i.test(cleanMessage) ||
+                 /^\s*(?:current\s+|my\s+)?st+a+tus\s*\??\s*$/i.test(cleanMessage))
+            ) {
+                traceRoute('status → DETERMINISTIC today entries (no brain, 0 tokens)');
+                const r = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+                const today = isoDate(nowInTz(timeZone));
+                const range = r.from_date ? { from_date: r.from_date, to_date: r.to_date } : { from_date: today, to_date: today };
+                return { action: { name: 'get_timesheet_logs', data: range } };
             }
         }
 
@@ -712,6 +852,31 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 // role kya hai) — entries DUMP mat karo (user feedback: entries tabhi
                 // jab khud maange). Sticky viewer pill isi se set hota hai.
                 return { action: { name: 'get_employee_info', data: { employee_name: em[1] } } };
+            }
+            // ── CONNECT WITH <name> (org-viewer) ──────────────────────────────
+            // "connect with Puneet" / "connect to Vijay Kumar" / "switch to Riya" /
+            // "select employee Anil" → us employee se connect (profile + sticky
+            // "Viewing:" pill). dispatchTool naam resolve karta hai: na mile to
+            // professional "no such employee" reply, ek se zyada mile to pick-list.
+            const connectM = cleanMessage.match(/^\s*(?:connect|switch|change|view|select|open|show)\s+(?:to|with|me)?\s*(?:the\s+)?(?:employee|emp|user|profile)?\s*[:\-]?\s*([A-Za-z][A-Za-z.\s]{1,40})\s*$/i);
+            if (connectM && connectM[1].trim().length >= 2) {
+                const nm = connectM[1].trim().replace(/\s+(profile|info|details|data)\s*$/i, '').trim();
+                if (nm.length >= 2) {
+                    traceRoute('connect-with-employee → DETERMINISTIC (no brain, 0 tokens)');
+                    return { action: { name: 'get_employee_info', data: { employee_name: nm } } };
+                }
+            }
+            // ── BARE NAME (org-viewer) ────────────────────────────────────────
+            // Sirf ek-do shabd ka pure-alpha message ("Puneet Kumar") → use bhi
+            // employee-connect samjho. Na mile to dispatchTool professional "no such
+            // employee" reply de deta hai. Guards: koi command/time/email/profile
+            // keyword na ho (warna "show entries" jaisa read hijack ho jaye).
+            const bareName = /^[A-Za-z][A-Za-z.\s]{1,40}$/.test(cleanMessage)
+                && cleanMessage.trim().split(/\s+/).length <= 3
+                && !/\b(show|list|view|get|hours?|total|entries|entry|timesheet|attendance|leave|leaves|project|projects|task|tasks|profile|help|hi|hello|hey|thanks|yes|no|ok|okay|connect|switch|today|yesterday|week|month|recent|last|delete|update|edit)\b/i.test(cleanMessage);
+            if (bareName) {
+                traceRoute('bare-name → employee-connect DETERMINISTIC (no brain, 0 tokens)');
+                return { action: { name: 'get_employee_info', data: { employee_name: cleanMessage.trim() } } };
             }
         }
 
@@ -733,6 +898,32 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                     optionsTitle: "Select AM or PM:",
                 };
             }
+        }
+
+        // ── ⚡ DETERMINISTIC ADD FAST-PATH (0 tokens) ────────────────────────
+        // Project + task + time SAB set hain → ye PAKKA ADD hai. Description me kuch
+        // bhi likha ho (chahe "leave", "filter", "show", "delete" jaise words ho —
+        // wo kaam ka description hai, command nahi) → wo kabhi hijack na kare, isliye
+        // ye check leave/filter/read/analytics detectors se PEHLE chalta hai. Sirf
+        // asli edit/delete INTENT ("9-11 ko 10-12 kar do", "hata do") brain pe jaata
+        // hai. timeParser battle-tested hai → LLM call hoti hi nahi (0 tokens).
+        // Runs AFTER AM/PM disambiguation so a genuinely-ambiguous bare hour still asks.
+        if (
+            selectedProject &&
+            Array.isArray(selectedTasks) && selectedTasks.length > 0 &&
+            looksLikeTimeBlock(cleanMessage) &&
+            !DELETE_INTENT.test(cleanMessage) &&
+            !UPDATE_INTENT.test(cleanMessage) &&
+            !HARD_GET.test(cleanMessage) // "show ... 9 to 11" is a READ, not a log
+        ) {
+            const { entries } = await extractWorkBlocks(cleanMessage, env);
+            if (entries.length > 0) {
+                traceRoute('add (project+task+time) → DETERMINISTIC fast-path (0 tokens)');
+                enrichThinDescriptions(entries, history);
+                const entry_date = parseEntryDate(cleanMessage, nowInTz(timeZone), monthFirst);
+                return { action: { name: 'add_timesheet_entries', data: { entries, ...(entry_date ? { entry_date } : {}) } } };
+            }
+            // timeParser ne kuch nahi nikala (exotic format) → neeche brain handle karega
         }
 
         const window = buildSlidingWindow(history);
@@ -814,7 +1005,10 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         }
 
         // ── MY LEAVES — deterministic. Leave balance + applications (self-only).
+        // Time block ke saath "leave" word = work description (e.g. "leave module
+        // implement kiya") — ye query nahi hai. Guard: time block ho to skip karo.
         if (
+            !looksLikeTimeBlock(cleanMessage) &&
             !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) &&
             !/\b(apply|application form|request leave|take leave)\b/i.test(cleanMessage) && // applying is a UI action
             (/\b(?:my )?leaves?\b/i.test(cleanMessage) ||

@@ -293,6 +293,11 @@ async function handler(ctx, data) {
           selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [],
           entries: clashingBlocks,
           overwriteIds,
+          // Target employee — ADD-FOR-OTHERS: dispatchTool ne employee_name ko is
+          // employeeId me resolve kiya (HR "Viewing: Puneet" → Puneet ki id). Overwrite
+          // confirm pe ye id wapas chahiye, warna overwrite HR ke apne account pe chala
+          // jaata. Controller permission re-check karke hi ise honor karta hai.
+          employee_id: employeeId,
         }
       : null;
   const overwriteChips = overwriteAction
@@ -454,7 +459,11 @@ async function handler(ctx, data) {
 // karke wahi blocks dobara save karte hai (deletion ke baad overlap reh nahi jaata,
 // to normal handler clean save kar deta hai — saara project/task linking reuse).
 export async function executeOverwrite(ctx, pendingAction) {
-  const { db, employeeId } = ctx;
+  const { db } = ctx;
+  // ADD-FOR-OTHERS: target employee pendingAction se aata hai (Puneet ki id), na ki
+  // ctx.employeeId (jo HR ka apna hai). Controller pehle permission verify karta hai;
+  // bina permission ke wo employee_id strip kar deta hai → self-only (security).
+  const employeeId = pendingAction?.employee_id || ctx.employeeId;
   if (!employeeId) {
     return { reply: "Your account isn't linked to an employee record, so I can't update entries." };
   }
@@ -471,6 +480,7 @@ export async function executeOverwrite(ctx, pendingAction) {
   }
   const ctx2 = {
     ...ctx,
+    employeeId, // resolved target — re-add bhi isi employee ke liye
     selectedProject: pendingAction.project_name || ctx.selectedProject,
     selectedTasks: Array.isArray(pendingAction.selectedTasks)
       ? pendingAction.selectedTasks

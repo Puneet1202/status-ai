@@ -109,7 +109,9 @@ async function handler(ctx, data) {
 
   const totalMinutes = results.reduce((sum, r) => sum + durMins(r), 0);
   const hhmm = (s) => String(s || "").slice(0, 5);              // "09:00:00" → "09:00"
-  const clip = (s) => { const x = String(s || "").replace(/\s+/g, " ").trim(); return x.length > 70 ? x.slice(0, 70).trimEnd() + "…" : x; };
+  // FULL description — user wants the complete task text (jaisa DB me hai), not a
+  // 70-char "…" cut. Only collapse stray whitespace/newlines for clean one-line render.
+  const clip = (s) => String(s || "").replace(/\s+/g, " ").trim();
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const niceDate = (iso) => { const [y, mo, d] = iso.split("-"); return `${parseInt(d, 10)} ${MONTHS[parseInt(mo, 10) - 1]} ${y}`; };
 

@@ -100,7 +100,7 @@ export async function dispatchTool(toolName, args, ctx) {
     if (q && allowed) {
       const matches = await findEmployeesByName(ctx.db, q);
       if (matches.length === 0) {
-        return { reply: `I couldn't find an active employee matching "${q}". Please give a valid name or email.` };
+        return { reply: `There's no active employee named "${q}" in the system. Please double-check the spelling, or share their registered email instead.` };
       }
       if (matches.length > 1) {
         // Same-name → list NAME + EMAIL so the user can pick. Chips are DB-built
