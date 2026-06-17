@@ -128,17 +128,29 @@ function cleanPrevDesc(text) {
     return s.split(/\s+/).filter(Boolean).length >= 2 ? s.charAt(0).toUpperCase() + s.slice(1) : null;
 }
 
+// A prior message we must NEVER borrow a work-description from: read/query/command/
+// meta turns ("show my entries for today", "delete that", "what can you do"). These
+// are not descriptions of work — borrowing from them saved garbage like
+// "Show my entries for" as the task. Only real prose descriptions are eligible.
+const NON_DESC_PREV = /\b(show|list|view|fetch|display|history|delete|remove|erase|update|edit|correct|modify|how many|how much|kitne|kitna|total|report|summary|dikhao|dikhana|batao|entries|entry|logs?|timesheet|help|what can|recent|latest|aakhri|last\s+\d|my (?:hours|entries|logs|tasks|projects))\b/i;
+
 function enrichThinDescriptions(entries, history) {
     if (!entries.length || !entries.every((e) => isThinDesc(e.task_description))) return;
-    // most recent prior USER message that's a description (no leading time, ≥3 words, not a question)
-    const prev = [...history].reverse().find(
-        (h) => h && h.role === 'user' && typeof h.content === 'string'
-            && !/^\s*\d/.test(h.content.trim())
-            && h.content.trim().split(/\s+/).length >= 3
-            && !/\?\s*$/.test(h.content.trim())
+    // Boss rule: jo user ne likha WAHI save ho (meaning ho ya na ho). So when the
+    // time-only turn ("9 to 11") has no description, borrow the user's IMMEDIATELY
+    // previous message verbatim — even 1 word / gibberish ("awedrfghjk" → that text).
+    // Only skip it when that prior message is itself a time-log (starts with a digit),
+    // a question, or a read/command/meta query — those aren't work descriptions.
+    const prevUser = [...history].reverse().find(
+        (h) => h && h.role === 'user' && typeof h.content === 'string' && h.content.trim()
     );
-    if (!prev) return;
-    const desc = cleanPrevDesc(prev.content);
+    if (!prevUser) return;
+    const raw = prevUser.content.trim();
+    if (/^\s*\d/.test(raw) || /\?\s*$/.test(raw) || NON_DESC_PREV.test(raw)) return;
+    // Prefer the cleaned prose (strips stray time/date words); if cleaning leaves
+    // nothing (e.g. a single gibberish token), keep the raw text as-is so the user's
+    // literal input is what gets saved.
+    const desc = cleanPrevDesc(raw) || (raw.length <= 80 ? raw.charAt(0).toUpperCase() + raw.slice(1) : null);
     if (desc) entries.forEach((e) => { if (isThinDesc(e.task_description)) e.task_description = desc; });
 }
 

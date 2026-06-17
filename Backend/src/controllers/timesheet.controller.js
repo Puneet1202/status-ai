@@ -13,7 +13,10 @@ import {
     calcEndTime,
     calcMinutesFromTimes,
     todayISO,
+    detectOverlap,
+    isValidTime,
 } from '../ai/tools/_helpers.js';
+import { hasWorkTime } from '../ai/timeParser.js';
 
 // =========================================================================
 // 1. ADD STATUS ENTRY (Direct REST endpoint)
@@ -183,6 +186,36 @@ async function aiRateLimitOk(c, user) {
     }
 }
 
+// Standard 2-hour work slots (lunch gap 13:00–14:00) used to nudge a user who
+// picked project + task but forgot the time. Slots already logged today are
+// dropped so a suggested chip never lands in an overlap error (reply ↔ action stay
+// consistent). Clicking a chip sends "HH:MM to HH:MM" with the project pill + ticked
+// task still active → normal add flow saves it.
+const STD_SLOTS = [["09:00", "11:00"], ["11:00", "13:00"], ["14:00", "16:00"], ["16:00", "18:00"]];
+async function buildTimeSlotChips(db, employeeId, entryDate) {
+    let existing = [];
+    try {
+        const ex = await db
+            .prepare("SELECT start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
+            .bind(employeeId, entryDate)
+            .all();
+        existing = (ex.results || [])
+            .map((r) => ({ start_time: String(r.start_time || "").slice(0, 5), end_time: String(r.end_time || "").slice(0, 5) }))
+            .filter((r) => isValidTime(r.start_time) && isValidTime(r.end_time));
+    } catch (e) {
+        console.warn("[time-slot chips: existing fetch failed]", e?.message || e);
+    }
+    const fmt = (t) => {
+        const [h, m] = t.split(":").map(Number);
+        const ap = h < 12 ? "AM" : "PM";
+        const hh = ((h + 11) % 12) + 1;
+        return m ? `${hh}:${String(m).padStart(2, "0")} ${ap}` : `${hh} ${ap}`;
+    };
+    return STD_SLOTS
+        .filter(([s, e]) => !existing.some((x) => detectOverlap([x, { start_time: s, end_time: e }])))
+        .map(([s, e]) => ({ label: `${fmt(s)} – ${fmt(e)}`, value: `${s} to ${e}` }));
+}
+
 // =========================================================================
 // 4. AI CHAT HANDLER — thin orchestrator over the tool registry
 // =========================================================================
@@ -288,6 +321,23 @@ export const aiChatHandler = async (c) => {
                 const out = await executeOverwrite(ctx, pendingAction);
                 return c.json(out, 200);
             }
+        }
+
+        // ── NO-TIME NUDGE ──────────────────────────────────────────────────
+        // User ne project AUR task chun liya (clearly logging mode) par message me
+        // koi time nahi diya aur ye read/command bhi nahi → LLM ko mat bhejo (wo
+        // "I don't understand" bol deta hai). Deterministically batao ki sirf time
+        // reh gaya hai, aur ready time-slot chips do. Chip tap = "HH:MM to HH:MM"
+        // (project pill + ticked task abhi bhi active) → seedha save, project/task
+        // dobara nahi maangega. Read/delete/update jaise commands skip kar dete hai.
+        const inLoggingMode = !!selectedProject && Array.isArray(selectedTasks) && selectedTasks.length > 0;
+        const looksReadOrCmd = /\b(show|list|view|search|filter|find|display|get|entr|logs?|dikha|batao|kitn|how many|how much|analy|delete|remove|hata|update|edit|total|report|leave|help)\b/i.test(message);
+        if (inLoggingMode && !pendingAction && !isConfirming && !hasWorkTime(message) && !looksReadOrCmd) {
+            const slotChips = await buildTimeSlotChips(db, user.employee_id, todayISO(timezone));
+            return c.json({
+                reply: "Project and task are set — I just need the time. Tell me the hours you worked (e.g. \"9 to 11\"), or tap a slot below:",
+                ...(slotChips.length ? { options: slotChips, optionsTitle: "Pick a time slot:" } : {}),
+            }, 200);
         }
 
         // ── Single AI round-trip → tool call or conversational reply ──

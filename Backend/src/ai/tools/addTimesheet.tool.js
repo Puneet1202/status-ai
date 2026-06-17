@@ -231,11 +231,12 @@ async function handler(ctx, data) {
   // phir 9-10 (jo overlap karta hai). Clash waale block ab REJECT nahi hote —
   // unhe "overwrite confirm" me bheja jaata hai (user Yes kare to purani entry
   // replace ho jaati hai), clean blocks normal save ho jaate hai.
-  let clashingBlocks = []; // blocks jo existing entries se takra rahe hai
+  let clashingBlocks = []; // NAYE blocks jo existing entries se takra rahe hai (overwrite pe save honge)
   let overwriteIds = [];   // existing rows ke ids jinhe overwrite (delete) karna hoga
+  let clashExisting = [];  // EXISTING rows jo overwrite ho rahi hai — message me YEHI dikhana hai
   try {
     const ex = await db
-      .prepare("SELECT id, start_time, end_time FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
+      .prepare("SELECT id, start_time, end_time, task_description FROM daily_status_entries WHERE employee_id = ? AND entry_date = ?")
       .bind(employeeId, entryDate)
       .all();
     const existing = (ex.results || [])
@@ -243,6 +244,7 @@ async function handler(ctx, data) {
         id: r.id,
         start_time: String(r.start_time || "").slice(0, 5),
         end_time: String(r.end_time || "").slice(0, 5),
+        task_description: r.task_description,
       }))
       .filter((r) => isValidTime(r.start_time) && isValidTime(r.end_time));
 
@@ -260,7 +262,14 @@ async function handler(ctx, data) {
             task_description: v.task_description,
             module_name: v.module_name,
           });
-          clashed.forEach((e) => idSet.add(e.id));
+          // Message me EXISTING entry ka asli time + description dikhana hai (jo
+          // sach me logged hai, jise user overwrite karega) — naye block ka nahi,
+          // warna galat task naam dikhta hai (e.g. "9-11 Ai bug fix" jabki wahan
+          // koi aur task tha). De-dup by id taaki ek row do baar na aaye.
+          clashed.forEach((e) => {
+            if (!idSet.has(e.id)) clashExisting.push(e);
+            idSet.add(e.id);
+          });
         } else {
           clean.push(v);
         }
@@ -295,7 +304,8 @@ async function handler(ctx, data) {
         optionsTitle: "This time clashes with an entry already logged. Update it?",
       }
     : {};
-  const clashText = clashingBlocks
+  // Message me EXISTING (already-logged) entry dikhao — yahi overwrite hoga.
+  const clashText = clashExisting
     .map((b) => `• ${b.start_time}–${b.end_time} ("${b.task_description || "work"}")`)
     .join("\n");
 
