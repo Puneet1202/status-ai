@@ -217,3 +217,46 @@ Saare changes `backend/src/ai/*`, `backend/src/controllers/timesheet.controller.
 - **Log = time RANGE** (do time, `9-11`/`9 to 11`); single time (`before 10am`, `between 9am and 12pm`) = FILTER, project nahi maangta.
 
 > Rate-limit unchanged: per-user **20/min** (env `AI_RATE_PER_MIN`). Sab tools deterministic SQL → data hamesha DB ke barabar (no hallucination).
+
+---
+
+## 🆕 Session update — 2026-06-17 (overlap-overwrite, 0-token add, dynamic filter, typo-tolerance)
+
+Saare changes `backend/src/ai/chat.js`, `backend/src/ai/timeParser.js`,
+`backend/src/ai/tools/{addTimesheet,getTimesheet,queryTimesheet,index}.js`,
+`backend/src/controllers/timesheet.controller.js` me. Frontend (company repo) ke fixes neeche alag.
+
+### A. Overlap → OVERWRITE (reject nahi)
+1. **Naya time existing entry se clash kare to reject nahi** — ab **"✅ Yes, update existing / ✖ No"** chips aate hain. Yes → purani row delete + nayi save (`executeOverwrite`). No → existing safe + "View today's entries" chip. (`addTimesheet.tool.js`, `timesheet.controller.js`)
+2. **Clash message me EXISTING entry ka asli description** dikhता hai (naye block ka nahi) — warna galat task naam dikhता tha.
+3. **Add-for-others overwrite fix (security):** HR "Viewing: Puneet" ka overwrite ab **Puneet** ke account pe hota hai (pehle galti se HR ke apne pe ho jaata tha). `pendingAction.employee_id` carry hota hai; controller permission re-check karta hai (org-viewer + enter_status) — normal employee dusre ki id inject nahi kar sakta.
+
+### B. 0-token ADD fast-path
+4. **Project + task + time teeno selected → seedha save, LLM call nahi** (`chat.js`). Description me koi bhi word (leave/filter/show) ho — hijack nahi karta; ye check leave/filter/read detectors se PEHLE chalta hai. Edit/delete intent ya read-verb (show/list) ho to skip → brain.
+5. **No-time nudge:** project+task selected par time nahi diya → LLM ko bheje bina deterministic reply "bas time chahiye" + **time-slot chips** (`9 AM–11 AM` … `4 PM–6 PM`). Chips **hamesha** dikhte hain — bhara slot tap karoge to overwrite-confirm aa jaata hai. (`timesheet.controller.js`)
+
+### C. Dynamic filter + naye deterministic routes (0 token)
+6. **Dynamic keyword filter:** hardcoded list ke alawa ab **koi bhi search term** free-text se nikalta hai ("about onboarding", "interview tasks", "priyanka wala kaam") → `query_timesheet` LIKE. Sabse distinctive word uthata hai. (`chat.js parseFilters`)
+7. **`at/from 9 to 11`** → time-window read filter (us window ki entries).
+8. **"current/today's status"** → aaj ki entries (typo-tolerant `st+a+tus`).
+9. **"total hours / how much hours / kitne ghante"** → analyze total (last-5 dump nahi).
+10. **Attendance** ab `attandance` (a/e galti) bhi pakadta hai.
+11. **HR employee connect:** `connect with <naam>` / bare naam (org-viewer) → us employee se connect + sticky "Viewing" pill. Galat naam → professional "no such employee". Same naam → pick-list.
+
+### D. Typo-tolerance + format robustness
+12. **Fuzzy command-word corrector** (`chat.js`): non-log message me core words ki 1-letter galti auto-theek ("staatus"→status, "yeaterday"→yesterday, "attendence"→attendance, "entres"→entries). Log messages chhute nahi.
+13. **Typo-tolerant greeting** (`hlo`/`hlw`/`hloooo`/`hlww`/`helo`) → ab consistent quick-start chips + 0 token (pehle brain pe jaate the, kabhi chips kabhi nahi).
+14. **Glued time-range** (`9to11`, `(9to11)`, `9se11`) — `looksLikeTimeBlock` ab pakadta hai; AM/PM disambiguation numeric dates (`3-06-2026`) ko ignore karta hai (pehle "3 to 6" samajh ke AM/PM puchta tha).
+15. **Description cleaner** (`timeParser.js`): bracket/paren format `(9to11)`/`[9 to 11]` me leading/trailing `)`/`]` description se hata.
+16. **Verbatim save rule:** time-only turn ("9 to 11") thin description ho to user ke **turant pichle message** se literal text uthata hai (gibberish bhi). Read/command query se borrow NAHI karta (pehle "show my entries" → "Show my entries for" galat save hota tha).
+
+### E. Token-saving
+17. **Full descriptions:** read/filter list me 70-char truncation hata — poora task text dikhता hai (`getTimesheet.tool.js`, `queryTimesheet.tool.js`).
+18. **History trim:** model ko bheji jaane wali history me badi assistant replies (>400 char) summary se replace — input tokens kam, UI me full dikhता hai (`chat.js buildSlidingWindow`).
+
+### Frontend (company repo `react-keyss-status/src/components/AIChatbot.jsx`) — manually push
+- **Copy button** har message ke neeche (user + AI) — tap → poora text clipboard, "Copied!" feedback (clipboard API + textarea fallback).
+- **Glued time-range** (`9to11`/`(9to11)`) ab log detect hota hai → project guard fire.
+- **Read-veto START-anchored:** log ki description me `first`/`analyzed`/`before` jaise word ab use "search" nahi banate — sirf message read-verb (show/list/find) se shuru ho to read; warna log → project maangta hai.
+
+> Sab universal (employee/HR/admin same); privilege sirf DB permission se. Deterministic-first → zyaadatar queries 0 token; brain sirf complex/free-form pe.
