@@ -11,7 +11,7 @@ import { getToolSchemas } from './tools/index.js';
 import { parseEntryDate, isMonthFirstTz, resolveNumericDate } from './timeParser.js';
 import { extractWorkBlocks } from './blockExtractor.js';
 import { todayISO } from './tools/_helpers.js';
-import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, getFastModel, FAST_TIMEOUT_MS, isBrainEnabled } from './ai-config.js';
+import { MAX_MESSAGE_CHARS, MAX_TOTAL_CHARS, MAX_HISTORY_MESSAGES, getFastModel, FAST_TIMEOUT_MS, isBrainEnabled, requireTask } from './ai-config.js';
 import { routeWithBrain } from './brainRouter.js';
 import { traceRoute } from './trace.js';
 
@@ -151,7 +151,11 @@ function enrichThinDescriptions(entries, history) {
     );
     if (!prevUser) return;
     const raw = prevUser.content.trim();
-    if (/^\s*\d/.test(raw) || /\?\s*$/.test(raw) || NON_DESC_PREV.test(raw)) return;
+    // Skip when the prior message isn't a work description: a time-log (starts with a
+    // digit), a question, a read/command/meta query, OR a bare GREETING / ack
+    // ("hey", "hello", "thanks", "ok") — none should become the saved task text.
+    const GREETING_ONLY = /^\s*(h+e+l+o+|h+e+l+l+o+|h+i+|h+e+y+|hlo+|hlw+|helo+|hii+|yo+|namaste|hola|thanks?|thank\s*you|thankyou|thx|ty|ok(?:ay)?|cool|nice|great|good|gm|gn|good\s*(?:morning|night|evening|afternoon))\s*[!.?]*$/i;
+    if (/^\s*\d/.test(raw) || /\?\s*$/.test(raw) || NON_DESC_PREV.test(raw) || GREETING_ONLY.test(raw)) return;
     // Prefer the cleaned prose (strips stray time/date words); if cleaning leaves
     // nothing (e.g. a single gibberish token), keep the raw text as-is so the user's
     // literal input is what gets saved.
@@ -365,6 +369,9 @@ function nowInTz(timeZone) {
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 function addDays(d, n) { const x = new Date(d); x.setUTCDate(x.getUTCDate() + n); return x; }
 
+const MONTHS_MAP = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
+const MONTH_RE = 'jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?';
+
 function parseGetRange(message, base, monthFirst = false) {
     const m = String(message || '').toLowerCase();
     const today = isoDate(base);
@@ -415,13 +422,41 @@ function parseGetRange(message, base, monthFirst = false) {
         return { from_date: isoDate(firstThisMonth), to_date: today };
     }
 
+    // SPECIFIC DAY with a month NAME — "4 june 2026", "4 jun", "june 4",
+    // "june 4th, 2026". This is ONE date, so it MUST beat the whole-month block
+    // below (which wrongly returned all of June for "from 4 june 2026"). If the
+    // phrase is OPEN-ENDED ("from/since/after <date>" with no closing to/till/
+    // before), return [date → today]; otherwise the single day.
+    {
+        // Collect EVERY "DD month [YYYY]" and "month DD[, YYYY]" occurrence (in order)
+        // so a named-date RANGE ("4 june to 10 june 2026") resolves to both ends, not
+        // just the first. A trailing year applies to any date that didn't carry one.
+        const hits = [];
+        let mm;
+        const dmRe = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_RE})\\b(?:\\s*,?\\s*(20\\d{2}))?`, 'gi');
+        while ((mm = dmRe.exec(m))) hits.push({ pos: mm.index, dd: parseInt(mm[1], 10), mo: MONTHS_MAP[mm[2].toLowerCase()], yy: mm[3] });
+        const mdRe = new RegExp(`\\b(${MONTH_RE})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?:\\s*,?\\s*(20\\d{2}))?`, 'gi');
+        while ((mm = mdRe.exec(m))) hits.push({ pos: mm.index, dd: parseInt(mm[2], 10), mo: MONTHS_MAP[mm[1].toLowerCase()], yy: mm[3] });
+
+        const valid = hits.filter((h) => h.dd >= 1 && h.dd <= 31 && h.mo != null)
+            .sort((a, b) => a.pos - b.pos)
+            .filter((h, i, arr) => i === 0 || h.pos !== arr[i - 1].pos); // de-dup same span
+        if (valid.length) {
+            const trailingYr = valid.map((h) => h.yy).filter(Boolean).pop();
+            const toIso = (h) => isoDate(new Date(Date.UTC(h.yy ? +h.yy : (trailingYr ? +trailingYr : base.getUTCFullYear()), h.mo, h.dd, 12)));
+            if (valid.length >= 2) return { from_date: toIso(valid[0]), to_date: toIso(valid[1]) };
+            const date = toIso(valid[0]);
+            const openFrom = /\b(from|since|after|onwards?|baad|se)\b/.test(m) && !/\b(to|till|until|before|tak)\b/.test(m);
+            return openFrom ? { from_date: date, to_date: today } : { from_date: date, to_date: date };
+        }
+    }
+
     // MONTH NAME ("June", "March 2026", "june ka data", "in feb"). Year = the one
     // given, else the current year. ("may" is skipped when it's "may I/maybe/may be"
     // so a polite phrasing isn't read as the month of May.)
-    const MONTHS = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
-    const monthHit = m.match(/\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/);
+    const monthHit = m.match(new RegExp(`\\b(${MONTH_RE})\\b`));
     if (monthHit && !(monthHit[1] === 'may' && /\bmaybe\b|\bmay\s+(?:i|be)\b/.test(m))) {
-        const mo = MONTHS[monthHit[1]];
+        const mo = MONTHS_MAP[monthHit[1]];
         const yrM = m.match(/\b(20\d{2})\b/);
         const yr = yrM ? parseInt(yrM[1], 10) : base.getUTCFullYear();
         const start = new Date(Date.UTC(yr, mo, 1, 12));
@@ -514,7 +549,7 @@ function parseFilters(message, base, monthFirst = false) {
     // phrase (word order in the DB may differ). Conservative patterns only → a plain
     // date read ("last month") yields NOTHING, so existing routing stays intact.
     if (!f.keyword) {
-        const STOP = /^(show|list|view|display|fetch|give|get|find|search|filter|all|my|me|the|entries|entry|task|tasks|work|kaam|logs?|log|hours?|total|today|yesterday|tomorrow|aaj|kal|this|last|next|week|month|year|recent|latest|morning|afternoon|evening|night|before|after|between|status|timesheet|data|please|about|regarding|related|with|for|on|of|and|wala|wale|wali)$/i;
+        const STOP = /^(show|list|view|display|fetch|give|get|find|search|filter|all|my|me|the|entries|entry|task|tasks|work|kaam|logs?|log|hours?|total|today|yesterday|tomorrow|aaj|kal|this|last|next|week|month|year|recent|latest|morning|afternoon|evening|night|before|after|between|status|timesheet|data|please|about|regarding|related|with|for|on|of|and|wala|wale|wali|mera|meri|mere|apna|apni|apne|mujhe|mujhko|dikhao|dikha|dikhana|dikhaiye|batao|bata|de|do)$/i;
         const pick = (phrase) => {
             const words = String(phrase || '')
                 .toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/)
@@ -616,8 +651,37 @@ function recentLimit(message) {
 // right word. Applied ONLY to non-log messages (a time block = a real log → never
 // touch its description). Conservative: only words ≥4 chars, exactly 1 edit away from
 // a known command word, and not already a valid command word.
-const CMD_VOCAB = ['status','show','list','view','display','fetch','entries','entry','timesheet','attendance','total','hours','today','yesterday','tomorrow','week','month','year','recent','latest','leave','leaves','project','projects','task','tasks','profile','current','employee','employees','delete','remove','update','edit','morning','afternoon','evening','before','after','between','analyze','breakdown','connect','filter','search','permission','permissions'];
+const CMD_VOCAB = ['status','show','list','view','display','fetch','entries','entry','timesheet','attendance','total','hours','today','yesterday','tomorrow','week','month','year','recent','latest','last','first','next','previous','leave','leaves','project','projects','task','tasks','profile','current','employee','employees','delete','remove','update','edit','morning','afternoon','evening','before','after','between','analyze','breakdown','connect','filter','search','permission','permissions'];
 const CMD_SET = new Set(CMD_VOCAB);
+// Common, VALID English words that happen to sit 1 edit away from a vocab word —
+// they must NEVER be "corrected" (e.g. "yours"→hours, "mouth"→month). The 5-char
+// minimum below already shields 4-letter words (last/list/week/year/view/show…);
+// this guards the few 5+ collisions. (Root-caused from "last"→"list" breaking
+// "last month" date parsing.)
+const FUZZY_KEEP = new Set(['yours', 'mouth', 'first', 'these', 'those', 'their', 'there', 'tests', 'meets', 'hosts', 'posts', 'parts', 'tasks']);
+
+// ── Conservative employee-NAME detection ─────────────────────────────────────
+// ROOT-CAUSE FIX (recurring bug): the connect/​bare-name matchers used to treat
+// almost any leftover text as an employee name ("show email" → look up employee
+// "email"; "any pending status" → employee "any pending status"). A reactive
+// blocklist kept missing new words. Instead, REJECT a candidate name if ANY of
+// its words is a known command/field/common word — only genuine names (no
+// reserved word) pass. New phrases can never silently become a name lookup.
+const FIELD_INFO_WORDS = [
+    'email', 'emails', 'mobile', 'phone', 'number', 'numbers', 'contact', 'contacts',
+    'address', 'addresses', 'dob', 'birthday', 'detail', 'details', 'info', 'information',
+    'designation', 'role', 'joined', 'joining', 'pending', 'any', 'full', 'complete',
+    'give', 'me', 'my', 'mera', 'meri', 'mere', 'apni', 'apna', 'his', 'her', 'their',
+    'the', 'all', 'name', 'about', 'data', 'and', 'with', 'for', 'of',
+];
+const RESERVED_NAME_WORDS = new Set([...CMD_VOCAB, ...FIELD_INFO_WORDS]);
+function nameLooksReserved(text) {
+    return String(text || '')
+        .toLowerCase()
+        .split(/[^a-z]+/)
+        .filter(Boolean)
+        .some((w) => RESERVED_NAME_WORDS.has(w));
+}
 function lev1(a, b) {
     // returns true if edit distance between a,b is exactly 1 (else false). Cheap:
     // lengths must differ by ≤1; bail as soon as a 2nd difference appears.
@@ -636,9 +700,13 @@ function lev1(a, b) {
     return edits === 1;
 }
 function fuzzyFixCommandWords(text) {
-    return String(text || '').replace(/[A-Za-z]{4,}/g, (w) => {
+    // ≥5 chars only: 4-letter words have too many valid English collisions on a
+    // single edit (last↔list, week↔weak, year↔…) — correcting them corrupts real
+    // queries. The real typos this targets are all longer (staatus, yeaterday,
+    // attendence, entres). FUZZY_KEEP shields the few 5+ valid collisions.
+    return String(text || '').replace(/[A-Za-z]{5,}/g, (w) => {
         const lw = w.toLowerCase();
-        if (CMD_SET.has(lw)) return w; // already a valid command word
+        if (CMD_SET.has(lw) || FUZZY_KEEP.has(lw)) return w; // valid word — leave it
         for (const v of CMD_VOCAB) {
             if (lev1(lw, v)) {
                 return w[0] === w[0].toUpperCase() ? v.charAt(0).toUpperCase() + v.slice(1) : v;
@@ -651,7 +719,38 @@ function fuzzyFixCommandWords(text) {
 // "what is my name", "who am I", "mera naam", "my email/role" → answer from the
 // logged-in token (get_my_profile), NOT the flaky model which guesses a "name"
 // out of the words ("ky hai" → "Kyhai"). Deterministic + exact + safe.
-const PROFILE_INTENT = /\bwho\s+(?:am\s+i|i\s+am)\b|\bwho\s+am?\s+i+\b|\bwho\s+i\s+am+\b|\b(what'?s|what is|whats|tell me)\s+my\s+(name|email|role)\b|\bmy (name|email|role)\b|\bmera naam\b|\bmera email\b|\bmera role\b|\bmain kaun\b|\bkaun h(?:u|oon|un)\b/i;
+const PROFILE_INTENT = /\bwho\s+(?:am\s+i|i\s+am)\b|\bwho\s+am?\s+i+\b|\bwho\s+i\s+am+\b|\b(what'?s|what is|whats|tell me)\s+my\s+(name|role)\b|\bmy (name|role)\b|\bmera naam\b|\bmera role\b|\bmain kaun\b|\bkaun h(?:u|oon|un)\b/i;
+
+// Which PROFILE FIELD is being asked for (email / mobile / address / dob / full)?
+// Routes to get_my_profile (self) or get_employee_info (viewed employee). Returns
+// null when no personal-info field is mentioned. Lets "show email", "mobile number",
+// "meri full detail" answer with the saved DB value instead of the name matcher
+// mistaking "email" for an employee.
+function parsePersonalField(message) {
+    const m = String(message || '').toLowerCase();
+    // detail-ish word, typo-tolerant: details / deatils / detials / detals + info/jankari.
+    const DETAILY = /\b(deta?i?ls?|deatils?|detials?|detals?|info\w*|information|jankari|profile|record)\b/;
+    if ((/\b(full|complete|whole|entire|saari|sari|saare|puri|poori|sabhi)\b/.test(m) && DETAILY.test(m))
+        || /\beverything about\b/.test(m)) return 'full';
+    // Employee ID (typo-tolerant "emplooye"): "employee id", "emp id/code", "my id".
+    if (/\bempl\w*\s*(id|code|number|no)\b|\b(emp|staff)\s*(id|code|no|number)\b|\bmy\s+id\b|\bemployee\s*id\b/.test(m)) return 'empid';
+    if (/\b(d\.?o\.?b|date of birth|birth\s*date|birthday|janm\s*tithi)\b/.test(m)) return 'dob';
+    // EMAIL before ADDRESS so "email address" → email (not the physical address).
+    if (/\b(e-?mail|gmail)\b/.test(m)) return 'email';
+    if (/\b(mobile|phone|contact|whats?app)\b/.test(m)) return 'mobile';
+    if (/\b(address|pata|location|city|state|country)\b/.test(m)) return 'address';
+    return null;
+}
+
+// From a field query, pull out an EMPLOYEE NAME if one is present ("vijay mobile
+// number", "puneet ka email"). Strips field/command/common words; whatever 1-2
+// alpha words remain are treated as the name. null = no name (→ self or sticky).
+function extractNameFromFieldQuery(message) {
+    const words = String(message || '')
+        .toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/)
+        .filter((w) => w.length >= 2 && !RESERVED_NAME_WORDS.has(w) && w !== 'ka' && w !== 'ki' && w !== 'ke');
+    return words.length >= 1 && words.length <= 2 ? words.join(' ') : null;
+}
 
 // Capability / "what can you do" / "how much access" → a FIXED, accurate answer.
 // The flaky free model otherwise greets or dumps entries on these. Deterministic =
@@ -703,6 +802,41 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // description. 0 tokens, runs before every deterministic router below.
         if (!looksLikeTimeBlock(cleanMessage)) {
             cleanMessage = fuzzyFixCommandWords(cleanMessage);
+        }
+
+        // PERSONAL-INFO FIELD (email / mobile / address / dob / full detail). Org-viewer
+        // with a teammate selected (and NOT saying "my") → that teammate's info;
+        // otherwise the logged-in user's own. Runs BEFORE the profile/name routes so
+        // a focused field answer wins (and "show email" never becomes a name lookup).
+        if (!DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
+            const pField = parsePersonalField(cleanMessage);
+            if (pField) {
+                const selfIntent = /\b(my|mera|meri|mere|apni|apna|apne|khud|mine|self|mujhe|mujhko)\b/i.test(cleanMessage);
+                if (isOrgViewer && !selfIntent) {
+                    // Named in the message ("vijay mobile number") → that employee.
+                    const nameInMsg = extractNameFromFieldQuery(cleanMessage);
+                    if (nameInMsg) {
+                        traceRoute('personal-field (named employee) → DETERMINISTIC (no brain, 0 tokens)');
+                        return { action: { name: 'get_employee_info', data: { employee_name: nameInMsg, field: pField } } };
+                    }
+                    // No name but a teammate is selected (sticky) → that teammate.
+                    if (viewAs) {
+                        traceRoute('personal-field (viewed employee) → DETERMINISTIC (no brain, 0 tokens)');
+                        return { action: { name: 'get_employee_info', data: { field: pField } } };
+                    }
+                }
+                traceRoute('personal-field (self) → DETERMINISTIC (no brain, 0 tokens)');
+                return { action: { name: 'get_my_profile', data: { field: pField } } };
+            }
+        }
+
+        // Org-viewer "who is pending / any pending status / kisne status nahi bhara"
+        // → pending report (deterministic). Guarded so it never catches a log.
+        if (isOrgViewer && /\bpending\b/i.test(cleanMessage)
+            && /\b(status|statuses|timesheet|fill\w*|employees?|kaun|who|nahi bhara|nhi bhara)\b/i.test(cleanMessage)
+            && !looksLikeTimeBlock(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            traceRoute('pending-status → DETERMINISTIC (no brain, 0 tokens)');
+            return { action: { name: 'get_pending_status', data: {} } };
         }
 
         // Profile question → reply from the verified login. Skip if there's a time
@@ -859,7 +993,10 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             // "Viewing:" pill). dispatchTool naam resolve karta hai: na mile to
             // professional "no such employee" reply, ek se zyada mile to pick-list.
             const connectM = cleanMessage.match(/^\s*(?:connect|switch|change|view|select|open|show)\s+(?:to|with|me)?\s*(?:the\s+)?(?:employee|emp|user|profile)?\s*[:\-]?\s*([A-Za-z][A-Za-z.\s]{1,40})\s*$/i);
-            if (connectM && connectM[1].trim().length >= 2) {
+            // Only a GENUINE name passes — if the captured text has any reserved
+            // (command/field/common) word it is NOT a name ("show email", "show hours
+            // by month" → fall through, never "no employee named …").
+            if (connectM && connectM[1].trim().length >= 2 && !nameLooksReserved(connectM[1])) {
                 const nm = connectM[1].trim().replace(/\s+(profile|info|details|data)\s*$/i, '').trim();
                 if (nm.length >= 2) {
                     traceRoute('connect-with-employee → DETERMINISTIC (no brain, 0 tokens)');
@@ -873,7 +1010,8 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             // keyword na ho (warna "show entries" jaisa read hijack ho jaye).
             const bareName = /^[A-Za-z][A-Za-z.\s]{1,40}$/.test(cleanMessage)
                 && cleanMessage.trim().split(/\s+/).length <= 3
-                && !/\b(show|list|view|get|hours?|total|entries|entry|timesheet|attendance|leave|leaves|project|projects|task|tasks|profile|help|hi|hello|hey|thanks|yes|no|ok|okay|connect|switch|today|yesterday|week|month|recent|last|delete|update|edit)\b/i.test(cleanMessage);
+                && !nameLooksReserved(cleanMessage)
+                && !/\b(help|hi|hello|hey|thanks|yes|no|ok|okay)\b/i.test(cleanMessage);
             if (bareName) {
                 traceRoute('bare-name → employee-connect DETERMINISTIC (no brain, 0 tokens)');
                 return { action: { name: 'get_employee_info', data: { employee_name: cleanMessage.trim() } } };
@@ -896,6 +1034,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                         { label: `🌆 ${amb.hour} PM`, value: amb.pmValue },
                     ],
                     optionsTitle: "Select AM or PM:",
+                    optionsSingleUse: true, // one-shot → click ke baad chips hide
                 };
             }
         }
@@ -908,9 +1047,11 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // asli edit/delete INTENT ("9-11 ko 10-12 kar do", "hata do") brain pe jaata
         // hai. timeParser battle-tested hai → LLM call hoti hi nahi (0 tokens).
         // Runs AFTER AM/PM disambiguation so a genuinely-ambiguous bare hour still asks.
+        // Task gate: AI_REQUIRE_TASK=false → project + time is enough (no ticked task).
+        const taskGateOk = !requireTask(env) || (Array.isArray(selectedTasks) && selectedTasks.length > 0);
         if (
             selectedProject &&
-            Array.isArray(selectedTasks) && selectedTasks.length > 0 &&
+            taskGateOk &&
             looksLikeTimeBlock(cleanMessage) &&
             !DELETE_INTENT.test(cleanMessage) &&
             !UPDATE_INTENT.test(cleanMessage) &&
@@ -1175,6 +1316,14 @@ export async function aiChat(env, userId, message, history = [], selectedProject
             traceRoute('work request → BRAIN (brainRouter.js → tools)');
             try {
                 const routed = await routeWithBrain(env, cleanMessage, window, selectedProject, timeZone, isOrgViewer, viewAs);
+                // Viewing a teammate? The model must NEVER answer a person-info
+                // question with the HR's OWN profile. Redirect any self-profile call
+                // to the VIEWED teammate (controller scopes employee_name=viewAs).
+                // Skip only when the user explicitly said my/mera. Model-proof.
+                if (routed?.action?.name === 'get_my_profile' && isOrgViewer && viewAs
+                    && !/\b(my own|mine|my|mera|meri|mere|apni|apna|apne|khud|khudki|self)\b/i.test(cleanMessage)) {
+                    routed.action = { name: 'get_employee_info', data: { ...(routed.action.data || {}) } };
+                }
                 if (routed?.action?.name === 'add_timesheet_entries') {
                     const { entries } = await extractWorkBlocks(cleanMessage, env);
                     const modelEntries = Array.isArray(routed.action.data?.entries) ? routed.action.data.entries : [];
@@ -1210,6 +1359,24 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 // it. Otherwise (no time / no project) the model's reply stands.
                 if (routed && !routed.action && looksLikeTimeBlock(cleanMessage) && selectedProject) {
                     // fall through to deterministic engine ↓
+                } else if (
+                    // ── STICKY-VIEWER SAFETY NET (deterministic, model-proof) ──────
+                    // A teammate is SELECTED ("Viewing: X") and the user asked to
+                    // view/read WITHOUT naming someone else or saying 'my'. The small
+                    // model sometimes ignores the viewing-override and returns a
+                    // "whose timesheet?" question. Do NOT let that stand — fall through
+                    // to the deterministic read below; the controller scopes it to the
+                    // viewed teammate. This keeps the sticky-viewer reliable no matter
+                    // how the model behaves (root cause of the recurring regression).
+                    routed && !routed.action && isOrgViewer && viewAs &&
+                    !looksLikeTimeBlock(cleanMessage) &&
+                    !/\b(my|mera|meri|mere|apni|apna|apne|khud|self|mine)\b/i.test(cleanMessage) &&
+                    (RECENT_WORD.test(cleanMessage) || GET_VERB.test(cleanMessage) ||
+                     PERIOD.test(cleanMessage) ||
+                     /st+a+tus|\w{0,2}t+[ae]nd[ae]n[cs]e|hours?|entr\w*|logs?|timesheet|kaam|work/i.test(cleanMessage))
+                ) {
+                    traceRoute('sticky-viewer read → brain "whose?" overridden (deterministic)');
+                    // fall through to deterministic read ↓
                 } else if (routed) {
                     return routed;
                 }

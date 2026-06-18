@@ -17,6 +17,7 @@ import {
     isValidTime,
 } from '../ai/tools/_helpers.js';
 import { hasWorkTime } from '../ai/timeParser.js';
+import { requireTask } from '../ai/ai-config.js';
 
 // =========================================================================
 // 1. ADD STATUS ENTRY (Direct REST endpoint)
@@ -210,7 +211,7 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null, chipAction = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
@@ -278,6 +279,9 @@ export const aiChatHandler = async (c) => {
                     await db.prepare("DELETE FROM daily_status_entries WHERE id = ? AND employee_id = ?")
                         .bind(rid, user.employee_id).run();
                 }
+                // Flag so the add handler's receipt says "Updated" (not "saved") —
+                // this is an EDIT (delete old + re-save), not a fresh log.
+                ctx.editReplace = true;
             } catch (e) {
                 console.warn("[edit-replace delete failed]", e?.message || e);
             }
@@ -325,7 +329,9 @@ export const aiChatHandler = async (c) => {
         // reh gaya hai, aur ready time-slot chips do. Chip tap = "HH:MM to HH:MM"
         // (project pill + ticked task abhi bhi active) → seedha save, project/task
         // dobara nahi maangega. Read/delete/update jaise commands skip kar dete hai.
-        const inLoggingMode = !!selectedProject && Array.isArray(selectedTasks) && selectedTasks.length > 0;
+        // Task gate: AI_REQUIRE_TASK=false → sirf project se logging mode (task optional).
+        const inLoggingMode = !!selectedProject
+            && (!requireTask(c.env) || (Array.isArray(selectedTasks) && selectedTasks.length > 0));
         const looksReadOrCmd = /\b(show|list|view|search|filter|find|display|get|entr|logs?|dikha|batao|kitn|how many|how much|analy|delete|remove|hata|update|edit|total|report|leave|help)\b/i.test(message);
         if (inLoggingMode && !pendingAction && !isConfirming && !hasWorkTime(message) && !looksReadOrCmd) {
             // Chips HAMESHA — slot bhara ho ya na ho. Logged slot tap karoge to add flow
@@ -335,18 +341,33 @@ export const aiChatHandler = async (c) => {
                 reply: "Project and task are set — I just need the time. Tell me the hours you worked (e.g. \"9 to 11\"), or tap a slot below:",
                 options: slotChips,
                 optionsTitle: "Pick a time slot:",
+                optionsSingleUse: true, // ek slot tap → baaki chips hide
             }, 200);
         }
 
-        // ── Single AI round-trip → tool call or conversational reply ──
-        // traceBegin/End wrap the whole turn so the console prints one MESSAGE
-        // TRACE box (route + brain/tool call counts + tokens) per message.
-        traceBegin(message);
+        // ── DIRECT CHIP ACTION (router bypass — 100% reliable) ─────────────────
+        // A read/analytics chip can carry a STRUCTURED action ({name,data}) instead
+        // of relying on its text re-entering the NLP router. This makes chips immune
+        // to routing regressions (a new regex can never "steal" a chip's text, e.g.
+        // "show hours by month" being mistaken for an employee name). SECURITY: only
+        // READ tools are allowed here — add/update/delete still go through full
+        // validation + confirmation, never a blind client-supplied action. The
+        // result then flows through the SAME sticky-viewer / add-for-others scoping
+        // below as any other action (so viewAs still applies to the viewed teammate).
+        const CHIP_ACTION_ALLOW = new Set(['analyze_timesheet', 'get_timesheet_logs', 'query_timesheet', 'get_employee_info']);
         let result;
-        try {
-            result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs, selectedTasks);
-        } finally {
-            traceEnd();
+        if (chipAction && typeof chipAction === 'object' && CHIP_ACTION_ALLOW.has(chipAction.name)) {
+            result = { action: { name: chipAction.name, data: (chipAction.data && typeof chipAction.data === 'object') ? chipAction.data : {} } };
+        } else {
+            // ── Single AI round-trip → tool call or conversational reply ──
+            // traceBegin/End wrap the whole turn so the console prints one MESSAGE
+            // TRACE box (route + brain/tool call counts + tokens) per message.
+            traceBegin(message);
+            try {
+                result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs, selectedTasks);
+            } finally {
+                traceEnd();
+            }
         }
 
         // "Log MY hours" / self-intent in a LOGGING context → clear any "Viewing: X"
@@ -357,6 +378,20 @@ export const aiChatHandler = async (c) => {
             && /\b(log|add|enter|fill|status|hours?|ghante)\b/i.test(message);
 
         if (result.action) {
+            // ── SAFETY NET: never leak the HR's OWN profile while viewing someone ──
+            // The brain sometimes routes a person-info question ("mother name", "his
+            // details", "designation") to get_my_profile, which is SELF-only — so it
+            // would show the logged-in HR's profile even though a teammate is selected.
+            // When an org-viewer has a sticky "Viewing: X" and did NOT say my/mera,
+            // redirect that self-profile call to get_employee_info for the VIEWED
+            // teammate (employee_name=viewAs gets injected by the READ_TOOL block
+            // below). Deterministic → model behaviour can't break the scoping.
+            if (isOrgViewer && viewAs && typeof viewAs === 'string'
+                && result.action.name === 'get_my_profile'
+                && !/\b(my own|mine|my|mera|meri|mere|apni|apna|apne|khud|khudki|self)\b/i.test(message)) {
+                result.action = { name: 'get_employee_info', data: { ...(result.action.data || {}) } };
+            }
+
             // ── STICKY VIEWER SCOPE (org-viewer only) ──────────────────────────
             // Ek baar HR/Admin ne kisi employee ko (ya "apni") choose kiya, to AGLE
             // reads usi pe chalein — har baar naam dobara na dena pade (user feedback).

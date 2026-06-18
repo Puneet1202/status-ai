@@ -148,10 +148,14 @@ async function handler(ctx, data) {
     action: "QUERY_TIMESHEET",
     reply,
     data: results,
+    // Structured `action` (NLP-router bypass) + `value` text fallback.
     options: [
-      { label: "📊 Total hours", value: "show my total hours" },
-      { label: "📈 By project", value: "show hours per project" },
-      { label: "🕘 Recent entries", value: "show my last 5 entries" },
+      { label: "📊 Total hours", value: "show total hours all time",
+        action: { name: "analyze_timesheet", data: { group_by: "none" } } },
+      { label: "📈 By project", value: "show hours per project",
+        action: { name: "analyze_timesheet", data: { group_by: "project" } } },
+      { label: "🕘 Recent entries", value: "show last 5 entries",
+        action: { name: "get_timesheet_logs", data: { recent: true, limit: 5 } } },
     ],
     optionsTitle: "Next:",
   };

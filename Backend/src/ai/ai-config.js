@@ -129,6 +129,20 @@ export function getFastModel(env) {
 // falls back to a friendly canned line, so the user NEVER sees a timeout.
 export const FAST_TIMEOUT_MS = 8000;
 
+// =========================================================================
+// TASK-SELECTION REQUIREMENT — single ON/OFF knob (no code delete).
+//   AI_REQUIRE_TASK=true   → logging needs project + at least one ticked task.
+//   AI_REQUIRE_TASK=false  → logging needs ONLY a project (task feature paused).
+// Default = true (so the feature comes back the moment the env is removed). The
+// frontend has a MATCHING toggle (REQUIRE_TASK in AIChatbot.jsx) — set both the
+// same. All the task code stays in place; this just gates the *requirement*.
+// =========================================================================
+export function requireTask(env) {
+  const flag = String(env?.AI_REQUIRE_TASK ?? '').toLowerCase();
+  if (['off', 'false', '0', 'no'].includes(flag)) return false;
+  return true;
+}
+
 // Budget Management Hard-Limits
 export const MAX_MESSAGE_CHARS = 4000;
 export const MAX_TOTAL_CHARS = 52000;

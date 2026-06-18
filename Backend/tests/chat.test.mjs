@@ -115,9 +115,12 @@ test('a time-log containing "last" still logs (ADD not broken)', async () => {
 });
 
 // Deterministic date-range reads (bulletproof — no LLM on the hot path).
-test('"how many hours today" → deterministic GET for a single day', async () => {
+// "how many hours" = a TOTAL → analyze_timesheet (group none) for that day, not a
+// raw entry list. (Behaviour intentionally moved to analyze in the 0-token routing.)
+test('"how many hours today" → deterministic analyze TOTAL for a single day', async () => {
   const r = await aiChat(noAI, 1, 'how many hours today', [], null);
-  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action?.name, 'analyze_timesheet');
+  assert.equal(r.action.data.group_by, 'none');
   assert.equal(r.action.data.from_date, r.action.data.to_date); // exactly one day
 });
 
@@ -128,9 +131,10 @@ test('"show this week" → deterministic GET range ending today', async () => {
   assert.ok(r.action.data.from_date <= r.action.data.to_date);
 });
 
-test('"kitne ghante kaam kiya aaj" (Hindi today) → deterministic GET', async () => {
+test('"kitne ghante kaam kiya aaj" (Hindi today total) → deterministic analyze TOTAL', async () => {
   const r = await aiChat(noAI, 1, 'kitne ghante kaam kiya aaj', [], null);
-  assert.equal(r.action?.name, 'get_timesheet_logs');
+  assert.equal(r.action?.name, 'analyze_timesheet');
+  assert.equal(r.action.data.group_by, 'none');
   assert.equal(r.action.data.from_date, r.action.data.to_date);
 });
 
@@ -154,7 +158,10 @@ test('text tool-call dump is salvaged into an add action', async () => {
   const dump = '{"type":"function","name":"add_timesheet_entries","parameters":{"project_name":"AI Project","entry_date":"today","entries":[{"module_name":"PROJECT_WORK","task_description":"Updated the attendance sheet","start_time":"09:00","end_time":"11:00","is_lunch":false}]}}';
   // A no-time, no-project message routes to the general LLM path; the mock returns the dump.
   const env = { AI: { run: async () => ({ response: dump }) } };
-  const r = await aiChat(env, 1, 'please add my work for the morning session somehow', [], null);
+  // Input must reach the conversational/brain path (no "add/log + work" → not the
+  // log-help route, no time, no read verb), so the model's text dump is what comes
+  // back and the salvage layer must recover it into a real add action.
+  const r = await aiChat(env, 1, 'handle the morning session for me somehow', [], null);
   assert.equal(r.action?.name, 'add_timesheet_entries');
   assert.equal(r.action.data.entries[0].start_time, '09:00');
 });

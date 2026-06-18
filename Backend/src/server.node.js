@@ -62,6 +62,10 @@ const env = {
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
   AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',
+  // Task-selection requirement toggle. false → logging needs ONLY a project
+  // (task feature paused); remove/true → project + ticked task. Frontend has a
+  // matching REQUIRE_TASK toggle — keep both in sync.
+  AI_REQUIRE_TASK: process.env.AI_REQUIRE_TASK || '',
   // Report alerts: paste a Slack/Discord incoming-webhook URL → every "Report"
   // pings you with the transcript. Empty → reports still save to ai_feedback only.
   REPORT_WEBHOOK_URL: process.env.REPORT_WEBHOOK_URL || '',

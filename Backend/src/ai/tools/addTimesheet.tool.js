@@ -74,7 +74,7 @@ const schema = {
 
 // ctx = { db, user, env, selectedProject, selectedTasks, today }
 async function handler(ctx, data) {
-  const { db, employeeId, selectedProject, selectedTasks, today } = ctx;
+  const { db, employeeId, selectedProject, selectedTasks, today, editReplace, overwriteMode } = ctx;
   try {
   if (!employeeId) {
     return { reply: "Your account isn't linked to an employee record, so I can't log time for you. Please contact your admin." };
@@ -307,6 +307,9 @@ async function handler(ctx, data) {
           { label: "✖ No, keep existing", value: "no" },
         ],
         optionsTitle: "This time clashes with an entry already logged. Update it?",
+        // One-shot decision → frontend in chips ko ek click ke baad hide kar de
+        // (dobara click / scroll-up se overwrite na ho jaye).
+        optionsSingleUse: true,
       }
     : {};
   // Message me EXISTING (already-logged) entry dikhao — yahi overwrite hoga.
@@ -410,9 +413,14 @@ async function handler(ctx, data) {
 
   const totalMins = valid.reduce((sum, e) => sum + e._mins, 0);
 
+  // Distinct verb per flow so the user can tell them apart:
+  //  • "✏️ Edit this entry" chip  → editReplace   → "edited"
+  //  • "Yes, update existing" chip → overwriteMode → "updated"
+  //  • fresh log                   → (neither)     → "saved"
+  const verb = editReplace ? "edited" : overwriteMode ? "updated" : "saved";
   let reply = `✅ ${valid.length} ${
     valid.length === 1 ? "entry" : "entries"
-  } saved under "${targetProjectName}"${
+  } ${verb} under "${targetProjectName}"${
     taskModule ? ` · 🏷️ ${taskModule}` : ""
   } for ${entryDate}.\n\n${summaryLines}\n\nTotal: ${(totalMins / 60).toFixed(1)} hrs`;
 
@@ -430,7 +438,7 @@ async function handler(ctx, data) {
     action: "ADD_MULTIPLE_TIMESHEETS",
     reply,
     ...(overwriteAction
-      ? { pendingAction: overwriteAction, options: overwriteChips.options, optionsTitle: overwriteChips.optionsTitle }
+      ? { pendingAction: overwriteAction, options: overwriteChips.options, optionsTitle: overwriteChips.optionsTitle, optionsSingleUse: true }
       : {}),
     // For the frontend's post-save EDIT window: the just-saved blocks (time + text)
     // so an "Edit" chip can pre-fill an update command. Only the cleanly-saved ones.
@@ -481,6 +489,8 @@ export async function executeOverwrite(ctx, pendingAction) {
   const ctx2 = {
     ...ctx,
     employeeId, // resolved target — re-add bhi isi employee ke liye
+    overwriteMode: true, // receipt "updated" bole (na "saved"/"edited")
+    editReplace: false,  // overwrite ≠ edit-chip; verb collide na ho
     selectedProject: pendingAction.project_name || ctx.selectedProject,
     selectedTasks: Array.isArray(pendingAction.selectedTasks)
       ? pendingAction.selectedTasks

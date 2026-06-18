@@ -61,13 +61,21 @@ function followUpChips(from, to, exclude) {
   // as READ queries (not work-logs) — otherwise a value containing dates + "to"
   // (e.g. "...from 2026-03-01 to 2026-03-31") trips the "select a project" toast.
   // `exclude` drops the chip for the view you're already on (no redundant chip).
+  // `action` = STRUCTURED route (bypasses NLP). `value` stays as a text fallback.
+  const dateData = from && to ? { from_date: from, to_date: to } : from ? { from_date: from } : to ? { to_date: to } : {};
   const all = [
-    { key: "project", label: "📊 By project", value: `show hours per project${range}` },
-    { key: "month", label: "🗓️ By month", value: `show hours by month${range}` },
-    { key: "day", label: "📅 By day", value: `show hours by day${range}` },
+    { key: "project", label: "📊 By project", value: `show hours per project${range}`, group_by: "project" },
+    { key: "month", label: "🗓️ By month", value: `show hours by month${range}`, group_by: "month" },
+    { key: "day", label: "📅 By day", value: `show hours by day${range}`, group_by: "day" },
   ];
   return {
-    options: all.filter((c) => c.key !== exclude).map(({ label, value }) => ({ label, value })),
+    options: all
+      .filter((c) => c.key !== exclude)
+      .map(({ label, value, group_by }) => ({
+        label,
+        value,
+        action: { name: "analyze_timesheet", data: { group_by, ...dateData } },
+      })),
     optionsTitle: "Break it down:",
   };
 }
@@ -85,7 +93,12 @@ function monthDrillChips(rows) {
       const me = `${g}-${String(last).padStart(2, "0")}`;
       const nm = new Date(y, m - 1, 1).toLocaleString("en-US", { month: "short" });
       // "show" prefix → client guard treats it as a read query, not a work-log.
-      return { label: `${nm} ${y}`, value: `show hours by day from ${g}-01 to ${me}` };
+      // action = structured route (NLP bypass); value stays as fallback.
+      return {
+        label: `${nm} ${y}`,
+        value: `show hours by day from ${g}-01 to ${me}`,
+        action: { name: "analyze_timesheet", data: { group_by: "day", from_date: `${g}-01`, to_date: me } },
+      };
     });
   return opts.length ? { options: opts, optionsTitle: "See a month's days:" } : {};
 }
