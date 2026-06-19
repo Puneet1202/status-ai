@@ -211,7 +211,7 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null, chipAction = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null, chipAction = null, selectedDate = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
@@ -252,6 +252,22 @@ export const aiChatHandler = async (c) => {
         // specific permission check karte hai → admin DB me OFF kare to AGLE message
         // pe AI khud mana kar deta, koi alag sync/config nahi. (auto-sync built-in)
         const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+
+        // ── BACKDATED ENTRY (HR "/" calendar) ─────────────────────────────────
+        // Frontend "/" se picked PURANI date (YYYY-MM-DD) selectedDate me aati hai.
+        // Ise forcedDate banakar add handler ko dete hai → AI ko date guess nahi karni
+        // padti (no mistake). Gate (double-guard, frontend ke alawa):
+        //   • permission: org-viewer + enter_status (jo add-for-others wali hai). Self
+        //     ya "Viewing: X" dono ke liye chalta hai (privilege role-based, target nahi).
+        //   • NO FUTURE: aaj se aage ki date kabhi nahi (sirf past/aaj).
+        // Bina permission / future / galat format → ignore → normal (today/parsed) flow.
+        ctx.forcedDate = null;
+        if (selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+            const canBackdate = isOrgViewer && permSet.has('enter_status');
+            if (canBackdate && selectedDate <= ctx.today) {
+                ctx.forcedDate = selectedDate;
+            }
+        }
 
         // ── EDIT-CHIP exact update: frontend sends the just-saved row's id, so we
         // update THAT exact entry (no locating by start-time → no "5 matches /
@@ -557,6 +573,13 @@ export const getProjects = async (c) => {
         // dikh jate the (galat).
         let targetEmployeeId = currentUser.employee_id;
 
+        // canBackdate: ye user PURANI date ka status enter kar sakta hai ya nahi.
+        // Gate = backdated-entry privilege (org-viewer + enter_status). Frontend isi
+        // flag pe "/" calendar dikhata hai (sirf HR-jaise role ko). Same permission
+        // jo add-for-others ke liye chahiye. Normal employee = false → "/" hidden +
+        // backend bhi selectedDate ignore karta hai (double guard).
+        let canBackdate = false;
+
         // ── ADD-FOR-OTHERS scope ──────────────────────────────────────────────
         // HR/Admin jab "Viewing: <X>" pill ke saath '@'-project picker khole, to use
         // X ke ASSIGNED projects dikhne chahiye (X ka status log karna hai), apne nahi.
@@ -565,26 +588,32 @@ export const getProjects = async (c) => {
         // jaisा hi: org-viewer (all_employee_attendance) + enter_status DONO. viewAs =
         // us employee ka email (frontend sticky pill se). Normal employee / bina
         // permission → chup-chaap apna hi scope (security).
+        // Permissions ek baar load → canBackdate + add-for-others dono ke liye.
+        let perms = new Set();
+        try {
+            const permRows = await db.prepare(
+                `SELECT p.name FROM users u
+                   JOIN role_permissions rp ON rp.role_id = u.role_id
+                   JOIN permissions p ON p.id = rp.permission_id
+                  WHERE u.id = ?`
+            ).bind(currentUser.id).all();
+            perms = new Set((permRows.results || []).map((r) => r.name));
+        } catch (e) {
+            console.warn('[getProjects perm load failed]', e?.message || e);
+        }
+        canBackdate = perms.has('all_employee_attendance') && perms.has('enter_status');
+
         const viewAs = String(c.req.query('viewAs') || '').trim();
-        if (viewAs && viewAs !== (currentUser.email || '')) {
+        if (viewAs && viewAs !== (currentUser.email || '') && canBackdate) {
             try {
-                const permRows = await db.prepare(
-                    `SELECT p.name FROM users u
-                       JOIN role_permissions rp ON rp.role_id = u.role_id
-                       JOIN permissions p ON p.id = rp.permission_id
-                      WHERE u.id = ?`
-                ).bind(currentUser.id).all();
-                const perms = new Set((permRows.results || []).map((r) => r.name));
-                if (perms.has('all_employee_attendance') && perms.has('enter_status')) {
-                    const tgt = await db.prepare(
-                        `SELECT e.id
-                           FROM employee e
-                           JOIN users u ON u.employee_id = e.id
-                          WHERE u.email = ? AND u.is_active = 1
-                          LIMIT 1`
-                    ).bind(viewAs).first();
-                    if (tgt && tgt.id != null) targetEmployeeId = tgt.id;
-                }
+                const tgt = await db.prepare(
+                    `SELECT e.id
+                       FROM employee e
+                       JOIN users u ON u.employee_id = e.id
+                      WHERE u.email = ? AND u.is_active = 1
+                      LIMIT 1`
+                ).bind(viewAs).first();
+                if (tgt && tgt.id != null) targetEmployeeId = tgt.id;
             } catch (e) {
                 console.warn('[getProjects viewAs resolve failed]', e?.message || e);
             }
@@ -599,7 +628,7 @@ export const getProjects = async (c) => {
             .bind(targetEmployeeId)
             .all();
 
-        return c.json({ projects: results, success: true }, 200);
+        return c.json({ projects: results, success: true, canBackdate }, 200);
     } catch (error) {
         console.error("[Projects Error]:", error);
         return c.json({ success: false, message: "Failed to fetch projects" }, 500);

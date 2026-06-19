@@ -855,7 +855,12 @@ export async function aiChat(env, userId, message, history = [], selectedProject
         // Typo-tolerant: permission|permisison|permision|permisson|permissions sab
         // pakad'ta hai (users aksar galat spell karte hai). Time-block guard:
         // "9-11 permissions feature" ek work log hai, menu nahi.
-        if (/\bpermi[si]*ons?\b/i.test(cleanMessage) && !looksLikeTimeBlock(cleanMessage)) {
+        // ACCESS-based phrasing bhi (English + Hinglish): "my access", "mere paas kya
+        // access hai", "konsi permission hai". NARROW — possessive (my/mere/mujhe/apni)
+        // YA query-word (kya/kaun/konsi/kitni) ke saath hi, taaki "access the dashboard"
+        // / "give me access" jaisा false-positive route na ho (no regression).
+        const ACCESS_PERM = /\b(?:my|mere|meri|mujhe|mujhko|apni|apne)\b[^.?!]*\b(?:access|adhikaar|adhikar)\b|\b(?:kya|kaun|kaunsi|konsi|kitni|kitne)\b[^.?!]*\b(?:access|adhikaar|adhikar)\b/i;
+        if ((/\bpermi[si]*ons?\b/i.test(cleanMessage) || ACCESS_PERM.test(cleanMessage)) && !looksLikeTimeBlock(cleanMessage)) {
             return { action: { name: 'get_my_permissions', data: {} } };
         }
 

@@ -260,3 +260,120 @@ Saare changes `backend/src/ai/chat.js`, `backend/src/ai/timeParser.js`,
 - **Read-veto START-anchored:** log ki description me `first`/`analyzed`/`before` jaise word ab use "search" nahi banate — sirf message read-verb (show/list/find) se shuru ho to read; warna log → project maangta hai.
 
 > Sab universal (employee/HR/admin same); privilege sirf DB permission se. Deterministic-first → zyaadatar queries 0 token; brain sirf complex/free-form pe.
+
+---
+
+## 🆕 Session update — 2026-06-19 (HR backdated entry — "/" calendar)
+
+Problem: HR/Admin kisi aur ka status enter kar sakti thi (add-for-others logic tha),
+par **previous date** ka enter karne ka clean logic nahi tha. Agar HR AI ko bol kar
+date deti to model date guess me galti kar sakta tha. Fix: project ke `@` picker jaisा
+hi ek **`/` date calendar** — HR `/` likhe → calendar khule → pichli date pick kare →
+wo date ek pill ban jaaye → entry usi backdate pe save ho (AI ko date guess nahi karni).
+
+Privilege **purely DB-permission se** (org-viewer `all_employee_attendance` + `enter_status`)
+— normal employee ko `/` dikhta hi nahi aur backend bhi uski `selectedDate` ignore karta
+hai (double guard). **Future date kabhi nahi** (sirf aaj/past). Self + others dono ke liye.
+
+### Backend (`status_app`)
+Files: `src/controllers/timesheet.controller.js`, `src/ai/tools/addTimesheet.tool.js`.
+1. **`getProjects`** ab response me `canBackdate` flag deta hai (= `all_employee_attendance`
+   + `enter_status`). `/projects` mount pe already fetch hota hai → koi naya call nahi.
+   (Perms ek baar load → canBackdate + add-for-others viewAs dono reuse karte hai.)
+2. **`aiChatHandler`** body se `selectedDate` (YYYY-MM-DD) accept → gate (canBackdate +
+   `selectedDate <= today`, future block) → `ctx.forcedDate`. Bina permission/future/
+   galat-format → ignore → normal (today/parsed) flow.
+3. **`addTimesheet` handler** date precedence: `forcedDate || data.entry_date || today`
+   (ek line). forcedDate model-parsed date ko override karta hai → HR ki pick jeet'ti hai.
+   Baaki add/overlap/overwrite/edit logic **untouched** — saare add-paths controller ke
+   `dispatchTool(...ctx)` se hi execute hote hai, to forcedDate har jagah lagta hai.
+
+### Frontend (company repo `react-keyss-status/src/components/AIChatbot.jsx`) — manually push
+- `canBackdate` state (`/projects` se) → uspe `/` calendar enable.
+- `handleInputChange`: current word `/` (sirf canBackdate) → native `<input type=date>`
+  panel (`max=today`, future block). Date chunne par `selectDate()` → sirf `/` token
+  strip + `selectedDate` pill (📅 amber), message text intact (project pill jaisा).
+- Chat body me naya field `selectedDate`. Pill pe ✕ → wapas aaj ki date.
+- Placeholder hint HR ke liye: "Type '@' for project, '/' for a past date".
+
+> Universal pattern (project `@` jaisा): pill = single source of truth, koi text-inject
+> nahi, koi hallucination nahi. Purana flow (today entries, add-for-others) bilkul safe.
+
+---
+
+## 🆕 Session update — 2026-06-19 (FINAL company app me integrate)
+
+Sir ne **final** (properly-built) company app di → `C:\Users\Puneet Kumar\Desktop\
+final-project\react-keyss-status`. AI (status-ai) waisा hi alag rehta hai; ismें bas
+chatbot widget jodna tha. Verify kiya — sab compatible:
+- **Token secret same:** final app `JWT_SECRET=dev-secret-change-me` == AI backend
+  `ACCESS_TOKEN_SECRET`. Token payload bhi same (`sub`/`userId` + employeeId/roleId).
+- **Token key same:** `localStorage["auth_token"]`.
+- **Schema 100% match:** final DB me `daily_status_entries, projects, project_assignments,
+  tasks, users, employee, role_permissions, permissions` saare expected columns ke saath.
+  Permissions me `all_employee_attendance, enter_status, search_status` maujood → backdate
+  + add-for-others gating chalega. Koi tool break nahi.
+
+### Changes
+1. **AI backend `.env` (status_app):** `DB_FILE` ab FINAL app ki DB pe →
+   `...\final-project\react-keyss-status\data\keyss-status.prod.db` (purana day2 path
+   comment me rakha). Kyun: AI me log → FINAL dashboard pe dikhe (same DB).
+2. **Final repo frontend (company repo — NO push, local edit):**
+   - `src/components/AIChatbot.jsx` — latest widget copy (with `/` backdate feature).
+   - `src/components/layout/DashboardShell.tsx` — `<AIChatbot apiBaseUrl={AI_BASE_URL}
+     tokenKey="auth_token" />` authenticated return ke andar (har dashboard page, sirf
+     logged-in, print me hidden). `AI_BASE_URL = NEXT_PUBLIC_AI_BASE_URL || localhost:8787`
+     → CF deploy pe sirf env set karna, code touch nahi.
+   - `tsconfig`: `allowJs:true` already → `.jsx` import safe. `lucide-react`+Tailwind already.
+
+### Cloudflare deploy (future, abhi NAHI)
+CF pe AI deploy → stable URL (local terminal ki zaroorat nahi). Catch: AI ko **same remote
+D1** se bind karna padega jise final app use kare. Abhi final `wrangler.toml` me
+`database_id="local-dev-placeholder"` (local-only) → real shared remote D1 banने tak CF
+pe data share nahi hoga. Plan: pehle local chalao, production pe shared D1 + CF deploy.
+
+### Chalाne ka order (dev)
+1. AI backend: `status_app/Backend` → `npm run dev:node` (console me FINAL DB path dikhe).
+2. Final app: `final-project/react-keyss-status` → `npm run dev`.
+3. Login → niche-right ✨ chatbot. CORS error aaye to AI `.env` me `ALLOWED_ORIGINS=http://localhost:3000`.
+
+---
+
+## 🆕 Session update — 2026-06-19 (date-picker UX fix + health-check script)
+
+### A. "/" date-picker UX fix (frontend — `AIChatbot.jsx`, final + day2 identical)
+1. **Manual type/edit chalta hai ab:** pehle `onChange` har keystroke pe `selectDate`
+   call karke panel turant band kar deta tha → user date type nahi kar pata tha. Ab
+   input **controlled** (`dateDraft` state) — free type/pick, panel band nahi hota;
+   ek **"Apply"** button (ya Enter) pe hi `selectedDate` pill banti hai.
+2. **Bahar click → band:** ek invisible **backdrop** (`fixed inset-0 z-20`) — khali
+   jagah click pe picker band. Native calendar popup (browser chrome) DOM click nahi
+   deta, isliye wo band nahi karta (date pick karte waqt galti se close nahi hota).
+3. `autoFocus` + Apply pe future/empty guard (`disabled` jab `dateDraft > today`).
+
+### B. Health-check script (CEO-ready) — `scripts/health-check.mjs` (`npm run health`)
+Ek command me poora AI verify (0 LLM cost, DB me kuch likhta NAHI). Sections:
+- **CONFIG** — secret set, DB path (final?), model config.
+- **DATABASE** — saare zaroori tables/columns + backdate permissions + row counts
+  (proves real data: employees=217, projects=113, entries=288502).
+- **TOOLS** — 14 tools registry valid (schema + handler).
+- **ROUTING & TOKENS** — sample messages classify: **9/11 pure 0-token deterministic**,
+  **2/11 greeting = tiny FAST model** (heavy 30B brain = 0). Instrumented stub counter
+  se proof (koi real call nahi).
+- **BACKDATE RULE** — HR "/" gating (permission + future-block + precedence) logic asserts.
+Result: **24/24 PASS**. Existing `npm test` (tests/*.test.mjs) bhi **92/92 PASS** (regression safe).
+
+> Token note (CEO ke liye): zyaadatar queries (reads/analytics/add/personal/filters)
+> **0 token** — deterministic SQL routing, instant + free + no hallucination. Heavy
+> 30B brain sirf complex/free-form pe. Greeting ka reply chhote FAST model se (canned
+> fallback) — routing+chips fir bhi deterministic.
+
+### C. Permission query — ACCESS-phrasing coverage (chat.js)
+`get_my_permissions` pehle se **LIVE + DB-dynamic** hai (`ctx.perms` har request pe fresh
+DB se → admin DB me permission badle to AGLE message pe AI khud naya jawab; 100%
+deterministic, no hallucination). Gap: detector sirf "permission" word pakadta tha,
+"access" nahi → "mere paas kya access hai" / "my access" fast-model pe gir jaate the.
+**Fix:** ACCESS_PERM regex add (English+Hinglish) — possessive (my/mere/mujhe/apni) YA
+query-word (kya/kaun/konsi/kitni) ke saath hi `access/adhikaar`. Narrow rakha → negative
+("access the dashboard", "give me access", "9-11 access control") galti se trigger nahi
+karte (verify kiya). Ab ye bhi **0-token**.

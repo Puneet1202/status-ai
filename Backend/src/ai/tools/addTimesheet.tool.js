@@ -74,7 +74,7 @@ const schema = {
 
 // ctx = { db, user, env, selectedProject, selectedTasks, today }
 async function handler(ctx, data) {
-  const { db, employeeId, selectedProject, selectedTasks, today, editReplace, overwriteMode } = ctx;
+  const { db, employeeId, selectedProject, selectedTasks, today, editReplace, overwriteMode, forcedDate } = ctx;
   try {
   if (!employeeId) {
     return { reply: "Your account isn't linked to an employee record, so I can't log time for you. Please contact your admin." };
@@ -124,8 +124,10 @@ async function handler(ctx, data) {
     return { reply: "Please describe what you worked on." };
   }
 
-  // Date: validate as a real calendar date, default to today (no year hardcode).
-  let entryDate = data.entry_date || today;
+  // Date precedence: forcedDate (HR "/" calendar — already permission-gated &
+  // future-blocked upstream) > model-parsed entry_date > today. forcedDate jeet'ta
+  // hai taaki HR jab purani date pick kare to model ki guess use override na kare.
+  let entryDate = forcedDate || data.entry_date || today;
   if (!isValidEntryDate(entryDate)) entryDate = today;
 
   // Normalize into a batch of work blocks.
