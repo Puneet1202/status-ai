@@ -1,5 +1,47 @@
 # 🔌 AI ↔ Sir ki Website — Integration Notes
 
+## 🐛 FIX (2026-06-22) — Self-echo line re-send: galat "I just need the time" + "Work"/"2.0 hrs)" description
+File: `src/ai/timeParser.js`.
+- **Symptom:** User bot ki apni formatted output line (`• 09:00 → 11:00 (2.0 hrs) — <desc>`)
+  wapas bhejta tha to (a) backend "Project and task are set — I just need the time" puchta
+  (time hai phir bhi), aur (b) overwrite ke baad description corrupt — `2.0 hrs) — <desc>`
+  ya sirf `Work` save hota.
+- **Root cause:** Arrow `→` ko sirf `parseWorkBlocks` " to " me normalize karta tha; `hasWorkTime`
+  nahi karta tha → controller ki NO-TIME NUDGE galat fire. Aur `cleanLabel` bot ki apni
+  `(N hrs) — ` decoration strip nahi karta tha → wahi text description me ghus jaata.
+- **Fix:** (1) Shared `ARROW_RE` const; `hasWorkTime` ab arrows normalize karta hai (parser jaisa).
+  (2) `cleanLabel` me self-echo strip — leading `• ` bullet + `(N[.N] hr/hrs) —` exact bot-format tag
+  hata deta hai, taaki re-sent line apni ASLI description rakhe. Bot-format-exact pattern → real
+  user text (`2 hrs of meeting prep`) pe koi false-strip nahi. Regression tested.
+
+## 🐛 FIX (2026-06-22) — "2 to 4pm" se 14-ghante ka galat block
+File: `src/ai/timeParser.js` (work-range resolution loop).
+- **Symptom:** `2 to 4pm` → `02:00–16:00` (14 hrs!) save hota. Bare start ko AM aur PM-end ko
+  PM resolve kar raha tha. (`3 to 5pm`, `1 to 3pm`, `4 to 6pm` sab affected.)
+- **Fix:** MERIDIEM-INHERIT rule — bare start + explicit PM end → start ko bhi PM lift karo,
+  jab tak `pmStart < end` rahe (aur pichle block se aage). `11 to 1pm` safe (→ 11:00–13:00,
+  lift nahi hota). Stress-test: 14/14 cases pass. `2pm to 4`, `9 to 11am`, `10 to 12pm` sab intact.
+
+## 🐛 FIX (2026-06-22) — "edit my last log" / "update the 9-11 entry" UPDATE pe route nahi hota tha
+File: `src/ai/chat.js` (`UPDATE_INTENT`).
+- **Symptom:** `update the 9-11 entry to 10-12` aur `edit my last log` UPDATE ki jagah casual chat
+  me chale jaate the (verb+noun ke beech sirf 1 filler word allow tha; yaha 2 the).
+- **Fix:** verb→noun gap `(?:the |my |...)?` se badalkar `(?:\S+\s+){0,3}?` (non-greedy, max 3 words).
+  True-positive ab match; false-positive safe — `update the readme docs`, `update you about the
+  dashboard later`, `9-10 fix the ui bugs` UPDATE NAHI bante (tested). Full intent suite 18/18 pass.
+
+## 🐛 FIX (2026-06-22) — "employee id" ko AI naam samajh leta tha ("no employee named id")
+File: `src/controllers/timesheet.controller.js` (FIELD-WORD GUARD).
+- **Symptom:** HR `employee id` likhe to model `get_employee_info(employee_name:"id")` bana deta
+  → "no active employee named 'id'". Apna ID dekhne ke liye `show my employee id` likhna padta tha.
+- **Fix:** FIELD-WORD GUARD — `employee_name` agar field-word ho (`id/name/profile/details/email/
+  mobile/designation/...`) to use strip kar do. Phir query selected/viewed employee par (aur kuch
+  select na ho to SELF par) girti hai → HR ko apna profile (incl Employee ID) seedha milta hai,
+  bina "my" likhe. Real names (madhulika/puneet/...) untouched. Behavior model: koi naam/Viewing-pill
+  nahi → apna data; naam ya pill ho → us employee ka; pill active hote hue apna chahiye → "my/apna".
+
+---
+
 ## ⚠️ FOLLOW-UP — Employee role ki permissions (prod DB quirk)
 Prod DB me **'employee' role ke paas sirf `add_employee` permission hai** (na
 `enter_status`, na `search_status`). Isliye permission-fix ke baad employee ko form

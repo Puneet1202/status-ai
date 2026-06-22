@@ -28,6 +28,12 @@ const TIME = String.raw`(\d{1,2})(?::(\d{2}))?\s*(?:baje|bje|o'?clock)?\s*(a\.?m
 const CONN = String.raw`(?:-|–|—|to|till|until|through|thru|upto|up to|se)`;
 const RANGE_RE = new RegExp(`${TIME}\\s*${CONN}\\s*${TIME}`, "gi");
 
+// Arrow-style range separators (→ -> => ➜ ...). Normalized to " to " so BOTH the
+// time-detector (hasWorkTime) and the parser see the same thing. Without this,
+// a user re-sending the bot's OWN formatted line ("09:00 → 11:00 (2h) — ...")
+// was treated as having NO time → wrong "I just need the time" nudge.
+const ARROW_RE = /\s*(?:-{1,2}>|={1,2}>|─+>|→|⟶|⟹|➜|▶|▸|»)\s*/g;
+
 // Point break: "15 min break at 10:30"  OR  "break at 4:30 for 20 minutes".
 const BREAK_PT_A = new RegExp(String.raw`(\d{1,3})\s*min(?:ute)?s?\s*(?:break|rest)\s*(?:at|@|from)?\s*${TIME}`, "gi");
 const BREAK_PT_B = new RegExp(String.raw`(?:break|rest)\s*(?:at|@)\s*${TIME}\s*for\s*(\d{1,3})\s*min`, "gi");
@@ -90,6 +96,13 @@ export function deriveModule(label) {
 // Clean a raw label fragment into a short, readable task description.
 function cleanLabel(raw) {
   let s = (raw || "").replace(/\s+/g, " ").trim();
+  // SELF-ECHO STRIP: the user often re-sends the bot's OWN formatted entry line
+  // ("• 09:00 → 11:00 (2.0 hrs) — Fixed login bug"). After the time is consumed,
+  // the leftover starts with the bot's decoration "(2.0 hrs) — ". Strip a leading
+  // bullet and that "(N[.N] hr/hrs) —" duration tag so the REAL description is
+  // kept (not saved as "2.0 hrs) — ..." or defaulted to "Work").
+  s = s.replace(/^\s*[•·*]\s*/, "");
+  s = s.replace(/^\s*\(?\s*\d+(?:\.\d+)?\s*(?:hrs?|hours?)\s*\)\s*[—–-]+\s*/i, "");
   // Strip leading separators first — the structured "TIME: description" format
   // leaves a leading ":" (e.g. ": Lunch Break") that would otherwise defeat the
   // ^-anchored break detector and let breaks slip through as work.
@@ -159,7 +172,8 @@ export function parseWorkBlocks(message) {
   // 0) Normalize arrow-style range separators to " to " (Postel's law: accept
   // any reasonable format the user types). Handles → ⟶ ⟹ ➜ ▶ as well as the
   // ASCII forms -> --> => ==> ─>. Plain dashes (- – —) are already valid CONNs.
-  text = text.replace(/\s*(?:-{1,2}>|={1,2}>|─+>|→|⟶|⟹|➜|▶|▸|»)\s*/g, " to ");
+  ARROW_RE.lastIndex = 0;
+  text = text.replace(ARROW_RE, " to ");
 
   // 1) Collect every range with its position.
   const ranges = [];
@@ -209,6 +223,17 @@ export function parseWorkBlocks(message) {
       if (amStart >= prevStart && amStart < pointer) start = amStart;
     }
     let end = resolveTime(r.eh, r.em, r.eMer, start);
+    // MERIDIEM-INHERIT: a bare start with an explicit PM end ("2 to 4pm") is
+    // almost always the SAME half of the day as the end — not a 14-hour block
+    // (02:00 → 16:00). Lift the bare start to PM when that keeps a sane forward
+    // block (pmStart < end and not before the previous block). "11 to 1pm" is
+    // untouched (pmStart 23:00 is NOT < 13:00) → correctly stays 11:00–13:00.
+    if (!r.sMer && r.eMer === "pm" && start < 720) {
+      const pmStart = ((r.sh % 12) + 12) * 60 + (r.sm || 0);
+      if (pmStart < end && (prevStart == null || pmStart >= prevStart)) {
+        start = pmStart;
+      }
+    }
     if (end <= start) end += 1440; // overnight shift (e.g. 23:00 → 02:00 next day)
     prevStart = start;
     pointer = end;
@@ -323,8 +348,11 @@ export function parseWorkBlocks(message) {
 
 // Lightweight intent hints so chat.js can route deterministically.
 export function hasWorkTime(message) {
+  // Normalize arrows first (same as parseWorkBlocks) so a re-sent displayed line
+  // "09:00 → 11:00 (...)" is correctly seen as HAVING a time.
+  const t = String(message || "").replace(ARROW_RE, " to ");
   RANGE_RE.lastIndex = 0;
-  return RANGE_RE.test(String(message || ""));
+  return RANGE_RE.test(t);
 }
 
 // Best-effort entry-date extraction for the deterministic add path. Returns an

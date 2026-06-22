@@ -408,6 +408,18 @@ export const aiChatHandler = async (c) => {
                 result.action = { name: 'get_employee_info', data: { ...(result.action.data || {}) } };
             }
 
+            // ── FIELD-WORD GUARD ───────────────────────────────────────────────
+            // Model kabhi-kabhi ek FIELD word ko employee NAME bana deta hai —
+            // "employee id" → employee_name:"id" → "no employee named id". Ye words
+            // profile ke FIELDS hai, kisi banda ka naam nahi. Inhe strip kar do taaki
+            // query selected/viewed employee par (aur kuch select na ho to SELF par)
+            // gir jaaye — user ki mental model: "koi naam nahi chuna → mera apna data".
+            const NON_NAME_TOKEN = /^(id|ids|name|names|info|information|detail|details|profile|employee|employees|emp|staff|designation|department|dept|role|email|e-?mail|mobile|number|num|contact|dob|address)$/i;
+            if (result.action.data?.employee_name
+                && NON_NAME_TOKEN.test(String(result.action.data.employee_name).trim())) {
+                delete result.action.data.employee_name;
+            }
+
             // ── STICKY VIEWER SCOPE (org-viewer only) ──────────────────────────
             // Ek baar HR/Admin ne kisi employee ko (ya "apni") choose kiya, to AGLE
             // reads usi pe chalein — har baar naam dobara na dena pade (user feedback).

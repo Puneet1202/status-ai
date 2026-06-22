@@ -24,7 +24,7 @@ const DELETE_INTENT = /\b(delete|remove|erase|discard|hata do|mita do)\b/i;
 // Conservative on purpose: only fire on phrases that clearly mean "edit an
 // EXISTING logged entry" — NOT common work verbs like "fix"/"change" which
 // appear in normal descriptions ("9-10 fix the ui bugs" is an ADD, not an edit).
-const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:the |my |that |previous |last )?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)|\bsahi kar ?do\b|\bsahi karo\b|\bchange (?:that|it|this) to\b|\bcorrect (?:it|that|this)\b|\bthat(?:'s| was| is)? wrong\b|\bbadal ?do\b|\bupdate kar ?do\b/i;
+const UPDATE_INTENT = /\b(?:update|edit|correct|modify)\s+(?:\S+\s+){0,3}?(?:entry|entries|time|timing|log|logs|record|timesheet|slot)\b|\bactually it was\b|\bmade a mistake\b|\bwrong (?:time|entry|slot)\b|\bgalti se (?:add|log|likh)|\bsahi kar ?do\b|\bsahi karo\b|\bchange (?:that|it|this) to\b|\bcorrect (?:it|that|this)\b|\bthat(?:'s| was| is)? wrong\b|\bbadal ?do\b|\bupdate kar ?do\b/i;
 // Read-intent signals that keep an obvious history query from being parsed as an
 // add. Split in two so a work NOUN never hijacks a time-log:
 //  • HARD_GET — explicit query verbs that never appear inside a work description.
