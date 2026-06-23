@@ -2,7 +2,7 @@
 // V5.0 - REGISTRY DISPATCH | SHARED HELPERS | GLOBAL READY
 
 import { aiChat } from '../ai/chat.js';
-import { traceBegin, traceEnd } from '../ai/trace.js';
+import { traceBegin, traceEnd, getLastTrace } from '../ai/trace.js';
 import { dispatchTool } from '../ai/tools/index.js';
 import { executeDelete } from '../ai/tools/deleteTimesheet.tool.js';
 import { executeUpdate } from '../ai/tools/updateTimesheet.tool.js';
@@ -204,6 +204,77 @@ function buildTimeSlotChips() {
     return STD_SLOTS.map(([s, e]) => ({ label: `${fmt(s)} – ${fmt(e)}`, value: `${s} to ${e}` }));
 }
 
+// ── PRIVACY: sensitive cheezein mask karo log karne se PEHLE ────────────────
+// Light redaction — pattern data zinda rehta hai, par PII leak nahi:
+//   • email → [email]   • 10-digit phone → [phone]   • 12-digit aadhaar → [id]
+//   • salary/ctc/account/aadhaar/pan jaise word ke paas ka number → [redacted]
+// (Naam reliably mask karna mushkil hai aur data kharab karta hai → uske liye
+//  access-control + retention + "delete my data" hai.)
+function redactSensitive(text) {
+    if (text == null) return text;
+    let s = String(text);
+    s = s.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[email]');
+    s = s.replace(/\b\d{12}\b/g, '[id]');                 // aadhaar-ish
+    s = s.replace(/(?<!\d)(?:\+?91[-\s]?)?[6-9]\d{9}(?!\d)/g, '[phone]');
+    // salary/ctc/account/pan ke aas-paas ka number/amount
+    s = s.replace(/\b(salary|ctc|account|acc(?:ount)?\s*no|a\/c|aadhaar|aadhar|pan|ssn|sallary)\b[^\d]{0,15}[\w-]*\d[\w-]*/gi, '$1 [redacted]');
+    return s;
+}
+
+// ── RETENTION: purani chat auto-delete (default 90 din) ─────────────────────
+// Cron ki zaroorat nahi — din me ek baar (max) logAiChat se trigger hota hai.
+let _lastPurgeAt = 0;
+async function purgeOldChatLogs(c) {
+    const days = parseInt(c.env.AI_CHAT_RETENTION_DAYS, 10);
+    if (!Number.isFinite(days) || days <= 0) return;          // 0/blank = keep forever
+    const now = Date.now();
+    if (now - _lastPurgeAt < 24 * 60 * 60 * 1000) return;     // din me ek baar hi
+    _lastPurgeAt = now;
+    try {
+        await c.env.DB.prepare(`DELETE FROM ai_chat_logs WHERE created_at < datetime('now', ?)`)
+            .bind(`-${days} days`).run();
+    } catch (e) {
+        console.warn('[ai_chat_logs purge skipped]', e?.message || e);
+    }
+}
+
+// ── CHAT LOGGING (ai_chat_logs) ─────────────────────────────────────────────
+// Har chat turn ko USER_ID pe save karo (future per-user personalization /
+// training data). FIRE-AND-FORGET: agar table na ho / insert fail ho to CHUP-CHAAP
+// skip — chat KABHI nahi rukti, user ko error nahi dikhta. Gate: env AI_CHAT_LOG==='1'.
+// route/tool/tokens us turn ke trace se (stale-trace se bachne ko message-match guard).
+// Insert hui row ka id LAUTATA hai → frontend us turn pe 👍/👎 laga sake.
+async function logAiChat(c, { userId, employeeId, sessionId, message, reply, intent, selectedProject }) {
+    if (c.env.AI_CHAT_LOG !== '1' || !userId) return null;
+    try {
+        const tr = getLastTrace();
+        const sameTurn = tr && tr.message === String(message || '').replace(/\s+/g, ' ').slice(0, 60);
+        const route = (sameTurn && tr.route) ? (/brain/i.test(tr.route) ? 'brain' : 'deterministic') : 'deterministic';
+        const toolName = (sameTurn && Array.isArray(tr.tools) && tr.tools.length) ? tr.tools[tr.tools.length - 1] : (intent || null);
+        const tokens = sameTurn ? (tr.tokens?.total || 0) : 0;
+        const res = await c.env.DB
+            .prepare('INSERT INTO ai_chat_logs (user_id, employee_id, session_id, user_message, ai_reply, intent, route, tool_name, selected_project, tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(
+                userId,
+                employeeId || null,
+                sessionId ? String(sessionId).slice(0, 60) : null,
+                redactSensitive(String(message || '').slice(0, 4000)),
+                reply != null ? redactSensitive(String(reply).slice(0, 8000)) : null,
+                intent || null,
+                route,
+                toolName,
+                selectedProject ? String(selectedProject).slice(0, 200) : null,
+                tokens
+            )
+            .run();
+        purgeOldChatLogs(c).catch(() => {}); // background, non-blocking
+        return res?.meta?.last_row_id ?? null;
+    } catch (e) {
+        console.warn('[ai_chat_logs skipped]', e?.message || e);
+        return null;
+    }
+}
+
 // =========================================================================
 // 4. AI CHAT HANDLER — thin orchestrator over the tool registry
 // =========================================================================
@@ -211,7 +282,7 @@ export const aiChatHandler = async (c) => {
     try {
         const user = c.get('user');
         const db = c.env.DB;
-        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null, chipAction = null, selectedDate = null } = await c.req.json();
+        const { message, history = [], pendingAction = null, selectedProject = null, selectedTasks = [], timezone = null, viewAs = null, editTimesheetId = null, replaceEntryIds = null, chipAction = null, selectedDate = null, sessionId = null } = await c.req.json();
 
         if (!message) return c.json({ success: false, message: 'Message required' }, 400);
 
@@ -253,6 +324,15 @@ export const aiChatHandler = async (c) => {
         // pe AI khud mana kar deta, koi alag sync/config nahi. (auto-sync built-in)
         const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
+        // Har chat reply ko log karke bhejne wala wrapper — taaki KOI turn miss na ho
+        // (confirm/overlap/nudge jaise early returns bhi save ho). intent optional.
+        const sendChat = async (payload, intent = null) => {
+            const logId = await logAiChat(c, { userId: user.id, employeeId: user.employee_id, sessionId, message, reply: payload?.reply, intent, selectedProject });
+            // chatLogId frontend ko bhej do → user us turn pe 👍/👎 laga sake.
+            if (logId && payload && typeof payload === 'object') payload.chatLogId = logId;
+            return c.json(payload, 200);
+        };
+
         // ── BACKDATED ENTRY (HR "/" calendar) ─────────────────────────────────
         // Frontend "/" se picked PURANI date (YYYY-MM-DD) selectedDate me aati hai.
         // Ise forcedDate banakar add handler ko dete hai → AI ko date guess nahi karni
@@ -280,7 +360,7 @@ export const aiChatHandler = async (c) => {
             const newDesc = editCmd[2].trim();
             if (newDesc) upd.new_task_description = newDesc;
             const out = await dispatchTool("update_timesheet", upd, ctx);
-            return c.json(out, 200);
+            return await sendChat(out, "update_timesheet");
         }
 
         // ── EDIT WHOLE DAY (replace): the frontend "Edit" button sends the ids of
@@ -308,21 +388,21 @@ export const aiChatHandler = async (c) => {
         const isConfirming = /^(confirm|yes|haan|ha|ok|okay)\b/i.test(message.trim());
         if (isConfirming && pendingAction?.action === "DELETE_TIMESHEET") {
             const out = await executeDelete(ctx, pendingAction);
-            return c.json(out, 200);
+            return await sendChat(out, "delete_timesheet");
         }
         if (isConfirming && pendingAction?.action === "UPDATE_TIMESHEET") {
             const out = await executeUpdate(ctx, pendingAction);
-            return c.json(out, 200);
+            return await sendChat(out, "update_timesheet");
         }
         // Overlap → "Yes, update existing" / "No, keep existing" chips ka response.
         if (pendingAction?.action === "OVERWRITE_TIMESHEET") {
             const declining = /^(no|nahi|nahin|cancel|rehne|rakho|keep|nope)\b/i.test(message.trim());
             if (declining) {
-                return c.json({
+                return await sendChat({
                     reply: "Okay — the existing entry is unchanged. Send a different time if you want to log this separately, or tap below to review what's already logged.",
                     options: [{ label: "📋 View today's entries", value: "show my entries for today" }],
                     optionsTitle: "What next?",
-                }, 200);
+                }, "overwrite_declined");
             }
             if (isConfirming) {
                 // SECURITY: pendingAction client se aata hai → employee_id ko blindly
@@ -334,7 +414,7 @@ export const aiChatHandler = async (c) => {
                     delete pendingAction.employee_id;
                 }
                 const out = await executeOverwrite(ctx, pendingAction);
-                return c.json(out, 200);
+                return await sendChat(out, "add_timesheet_entries");
             }
         }
 
@@ -353,12 +433,12 @@ export const aiChatHandler = async (c) => {
             // Chips HAMESHA — slot bhara ho ya na ho. Logged slot tap karoge to add flow
             // khud overlap pakad kar overwrite-confirm (Yes/No) de dega.
             const slotChips = buildTimeSlotChips();
-            return c.json({
+            return await sendChat({
                 reply: "Project and task are set — I just need the time. Tell me the hours you worked (e.g. \"9 to 11\"), or tap a slot below:",
                 options: slotChips,
                 optionsTitle: "Pick a time slot:",
                 optionsSingleUse: true, // ek slot tap → baaki chips hide
-            }, 200);
+            }, "no_time_nudge");
         }
 
         // ── DIRECT CHIP ACTION (router bypass — 100% reliable) ─────────────────
@@ -473,7 +553,7 @@ export const aiChatHandler = async (c) => {
             if (clearViewTarget && out && typeof out === 'object' && out.viewTarget === undefined) {
                 out.viewTarget = null;
             }
-            return c.json(out, 200);
+            return await sendChat(out, result.action.name);
         }
 
         // Non-action reply (e.g. "log my hours" → "give me the time"). Self-log →
@@ -481,7 +561,7 @@ export const aiChatHandler = async (c) => {
         if (SELF_LOG && result && typeof result === 'object' && result.viewTarget === undefined) {
             result.viewTarget = null;
         }
-        return c.json(result, 200);
+        return await sendChat(result, result?.action?.name || null);
 
     } catch (error) {
         console.error("[AI Handler Error]:", error);
@@ -566,6 +646,31 @@ export const submitAiFeedback = async (c) => {
     } catch (error) {
         console.error('[AI Feedback Error]:', error);
         return c.json({ success: false, message: 'Could not save the report. Please try again.' }, 500);
+    }
+};
+
+// =========================================================================
+// 4c. PER-MESSAGE 👍/👎 — ek chat turn ko rate karo (data ko "usable" banata).
+//     SELF-ONLY: sirf apni hi row rate kar sakte ho (WHERE user_id = self).
+// =========================================================================
+export const rateAiChatLog = async (c) => {
+    try {
+        const user = c.get('user');
+        const { logId, value, note = null } = await c.req.json();
+        const id = parseInt(logId, 10);
+        const v = parseInt(value, 10); // 1 = 👍, -1 = 👎, 0 = clear
+        if (!Number.isFinite(id) || ![1, -1, 0].includes(v)) {
+            return c.json({ success: false, message: 'Invalid feedback.' }, 400);
+        }
+        const res = await c.env.DB
+            .prepare('UPDATE ai_chat_logs SET feedback = ?, feedback_note = ? WHERE id = ? AND user_id = ?')
+            .bind(v === 0 ? null : v, note ? String(note).slice(0, 500) : null, id, user.id)
+            .run();
+        if (!res?.meta?.changes) return c.json({ success: false, message: 'Not found.' }, 404);
+        return c.json({ success: true }, 200);
+    } catch (error) {
+        console.error('[rateAiChatLog Error]:', error);
+        return c.json({ success: false, message: 'Could not save feedback.' }, 500);
     }
 };
 

@@ -11,6 +11,11 @@
 // =========================================================================
 
 let cur = null;
+let last = null; // most recently COMPLETED trace (chat-logging isse route/tokens leta hai)
+
+// Last fully-handled message ka trace snapshot (traceEnd ke baad bhi available).
+// chat-logging (ai_chat_logs) route/tool/tokens yahan se padhta hai.
+export function getLastTrace() { return last; }
 
 // Called once at the start of a chat message (controller wraps aiChat).
 export function traceBegin(message) {
@@ -44,6 +49,7 @@ export function traceTool(name) { if (cur && name) cur.tools.push(name); }
 // Called once after the message is fully handled (controller, after aiChat).
 export function traceEnd() {
   if (!cur) return;
+  last = cur; // snapshot for chat-logging before we clear cur
   const ms = Date.now() - cur.t0;
   const tools = cur.tools.length ? `${cur.tools.length}  (${cur.tools.join(', ')})` : '0';
   console.log(

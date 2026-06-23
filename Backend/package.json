@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:node": "node --watch src/server.node.js",
+    "mcp": "node mcp/server.mjs",
     "perms": "node scripts/show-perms.mjs",
     "schema": "node scripts/show-table.mjs",
     "seed:tasks": "node scripts/seed-tasks.mjs",
@@ -27,6 +28,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
     "@hono/node-server": "^2.0.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@supabase/supabase-js": "^2.105.4",
     "bcryptjs": "^3.0.3",
     "hono": "^4.12.15",

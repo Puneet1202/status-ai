@@ -62,6 +62,11 @@ const env = {
   // Token guard: max AI messages per minute per employee (default 20). Caps a
   // chatty user from burning credit on the brain.
   AI_RATE_PER_MIN: process.env.AI_RATE_PER_MIN || '',
+  // Chat logging: '1' → har chat turn ai_chat_logs me save (user_id pe) — future
+  // personalization/training data. Empty/'0' → off. Fire-and-forget (chat kabhi nahi rukti).
+  AI_CHAT_LOG: process.env.AI_CHAT_LOG || '',
+  // Chat-log retention (din). Purani rows din me ek baar auto-delete. 0/blank = forever.
+  AI_CHAT_RETENTION_DAYS: process.env.AI_CHAT_RETENTION_DAYS || '',
   // Task-selection requirement toggle. false → logging needs ONLY a project
   // (task feature paused); remove/true → project + ticked task. Frontend has a
   // matching REQUIRE_TASK toggle — keep both in sync.

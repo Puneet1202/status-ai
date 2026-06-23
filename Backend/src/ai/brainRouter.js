@@ -44,6 +44,8 @@ const BRAIN_TOOLS = new Set([
   "get_my_projects",
   "get_my_tasks",
   "get_my_leaves",
+  "apply_leave",
+  "update_leave",
 ]);
 
 // HR/Admin-ONLY tools. Hidden from a normal employee's toolset entirely (the
@@ -67,6 +69,7 @@ const INTENT_BUCKETS = [
   { tools: ["get_timesheet_logs", "query_timesheet", "analyze_timesheet"], re: /\b(show|list|view|fetch|display|history|report|summary|total|average|busiest|how\s+many|how\s+much|kitne|kitna|dikhao|dikhana|batao|recent|latest|aakhri|today|yesterday|kal|week|hafte|month|mahine|attendance|haziri)\b|\d{4}-\d{2}-\d{2}/i },
   { tools: ["get_my_profile"], re: /\b(who\s*am\s*i|my\s+(name|email|role|profile|designation)|mera\s+naam|meri\s+email|mera\s+role)\b/i },
   { tools: ["list_employees", "get_employee_info", "get_pending_status"], org: true, re: /\b(employees?|kaun|who\s+is|joined|join\s+hua|pending|directory|staff|team\s+member)\b/i },
+  { tools: ["apply_leave", "update_leave", "get_my_leaves"], re: /\b(leave|leaves|chutti|chhutti|chuttiyan|vacation|time ?off)\b/i },
   { tools: ["add_timesheet_entries"], re: /\d|\bse\b|\bto\b|\bbaje\b|\bbje\b|worked|kaam|fixed|developed|tested|did\b|task/i },
 ];
 

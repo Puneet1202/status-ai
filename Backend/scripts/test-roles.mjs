@@ -129,9 +129,11 @@ async function runSide(label, userId, cases) {
 }
 
 function cleanupTestEntries() {
-  // sirf [AI-TEST] marker waali rows udao — asli data untouched
+  // sirf AI-TEST marker waali rows udao — asli data untouched.
+  // NOTE: add-pipeline leading '[' strip kar deta hai ("[AI-TEST]" → "AI-TEST]"),
+  // isliye bracket ke bina (AI-TEST) match karo warna junk DB me reh jata hai.
   const db = new DatabaseSync(DB_FILE);
-  const n = db.prepare(`DELETE FROM daily_status_entries WHERE task_description LIKE ?`).run(`%${MARKER}%`);
+  const n = db.prepare(`DELETE FROM daily_status_entries WHERE task_description LIKE ?`).run(`%AI-TEST%`);
   db.close();
   return n.changes ?? 0;
 }

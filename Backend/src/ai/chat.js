@@ -764,13 +764,14 @@ function getCapabilityReply(isOrgViewer) {
         "• Show entries (today / this week / a specific date) and filter them",
         "• Analyze — totals, per-project/month breakdown, busiest, average",
         "• Edit / delete entries (with confirmation)",
+        "• Leave — check your balance, apply, or cancel/change a pending request",
         "• Tell you your profile (name / email / role)",
     ];
     if (isOrgViewer) {
         lines.push("• HR/Admin: view or analyze any employee's timesheet + employee list/count");
     }
     lines.push("");
-    lines.push("I don't handle leave, payroll, or HR settings — those are on the website. 🙂");
+    lines.push("For payroll, the holiday calendar, or approving others' leave, please use the website. 🙂");
     return lines.join("\n");
 }
 
@@ -779,10 +780,12 @@ function getCapabilityReply(isOrgViewer) {
 // "total employee" galti se analyze_timesheet (apne hours) me na chala jaye.
 const DIRECTORY_INTENT = /\b(how many|number of|count of|total(?: number)? of)\s+(active\s+)?employees?\b|\btotal\s+employees?\b|\bkitne\s+employees?\b|\b(list|show)\s+(all\s+|active\s+)?employees?\s*$|\bemployees?\s+(list|count|directory)\b/i;
 
-// Out-of-scope HR requests (leave/payroll/holiday) → say clearly we don't do it,
-// instead of a confusing greeting. Needs an ACTION verb + the noun (narrow, so a
-// work-log like "fixed the leave module" won't trigger). Time-block also skips it.
-const OUT_OF_SCOPE_INTENT = /\b(apply|applied|applying|book|request|take|cancel|approve|lagao|laga do|chahiye)\b[\s\w]*\b(leave|leaves|holiday|vacation|time ?off|chutti|chhutti)\b|\b(leave|chutti|chhutti|holiday)\b[\s\w]*\b(apply|lagao|laga do|book|chahiye|approve)\b|\b(payroll|payslip|salary slip)\b/i;
+// Out-of-scope HR requests → say clearly we don't do it, instead of a confusing
+// greeting. NOTE: applying/cancelling/editing YOUR OWN leave IS supported now (see
+// the leave-write route in aiChat) — so this must NOT catch those. Only payroll /
+// holiday calendar / APPROVING-someone's leave (dashboard) stay out of scope.
+// Time-block skips it (a work-log "fixed the payroll module" won't trigger).
+const OUT_OF_SCOPE_INTENT = /\b(payroll|payslip|salary\s*slip)\b|\bholidays?\b|\b(approve|reject|sanction|grant)\b[\s\w]{0,15}\bleaves?\b/i;
 
 export async function aiChat(env, userId, message, history = [], selectedProject = null, timeZone = null, isOrgViewer = false, viewAs = null, selectedTasks = []) {
     try {
@@ -832,11 +835,148 @@ export async function aiChat(env, userId, message, history = [], selectedProject
 
         // Org-viewer "who is pending / any pending status / kisne status nahi bhara"
         // → pending report (deterministic). Guarded so it never catches a log.
-        if (isOrgViewer && /\bpending\b/i.test(cleanMessage)
-            && /\b(status|statuses|timesheet|fill\w*|employees?|kaun|who|nahi bhara|nhi bhara)\b/i.test(cleanMessage)
+        // Trigger if EITHER:
+        //  (a) "pending" + a status/temporal/who context word (so "pending today"
+        //      bhi pakda jaye, sirf "who is pending" nahi), OR
+        //  (b) a "didn't fill / nahi bhara / hasn't submitted status" phrasing — bina
+        //      "pending" word ke (natural HR phrasings: "aaj kisne status nahi bhara",
+        //      "who has not filled their status").
+        // Guards: never a time-block log, delete, update, ya LEAVE query.
+        const PENDING_CTX = /\bpending\b/i.test(cleanMessage)
+            && /\b(status|statuses|timesheet|fill\w*|employees?|kaun|who|today|aaj|kal|yesterday|week|month|hafte|nahi bhara|nhi bhara)\b/i.test(cleanMessage);
+        const NONFILL_PENDING = /\b(?:nahi|nhi)\s+bhar\w*\b/i.test(cleanMessage)
+            || /\b(?:not|haven'?t|hasn'?t|didn'?t|did\s+not|hasnt|havent|didnt)\b[^.?!]*\b(?:fill\w*|submit\w*|status|timesheet)\b/i.test(cleanMessage);
+        if (isOrgViewer && (PENDING_CTX || NONFILL_PENDING)
+            && !/\bleaves?\b/i.test(cleanMessage)
             && !looksLikeTimeBlock(cleanMessage) && !DELETE_INTENT.test(cleanMessage) && !UPDATE_INTENT.test(cleanMessage)) {
+            // Period samajho usi PROVEN helper se jo GET queries use karti hai —
+            // "this week"/"is hafte" → range, "kal" → single day, kuch nahi → today.
+            // (koi nayi date-math nahi; tool from/to/date khud handle karta hai.)
+            const todayStr = todayISO(timeZone);
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+            let pdata = {};
+            if (range && range.from_date && range.to_date) {
+                if (range.from_date !== range.to_date) {
+                    pdata = { from: range.from_date, to: range.to_date };   // week/month range
+                } else if (range.from_date !== todayStr) {
+                    pdata = { date: range.from_date };                      // a specific non-today day
+                }
+                // single day == today → {} (tool defaults to today — no change)
+            }
             traceRoute('pending-status → DETERMINISTIC (no brain, 0 tokens)');
-            return { action: { name: 'get_pending_status', data: {} } };
+            return { action: { name: 'get_pending_status', data: pdata } };
+        }
+
+        // ── LEAVE: APPLY / UPDATE / CANCEL — deterministic WRITE (self-only). ────
+        // View ka WRITE counterpart. Yahan GET/analytics routes se PEHLE chalta hai
+        // taaki "apply leave from <date> to <date>" (chips bhi) date-bearing hote
+        // hue bhi galti se logs/analytics pe na jaye. Sab tools self-scoped
+        // (ctx.employeeId) — koi permission nahi chahiye (har banda APNI leave).
+        // Guard: time-block (work-log "leave module fix kiya") skip.
+        // FOLLOW-UP: agar TURANT pichla bot reply apply_leave ka koi prompt tha
+        // (dates / category / reason maanga), to current message us apply ka
+        // continuation hai — bhale usme "leave"/apply word na ho ("25 june 2026",
+        // "casual single day", "confirm"). User chips tap karne ki jagah type kare to
+        // har turn me sab dobara nahi likhta → pieces recent conversation se merge
+        // karte hain (niche). Sirf SABSE recent bot reply dekha jaata hai → apply
+        // complete/abandon hote hi follow-up apne aap false (purani view query hijack nahi).
+        const lastBot = [...(Array.isArray(history) ? history : [])].reverse()
+            .find((h) => h && h.role === 'assistant' && typeof h.content === 'string');
+        const LEAVE_APPLY_FOLLOWUP = !!lastBot
+            && /I need valid dates|Tell me the leave date|Which type of leave|What's the reason|Almost there|leave category|reason for your leave|day\(s\) of .*leave/i.test(lastBot.content);
+        if (!looksLikeTimeBlock(cleanMessage)
+            && (/\b(leave|leaves|chutti|chhutti|chuttiyan|chuttiyon)\b/i.test(cleanMessage)
+                || LEAVE_APPLY_FOLLOWUP)) {
+            // CANCEL — "cancel my leave", "leave cancel kar do", "withdraw leave".
+            if (/\b(cancel|withdraw|cancel\s*kar|raddh?\s*kar)\b/i.test(cleanMessage)) {
+                traceRoute('leave-cancel → update_leave (deterministic, 0 tokens)');
+                return { action: { name: 'update_leave', data: { cancel: true } } };
+            }
+            const APPLY_VERB =
+                LEAVE_APPLY_FOLLOWUP ||   // mid apply-leave conversation = continuation
+                /\b(apply|applied|applying|book)\b/i.test(cleanMessage) ||
+                /\b(request|take)\b[\s\w]*\b(leave|chutti|chhutti)\b/i.test(cleanMessage) ||
+                /\b(leave|chutti|chhutti|chuttiyan)\b[\s\w]*\b(chahiye|chaiye|chaahiye|lagao|laga\s*do)\b/i.test(cleanMessage) ||
+                /\b(chahiye|chaiye|chaahiye|lagao|laga\s*do)\b[\s\w]*\b(leave|chutti|chhutti)\b/i.test(cleanMessage);
+            const CHANGE_VERB = /\b(change|update|edit|fix|correct|modify|reschedule|badal|sahi\s*kar)\b/i.test(cleanMessage);
+            // CHANGE pending leave (date/reason) — only when NOT an apply.
+            if (CHANGE_VERB && !APPLY_VERB) {
+                const upd = {};
+                const r = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+                if (r && r.from_date) { upd.from_date = r.from_date; if (r.to_date && r.to_date !== r.from_date) upd.to_date = r.to_date; }
+                const rm = cleanMessage.match(/\breason\s*[:\-]?\s*(.+)$/i);
+                if (rm) upd.reason = rm[1].trim();
+                traceRoute('leave-update → update_leave (deterministic, 0 tokens)');
+                return { action: { name: 'update_leave', data: upd } };
+            }
+            // APPLY a new leave — category + dates + reason nikaalo; jo missing ho,
+            // tool khud poochhta hai (category chips / "need dates" / reason chips).
+            if (APPLY_VERB) {
+                const ad = {};
+                // Normalize category word (typo-tolerant): "causal"/"casaul" → Casual,
+                // "earn*" → Earned, "med*"/"sick"/"bimar" → Medical.
+                const CAT_RE = /\b(casual|casaul|causal|casuel|earned|earnd|earnt|earn|medical|medcal|med|sick|sik|bimar|biimar)\b/i;
+                const toCat = (w) => {
+                    if (/^(sick|sik|bimar|biimar|med)/i.test(w)) return 'Medical';
+                    if (/^earn/i.test(w)) return 'Earned';
+                    if (/^(cas|cau)/i.test(w)) return 'Casual';
+                    return w[0].toUpperCase() + w.slice(1).toLowerCase();
+                };
+                // Category sirf "reason:" se PEHLE wale hisse me dhoondo (warna
+                // "reason: medical checkup" galti se category na ban jaye).
+                const beforeReason = cleanMessage.split(/\breason\s*[:\-]/i)[0];
+                const cat = beforeReason.match(CAT_RE);
+                if (cat) ad.category = toCat(cat[1]);
+                const r = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+                if (r && r.from_date) { ad.from_date = r.from_date; if (r.to_date) ad.to_date = r.to_date; }
+                const rm = cleanMessage.match(/\b(?:reason|kyunki|kyuki|because|wajah)\s*[:\-]?\s*(.+)$/i);
+                if (rm) ad.reason = rm[1].trim();
+
+                // MID-APPLY MERGE: user ne chips tap karne ki jagah turn-by-turn type
+                // kiya (date ek message me, category agle me) → jo abhi missing hai use
+                // recent USER messages se bhar do (newest-first). Sirf follow-up me —
+                // fresh apply ko contaminate nahi karta.
+                if (LEAVE_APPLY_FOLLOWUP) {
+                    const recentUser = [...(Array.isArray(history) ? history : [])]
+                        .filter((h) => h && h.role === 'user' && typeof h.content === 'string')
+                        .slice(-6).reverse();
+                    for (const h of recentUser) {
+                        if (!ad.category) { const c = h.content.match(CAT_RE); if (c) ad.category = toCat(c[1]); }
+                        if (!ad.from_date) { const r2 = parseGetRange(h.content, nowInTz(timeZone), monthFirst); if (r2 && r2.from_date) { ad.from_date = r2.from_date; if (r2.to_date) ad.to_date = r2.to_date; } }
+                        if (ad.category && ad.from_date) break;
+                    }
+                }
+
+                // SINGLE-DAY guard: "from 25 june" → parseGetRange open-from to_date ko
+                // aaj (past) bana deta hai (start se pehle) → single day maano. "single
+                // day"/"ek din" explicit ho to bhi single. (Asli range "25 to 28 june"
+                // me to_date >= from_date → safe.)
+                if (ad.from_date && (!ad.to_date || ad.to_date < ad.from_date || /\bsingle\s*day\b|\bek\s*din\b|\b1\s*day\b|\bone\s*day\b/i.test(cleanMessage))) {
+                    ad.to_date = ad.from_date;
+                }
+                traceRoute('leave-apply → apply_leave (deterministic, 0 tokens)');
+                return { action: { name: 'apply_leave', data: ad } };
+            }
+        }
+
+        // ── BULK DELETE — "delete all today / saari entries hata do" ──────────
+        // Single delete brain handle karta hai (jaisa tha). Par "ALL/sab/saari" ke
+        // saath delete = bulk → deterministic delete_timesheet {delete_all} taaki
+        // sirf 1 entry delete na ho. Scope: parseGetRange se date/range (today/date);
+        // koi date na ho → saari entries. Leave/time-block guard.
+        const BULK_DELETE = DELETE_INTENT.test(cleanMessage)
+            && /\b(all|every|everything|entire|saar[ie]|saari|sab|sabhi|poora|pura|complete)\b/i.test(cleanMessage)
+            && !/\bleaves?\b|\bchutti\b/i.test(cleanMessage)
+            && !looksLikeTimeBlock(cleanMessage);
+        if (BULK_DELETE) {
+            const range = parseGetRange(cleanMessage, nowInTz(timeZone), monthFirst);
+            const data = { delete_all: true };
+            if (range && range.from_date) {
+                data.from_date = range.from_date;
+                data.to_date = range.to_date || range.from_date;
+            }
+            traceRoute('bulk-delete → delete_timesheet {delete_all} (deterministic, 0 tokens)');
+            return { action: { name: 'delete_timesheet', data } };
         }
 
         // Profile question → reply from the verified login. Skip if there's a time
@@ -912,7 +1052,7 @@ export async function aiChat(env, userId, message, history = [], selectedProject
                 return { reply: getCapabilityReply(isOrgViewer) };
             }
             if (OUT_OF_SCOPE_INTENT.test(cleanMessage)) {
-                return { reply: "I only handle timesheets (log/view/analyze hours). I don't manage leave, holidays, or payroll — please use the website for those. 🙂" };
+                return { reply: "I handle timesheets and your own leave (check balance, apply, cancel/change). For payroll, the holiday calendar, or approving others' leave, please use the website. 🙂" };
             }
             if (DIRECTORY_INTENT.test(cleanMessage)) {
                 return { action: { name: 'list_employees', data: {} } };

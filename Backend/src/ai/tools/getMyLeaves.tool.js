@@ -13,6 +13,7 @@ const schema = {
   parameters: {
     type: "object",
     properties: {
+      category: { type: "string", description: "Optional leave category name to focus on, e.g. 'Casual', 'Earned', 'Medical'. Set this when the user names a SPECIFIC category ('earned leaves', 'how many casual left'). Omit to show ALL categories." },
       year: { type: "number", description: "Optional year (e.g. 2026). Defaults to the current year." },
       status: { type: "string", description: "Optional: only applications with this status — 'pending', 'approved', or 'rejected'. Set for 'how many leaves pending'." },
       from_date: { type: "string", description: "Optional YYYY-MM-DD: was I on leave in this period? Set with to_date for 'leave last month / on 2026-05-12'." },
@@ -111,17 +112,32 @@ async function handler(ctx, data = {}) {
     };
   }
 
-  // Balance per category for the year.
+  // Optional CATEGORY focus — user named a specific one ("earned leaves"). When
+  // omitted → all categories (default). Partial, case-insensitive match.
+  const catFilter = data.category && String(data.category).trim();
+
+  // Balance per category for the year (filtered to one category when asked).
   const { results: balances } = await db
     .prepare(
       `SELECT lc.name, b.allotted_days, b.taken_days
          FROM employee_leave_balances b
          JOIN leave_categories lc ON lc.id = b.leave_category_id
         WHERE b.employee_id = ? AND b.year = ?
+              ${catFilter ? "AND LOWER(lc.name) LIKE LOWER(?)" : ""}
         ORDER BY lc.name ASC`
     )
-    .bind(employeeId, year)
+    .bind(...(catFilter ? [employeeId, year, `%${catFilter}%`] : [employeeId, year]))
     .all();
+
+  // Category named but no such balance row → clear, focused reply.
+  if (catFilter && (!balances || balances.length === 0)) {
+    return {
+      success: true,
+      action: "GET_MY_LEAVES",
+      reply: `🌴 No "${catFilter}" leave balance found for ${year}. Check the category name (Casual / Earned / Medical) or the year.`,
+      data: { balances: [], apps: [] },
+    };
+  }
 
   // Recent applications (any year) with status.
   const { results: apps } = await db
@@ -148,7 +164,11 @@ async function handler(ctx, data = {}) {
     };
   }
 
-  const lines = [`🌴 Your leaves (${year}):`];
+  const lines = [
+    catFilter
+      ? `🌴 Your ${balances[0].name} leave (${year}):`
+      : `🌴 Your leaves (${year}):`,
+  ];
 
   if (balances && balances.length) {
     lines.push("");
@@ -159,14 +179,19 @@ async function handler(ctx, data = {}) {
       totA += allotted; totT += taken;
       lines.push(`   • ${b.name}: ${allotted - taken} left  (${taken} taken of ${allotted})`);
     }
-    lines.push(`   ── Total: ${totA - totT} left of ${totA}`);
+    // Total line only when MULTIPLE categories shown (redundant for a single one).
+    if (balances.length > 1) lines.push(`   ── Total: ${totA - totT} left of ${totA}`);
   } else {
     lines.push("   No leave balance set for this year.");
   }
 
-  if (apps && apps.length) {
+  // Recent applications — when a category is focused, show only that category's.
+  const shownApps = catFilter
+    ? (apps || []).filter((a) => String(a.category || "").toLowerCase().includes(catFilter.toLowerCase()))
+    : apps;
+  if (shownApps && shownApps.length) {
     lines.push("", "Recent applications:");
-    for (const a of apps) {
+    for (const a of shownApps) {
       const span = a.start_date === a.end_date ? a.start_date : `${a.start_date} → ${a.end_date}`;
       lines.push(`   • ${span} · ${a.total_days}d · ${a.category} · ${a.status}`);
     }

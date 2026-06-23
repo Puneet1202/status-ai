@@ -21,9 +21,11 @@ import getMyPermissions from "./getMyPermissions.tool.js";
 import getMyProjects from "./getMyProjects.tool.js";
 import getMyTasks from "./getMyTasks.tool.js";
 import getMyLeaves from "./getMyLeaves.tool.js";
+import applyLeave from "./applyLeave.tool.js";
+import updateLeave from "./updateLeave.tool.js";
 import { traceTool } from "../trace.js";
 
-const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile, analyzeTimesheet, queryTimesheet, listEmployees, getEmployeeInfo, getPendingStatus, getMyPermissions, getMyProjects, getMyTasks, getMyLeaves];
+const MODULES = [addTimesheet, getTimesheet, updateTimesheet, deleteTimesheet, getMyProfile, analyzeTimesheet, queryTimesheet, listEmployees, getEmployeeInfo, getPendingStatus, getMyPermissions, getMyProjects, getMyTasks, getMyLeaves, applyLeave, updateLeave];
 
 // name -> module
 export const REGISTRY = Object.fromEntries(MODULES.map((m) => [m.name, m]));

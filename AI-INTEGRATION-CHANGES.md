@@ -40,6 +40,51 @@ File: `src/controllers/timesheet.controller.js` (FIELD-WORD GUARD).
   bina "my" likhe. Real names (madhulika/puneet/...) untouched. Behavior model: koi naam/Viewing-pill
   nahi → apna data; naam ya pill ho → us employee ka; pill active hote hue apna chahiye → "my/apna".
 
+## 🆕 FEATURE (2026-06-22) — MCP server (local stdio) · existing tools ko Claude Desktop pe expose
+Naya folder: `backend/mcp/` (`server.mjs` + `README.md`). Existing backend untouched.
+- **Kya:** 14 AI tools (add/query/analyze timesheet, leaves, projects, tasks, profile...)
+  ko MCP par expose karta hai → Claude Desktop se seedha "log 9-11 api work" / "show my hours".
+  Host LLM reasoning/voice/multilanguage karta hai → Cloudflare AI quota bachta hai.
+- **Reuse-only:** `REGISTRY` + `dispatchTool` wrap kiye; koi tool-logic dubara nahi likha.
+- **Auth:** user JWT `MCP_AUTH_TOKEN` (same company token). Middleware wali EXACT chain —
+  verify → DB se user → role_permissions → perms/isOrgViewer → ctx → dispatchTool.
+- **Verified:** tools/list = 14 ✅; `get_my_profile` real DB data (Vijay #135) ✅;
+  scope security ✅ (employee #135 ne madhulika dekhne ki koshish → "Only HR/Admin" deny).
+  MCP backend auth ko bypass NAHI karta — usi se guzarta hai.
+- **Dep:** `@modelcontextprotocol/sdk`. Script: `npm run mcp`.
+- **Pending:** remote MCP (Cloudflare Workers) for ChatGPT/public; "Generate API key" UI
+  (long-lived per-user token) sir ke app me — abhi JWT copy-paste se test.
+
+## 🆕 IMPROVEMENT (2026-06-22) — get_my_leaves me category filter
+File: `src/ai/tools/getMyLeaves.tool.js`.
+- **Pehle:** "earned leaves" poochho ya kuch bhi, saari categories (Casual/Earned/Medical) dikhti.
+- **Ab:** optional `category` param — naam diya ("earned") → sirf wahi (single line, Total skip);
+  na diya → sab + Total (pehle jaisा). Galat naam → saaf "No <x> leave balance found" message.
+  Partial case-insensitive match; recent apps bhi usi category ke. Self-scoped hi (security same).
+- Note: `32345678` Earned value = user-added test data (Anurag 348), tool sahi dikha raha tha.
+
+## 🆕 FEATURE (2026-06-22) — apply_leave tool (AI se leave apply)
+Files: `src/ai/tools/applyLeave.tool.js` (naya), `src/ai/tools/index.js` (register).
+- **Kya:** user "mujhe leave chahiye / apply 2 days earned leave" bole → PENDING leave application
+  ban jaati hai. Host LLM reason ko professional likhta hai; reason na ho to **professional reason
+  ke suggestion chips** + date auto-filled. Manual se easy.
+- **Self-scoped** (ctx.employeeId) — kisi aur ke liye apply nahi (security same as add_timesheet).
+- **Validation (DB-driven):** category resolve; balance (remaining < days → block); max_consecutive
+  _days_allowed (Casual=1 etc → block); overlap with pending/approved → block; min_notice + document
+  → soft note (phir bhi submit, admin reviews). status='pending'.
+- **Verified:** Casual 3-day → block ✅; unknown category → list+chips ✅; no reason → suggestions ✅;
+  happy-path INSERT (id 103, pending) ✅ then test row DELETED → company DB clean.
+- tools/list ab 16 (15 registry + ping).
+
+## 🆕 FEATURE (2026-06-22) — update_leave tool (edit/cancel pending leave)
+Files: `src/ai/tools/updateLeave.tool.js` (naya), `index.js` (register).
+- **Kya:** galti se galat date/reason apply ho jaye to fix/withdraw — "change my leave to 27 June",
+  "cancel my leave". LATEST pending application pe chalता hai (add-status ke edit jaisा).
+- **Self-scoped**; sirf 'pending' editable (approved/rejected nahi). Date change pe wahi validation
+  dob= (balance, max-consecutive, overlap — apne aap ko exclude karke). Cancel → status='cancelled'.
+- **Verified:** apply→edit(20→27 Dec)→cancel full flow ✅, test rows DELETED, DB clean.
+- tools/list ab 17 (16 registry + ping).
+
 ---
 
 ## ⚠️ FOLLOW-UP — Employee role ki permissions (prod DB quirk)
@@ -419,3 +464,336 @@ deterministic, no hallucination). Gap: detector sirf "permission" word pakadta t
 query-word (kya/kaun/konsi/kitni) ke saath hi `access/adhikaar`. Narrow rakha → negative
 ("access the dashboard", "give me access", "9-11 access control") galti se trigger nahi
 karte (verify kiya). Ab ye bhi **0-token**.
+
+---
+
+## 🆕 Session update — 2026-06-23 (pending-status routing fix + test cleanup hardening)
+
+### A. Pending-report routing broadened (chat.js — org-viewer deterministic route)
+**Symptom (sir-visible):** HR/Admin ke natural phrasings galat tool pe ja ke
+**"No records found for <date> to <date>"** de rahe the (jabki 14 log pending the):
+- `"pending today"` — "pending" tha par doosra keyword nahi → miss
+- `"aaj kisne status nahi bhara"` — "pending" word hi nahi → miss
+- `"who has not filled their status today"` — "pending" word nahi → miss
+Sirf `"who is pending today"` chal raha tha. Fail hone par brain (qwen) inhe
+logs/query tool pe bhej deta tha → misleading "No records found".
+
+**Fix:** deterministic pending route (line ~835) ko 2-tarah trigger kiya:
+1. `PENDING_CTX` — "pending" + (status/timesheet/fill/who/kaun/**today/aaj/kal/
+   yesterday/week/month/hafte**/nahi bhara) → "pending today" bhi pakda jaye.
+2. `NONFILL_PENDING` — "nahi/nhi bhar*" YA "not/haven't/hasn't/didn't … fill/
+   submit/status/timesheet" → bina "pending" word ke bhi pending samjhe.
+Guards intact + naya **`!\bleaves?\b`** guard (leave query na cheene).
+**Verify:** 5/5 pending phrasings ✅ ab `get_pending_status` (0-token deterministic).
+Regression ✅ — `"9-11 pending review of report"` log save hua (time-block guard),
+`"show my pending leaves"` leave reply (leave guard). Sab still 0-token.
+
+### B. test:roles cleanup hardening (scripts/test-roles.mjs)
+Add-pipeline description ka leading `[` strip kar deta hai (`"[AI-TEST]"` →
+`"AI-TEST]"`). Cleanup `LIKE '%[AI-TEST]%'` isliye 0 match karta tha → har test run
+ke baad 3 junk entries **real DB (final-project) me reh jaati thi** (aaj ki date pe
+Puneet/Neha ke timesheet me "AI-TEST]" dikhta). Cleanup ko `LIKE '%AI-TEST%'` kiya
+(bracket ke bina). Purani leftover junk rows (291190-192) manually delete ki — DB clean.
+
+### C. Pending route ab DATE-AWARE ("this week"/"this month"/"kal") — chat.js
+Pehle pending route hamesha `data:{}` (=today) bhejta tha → `"pending this week"`
+bhi sirf aaj dikhata tha. **Fix:** wahi **PROVEN `parseGetRange` helper** reuse kiya
+(jo GET queries use karti hai — koi nayi date-math NAHI). Map:
+- range (week/month) → tool ko `{from,to}` → range-mode report
+- specific non-today din ("kal") → `{date}`
+- today / no-period → `{}` (pehle jaisa, koi change nahi)
+**Verify:** `"pending this week"` → 2-day range, `"pending this month"` → 23-day,
+`"kal kaun pending tha"` → yesterday; today-cases unchanged. Regression ✅ (log save,
+leaves, `"show my hours this week"`, profile sab waise hi). **test:roles ab 15/15** (pehle 14/15).
+
+> NOTE (jaan-boojh ke NAHI badla): add-pipeline ka leading `[` strip
+> (`timeParser.js` line ~111) **intentional + unit-tested** hai (bot ki apni
+> "(9to11)" line dobara bheji jaye to artifact saaf kare). Real user description `[`
+> se shuru nahi karta — sirf test marker `[AI-TEST]` pe dikha tha. Risk > benefit →
+> chhoda nahi (test cleanup ko bracket-free kar diya, point B).
+
+---
+
+## 🆕 Session update — 2026-06-23 (LEAVE apply/update/cancel — wired up in chatbot)
+
+### Problem
+Leave **VIEW** (balance/pending/all-time via `get_my_leaves`) chal raha tha, par
+**APPLY / UPDATE / CANCEL** block the — `applyLeave.tool.js` + `updateLeave.tool.js`
+LIKHE aur REGISTRY me REGISTERED the, par 3 jagah se disconnect:
+1. Stale `OUT_OF_SCOPE_INTENT` guard (chat.js) "apply/cancel leave" pakad ke
+   *"I don't manage leave"* canned reply de deta tha (yeh tab ka jab leave-tool tha hi nahi).
+2. `BRAIN_TOOLS` (brainRouter) me sirf `get_my_leaves` tha → brain `apply_leave`/
+   `update_leave` ko kabhi call nahi kar sakta tha.
+3. Koi deterministic route / INTENT_BUCKET nahi.
+**DB/permission ka issue NAHI tha** — leave tables + balances ready; apply self-only
+(ctx.employeeId), koi permission nahi chahiye (attendance se ALAG).
+
+### Fix (5 surgical edits, koi working feature nahi toota)
+**chat.js**
+- `getCapabilityReply`: "I don't handle leave" → ab leave capability listed; payroll/
+  holiday/approval hi website pe.
+- `OUT_OF_SCOPE_INTENT` narrow: ab sirf **payroll / payslip / holiday / approve-reject
+  someone's leave** out-of-scope. Apna leave apply/cancel/edit NAHI rok'ta.
+- Out-of-scope canned reply updated (ab "leave nahi karta" jhooth nahi).
+- **NAYA deterministic LEAVE-WRITE route** (pending route ke baad, GET/analytics se
+  PEHLE — taaki date-bearing "apply leave from <d> to <d>" / chips logs pe na jaye):
+  - CANCEL → `update_leave {cancel:true}`
+  - CHANGE/edit (date/reason, apply nahi) → `update_leave {from_date?,to_date?,reason?}`
+  - APPLY → `apply_leave {category?,from_date?,to_date?,reason?}` — category sirf
+    "reason:" se pehle dhoonda; dates `parseGetRange` (proven helper) se; missing ho to
+    TOOL khud poochta hai (category chips / "need dates" / reason chips). Self-only, 0-token.
+  - Guard: time-block ("9-11 leave module testing") = WORK LOG, leave-apply nahi.
+
+**brainRouter.js**
+- `BRAIN_TOOLS` me `apply_leave`, `update_leave` add (brain fallback ke liye).
+- Naya INTENT_BUCKET: leave/chutti/vacation → leave tools.
+
+### Verify (sab live server pe, test rows baad me DELETE ki — DB clean)
+- View ✅ · Apply single+multi ✅ · maxConsec block ✅ · balance block ✅ · overlap
+  block ✅ · no-category→chips ✅ · no-reason→chips ✅ · update date ✅ · cancel ✅
+- **Security**: "apply leave for neha" → apne (logged-in) liye bani, neha IGNORE
+  (self-only by construction) ✅
+- Normal **employee** apni leave apply kar paya (permission nahi chahiye) ✅
+- Time-block "leave" word = work-log ✅
+- **Regression: test:roles 15/15 ALL PASS** (timesheet/pending/attendance untouched).
+
+---
+
+## 🆕 Session update — 2026-06-23 (chatbot "Cancel edit" button — frontend)
+
+### Problem
+Saved entry pe **"✏️ Edit"** click karte hi uska text + project/task input me prefill
+ho jaata tha (edit mode). Par agar user ko galti se click ho jaaye ya mann badal jaaye,
+to cancel karne ka koi clean tareeka nahi tha — sab kuch **manually** mitana padta tha
+(text + project pill alag-alag). Sir ne bola ek **Cancel/✕** chahiye jo ek click me
+poora edit-mode saaf kar de.
+
+### Fix (frontend — company repo `final-project/react-keyss-status/src/components/AIChatbot.jsx`, UI-local edit · NO push)
+1. **Naya state** `editingActive` (`useState(false)`) — track karta hai ki abhi edit-mode on hai ya nahi.
+2. **`startEdit`** me `setInputValue(text)` ke baad `setEditingActive(true)` — Edit click → mode ON.
+3. **Naya `cancelEdit()`** — ek click me clean slate:
+   ```js
+   const cancelEdit = () => {
+     replaceIdsRef.current = null;     // replace-target hatao (warna submit purani row delete kar deta)
+     setEditingActive(false);          // edit-mode off
+     setInputValue('');                // prefilled text saaf
+     setActiveContext(null);           // project + task pill bhi hata do (clean slate)
+     if (inputRef.current) inputRef.current.style.height = 'auto'; // textarea height reset
+   };
+   ```
+4. **`handleSubmit`** me `replaceIdsRef.current = null;` ke baad `if (editingActive) setEditingActive(false);`
+   — normal submit ke baad bhi mode apne-aap off (button gayab).
+5. **Footer** `justify-end` → `justify-between`: edit-mode me **left** pe chhota lal
+   **"✕ Cancel edit"** button (lucide `X`), right pe wahi "Press Enter to submit" hint.
+   Mode off ho to button ki jagah khaali (`<span />`) — layout shift nahi.
+
+### Verify
+- Edit click → text + project pill prefill, **Cancel edit** button dikhta hai ✅
+- Cancel edit → text, edit-mode, **aur project/task pill teeno saaf** ✅
+- Normal submit ke baad button apne-aap gayab ✅
+- Koi backend/logic change NAHI — purely widget UX (replace-on-edit flow safe). ✅
+
+> Note: ye sirf `final-project` wali copy me kiya (sir wali real app). `day2/react-keyss-status`
+> wali copy me mirror karna ho to bata dena — same 5 edits.
+
+---
+
+## 🐛 FIX (2026-06-23) — leave-apply "need dates" follow-up "No records found" deta tha
+
+### Symptom (sir-visible)
+`"how to apply leave"` → tool ne `"I need valid dates… tell me the leave date(s)"`
+maanga → user ne `"25 june 2026"` likha → reply **"No records found for 2026-06-23
+to 2026-06-23"** (galat — leave apply hona chahiye tha).
+
+### Root cause (`chat.js` leave-write route)
+Leave route ka entry-guard message me `leave/chutti` word **must** karta tha. Follow-up
+`"25 june 2026"` me wo word nahi tha → leave route miss → message GET read route pe
+gir ke aaj ki entries dhoondh ke "No records found" de deta. (Category/reason prompts
+me **chips** hote hain jo poora context carry karte hain → wo khud recover ho jaate;
+sirf **dates** step pe chips nahi hote → wahi toota.)
+
+### Fix (surgical, 2 edits — koi feature nahi toota)
+- `LEAVE_DATE_FOLLOWUP` flag: pichla **assistant** reply agar `"I need valid dates"` /
+  `"Tell me the leave date"` tha → current message us apply ka continuation maano
+  (bhale usme "leave" word na ho).
+- Leave route entry-guard me `|| LEAVE_DATE_FOLLOWUP` add; `APPLY_VERB` me bhi follow-up
+  include → bare-date message apply path pe jaata hai, `parseGetRange` se date nikal ke.
+
+### Verify
+- Follow-up `"25 june 2026"` → `apply_leave {from_date:2026-06-25, to_date:2026-06-25}`
+  **0-token** (LLM call nahi), phir tool category chips poochta hai ✅
+- **Negative:** bina us follow-up ke bare `"25 june 2026"` → `get_timesheet_logs` (read),
+  apply_leave **nahi** — koi read-query regression nahi ✅
+- Unit suite **92/92 pass** ✅
+
+---
+
+## 🐛 FIX (2026-06-23) — leave-apply multi-turn (typed, not chips) tootta tha
+
+User chips tap karne ki jagah turn-by-turn TYPE kare to flow 3 jagah tootta tha:
+
+1. **"i need leave from 25 june 2026" → "end date before start"**
+   `parseGetRange` me `from` + no `to` = open-from → `to_date = today` (=23 Jun, jo
+   start 25 Jun se *pehle*). **Fix:** apply route me **single-day guard** — `to_date`
+   missing/`< from_date` ho ya `"single day"/"ek din"` ho → `to_date = from_date`.
+   (Asli range `"25 to 28 june"` me `to >= from` → safe.)
+2. **"casual leave and single day" → leave VIEW khul jaata tha (apply nahi)**
+   Us message me date nahi tha (2 turn pehle diya) + apply-verb nahi → `get_my_leaves`
+   pe gir jaata. **Fix:** (a) follow-up detection broaden — TURANT pichla bot reply agar
+   koi apply-prompt tha (dates/category/reason/"leave category"/"reason for your leave")
+   to current message apply-continuation. (b) **MID-APPLY MERGE** — jo field abhi missing
+   hai (date/category) use recent USER messages se newest-first bhar do. Sirf follow-up
+   me → fresh apply contaminate nahi. Apply success/abandon hote hi (latest bot reply
+   badal jaata) follow-up false → purani view query hijack nahi.
+3. **"causal" (typo) category match nahi karti thi** → category miss. **Fix:**
+   typo-tolerant `CAT_RE` (`causal/casaul/casuel`, `earn*`, `med*/sick/bimar`) + `toCat`
+   stem-normalize → galat-spelling bhi sahi category banti.
+
+**Verify (deterministic, 0-token):** full flow `how to apply → from 25 june → causal +
+single day` → `apply_leave {Casual, 2026-06-25}` ✅; range `{Earned, 25→28}` ✅;
+submit ke baad "show my leaves" → view (no hijack) ✅; unit suite **92/92** ✅.
+
+> DATA note (code nahi): chat me `Earned: 32345678 left` = `employee_leave_balances` me
+> **Anurag (id 348)** ki Earned `allotted_days = 32345678` — testing ka junk number.
+> AI sahi dikha raha hai. Theek karna ho to sane value (e.g. 12) set karni hogi —
+> company DB hai, isliye user-confirm ke baad hi.
+
+---
+
+## 🆕 FEATURE (2026-06-23) — `ai_chat_logs`: har chat turn save (per-user, future training data)
+
+### Maksad
+User ke chat **pattern** collect karna (kaise bolta hai, kya chahta hai, follow-up) →
+(1) **per-user personalization** (AI uske style me dhale), (2) routing/typo improvement
+data, (3) future fine-tune ka foundation. `ai_feedback` (sirf Report button, employee_id
+pe) se ALAG — ye HAR turn save karta hai aur **USER_ID (users.id)** pe key hota hai.
+
+### Step 1 — Schema (`migrations/0006_ai_chat_logs.sql`)
+Naya table: `id, user_id (→users.id), session_id, user_message, ai_reply, intent,
+route, tool_name, selected_project, tokens, created_at`. **Ek row = ek exchange**
+(user + AI) = ek training example. `IF NOT EXISTS` + index. Sirf naya table — koi data
+touch nahi. **Local dev DB pe apply + insert/select/delete smoke-test pass.** Company
+(`final-project`) DB pe abhi NAHI (user-confirm pending).
+
+### Step 2 — Fire-and-forget logging (`timesheet.controller.js`, `trace.js`, `server.node.js`, `.env`)
+- `logAiChat()` helper — dono main return points (action-path + conversational) pe call.
+  **Fire-and-forget:** insert try/catch me; table na ho / fail ho to **chup-chaap skip,
+  chat KABHI nahi rukti, error nahi dikhta.** Gate: `AI_CHAT_LOG==='1'`.
+- `trace.js`: `getLastTrace()` add (traceEnd ab `last` me snapshot rakhta hai) →
+  route/tool/tokens us turn ke trace se. **Stale-trace guard:** message-match check
+  (chipAction path jaha traceBegin nahi hota, wahan default deterministic/0).
+- `server.node.js`: `AI_CHAT_LOG` env map. `.env`: `AI_CHAT_LOG=1` (default on).
+- Import OK, **unit suite 92/92 pass** (koi regression nahi).
+
+> NOTE: dev server `DB_FILE` = company `final-project` DB pe point karta hai → logs
+> tabhi save honge jab migration 0006 us DB pe bhi chale (abhi sirf local pe hai). Bina
+> table → logging chup-chaap skip (by design). Company DB migration = user-confirm ke baad.
+
+### Update — employee_id column (migration 0007)
+Logic **user_id pe hi** (jaisa sir ne kaha); `employee_id` sirf EXTRA filter column
+(yaad rehta hai → search easy). Nullable. `logAiChat` ab `user.employee_id` bhi save
+karta hai. Local + company dono DB pe applied.
+
+### Update — har turn save (sendChat wrapper)
+Pehle sirf 2 main return log hote the → confirm/overlap/nudge jaise **early returns
+miss** ho rahe the (e.g. overlap pe "No" wala turn save nahi hota tha). `sendChat(payload,
+intent)` wrapper banaya jo HAR reply ko log karke bhejta hai → koi turn miss nahi.
+intents: `overwrite_declined`, `no_time_nudge`, `delete_timesheet`, `update_timesheet`,
+`add_timesheet_entries`, etc. Har turn = ek nayi row (append; add→edit→delete = 3 rows).
+
+---
+
+## 🆕 FEATURE (2026-06-23) — chat-logs ko "production-grade": privacy + retention + 👍👎 feedback
+
+Senior-engineer best-practices add kiye (3 me se; "alag DB / async queue" = scale ka
+kaam, abhi chhote project pe NAHI chahiye — jaan-boojh ke skip).
+
+### A. Privacy — sensitive redaction (log se PEHLE)
+`redactSensitive()` — `logAiChat` me user_message + ai_reply pe lagta hai:
+- email → `[email]`, 10-digit phone → `[phone]`, 12-digit → `[id]`,
+  salary/ctc/account/aadhaar/pan ke paas ka number → `[redacted]`.
+- **Light** rakha — normal timesheet text (`9 to 11 api work`) untouched (verify kiya) →
+  pattern data zinda, PII leak nahi. (Naam reliably mask mushkil + data kharab → uske liye
+  access-control + retention + delete-my-data.)
+
+### B. Retention — purani chat auto-delete (`AI_CHAT_RETENTION_DAYS`, default 90)
+`purgeOldChatLogs()` — cron ke bina, `logAiChat` se **din me max ek baar** trigger
+(`-N days` se purani rows DELETE). `0`/blank = forever. Background, non-blocking.
+
+### C. "Usable data" — per-message 👍/👎 + delete-my-data
+- Migration **0008**: `ai_chat_logs` me `feedback` (1/-1/NULL) + `feedback_note` columns
+  (+ index). Local + company dono pe applied.
+- `logAiChat` ab insert hui row ka **id lautata** hai → `sendChat` use response me
+  `chatLogId` ke roop me bhejta hai (frontend us turn pe 👍/👎 laga sake).
+- Endpoint (`timesheet.routes.js`, `authMiddleware` + **self-only**):
+  - `POST /api/timesheet/ai/chat-feedback` `{logId, value:1|-1|0, note?}` →
+    `rateAiChatLog` (UPDATE … WHERE id=? AND user_id=self).
+
+> DESIGN DECISION (user): **user-facing "delete my data" NAHI rakha.** Ye internal
+> company tool hai → data company ka; agar har user baar-baar delete kare to training
+> data hi na bache. Privacy phir bhi hai: **consent line** + **90-din auto-retention**
+> (admin SQL se purge kar sakta). Hard-delete endpoint + frontend button hata diye
+> (migration 0008 ke feedback columns rahe; `deleteMyChatLogs` removed).
+>
+> UI POLISH: delete button hatने ke baad consent line akeli/awkward lag rahi thi →
+> centered + chhota 🛡️ `ShieldCheck` icon ke saath subtle note bana diya.
+
+---
+
+## 🐛 FIX (2026-06-23) — "delete all today" sirf 1 entry delete karta tha (bulk delete)
+
+### Symptom
+"Delete my all today entry" → AI ne sirf **ek** (latest) entry locate karke delete ki,
+saari nahi. Kyunki `delete_timesheet` tool hamesha **LIMIT 1** (ek hi entry) dhoondta tha
+— bulk/"all" ka concept hi nahi tha. Brain "all today" ko bhi single delete bana deta.
+
+### Fix
+- **`deleteTimesheet.tool.js`**: naye params `delete_all`, `from_date`, `to_date`.
+  `delete_all` pe handler scope (date/range diya → us din/range ki, warna SAARI) ki
+  entries ka **COUNT + chhoti preview** deta hai aur **ids** pendingAction me capture
+  karta (confirm-window me nayi entry galti se delete na ho). `executeDelete` ab
+  `ids[]` (bulk, `id IN (…)`) bhi handle karta — single path (matchId) waisa hi.
+- **`chat.js`**: deterministic **BULK_DELETE** route — `delete` + (`all/every/sab/saari/
+  poora`) + (leave/time-block guard nahi) → `delete_timesheet {delete_all, from?, to?}`
+  (scope `parseGetRange` se). Single delete (bina "all") **waise hi brain pe** (unchanged).
+
+### POLICY (user): bulk delete sirf AAJ ki — purani/all-time NAHI
+User ke paas purani entries delete karne ki permission nahi → bulk delete **sirf
+today** scoped. Tool handler: non-today date (past/future/range) maange to **saaf mana**
+("You can only delete today's entries… contact HR/Admin"). Bina date "delete all" → AAJ
+hi maano (all-time NAHI). Verify: today bulk → confirm(3) ✅; past date → refuse ✅;
+no-date → today ✅.
+
+### Verify (0-token routing)
+- "Delete my all today entry" → `{delete_all, today}` ✅ · "saari entries hata do" → today ✅
+- "remove everything for 2026-06-20" (past) → **refused** ✅
+- "delete the training entry" (single) → brain (unchanged) ✅
+- Confirm → `executeDelete` matched ids delete karta, count batata. **92/92 pass.**
+
+---
+
+## 🆕 (2026-06-23) — session_id wiring (conversation grouping)
+
+### E. session_id — conversation grouping (NULL bharne ko + analysis)
+`session_id` column ab fill hota hai (pehle hamesha NULL — bura lagta tha). Frontend
+(`AIChatbot.jsx`) chatbot ki ek "baithak" pe ek id banata hai (`sess_<base36>`); us
+baithak ke SAARE messages same id se judte hain. **"Clear chat"** → `sessionIdRef`
+reset → agli baithak ko NAYA id. Backend: `aiChatHandler` body se `sessionId` accept →
+`sendChat` → `logAiChat` INSERT (max 60 char). Faayda: `WHERE session_id = ?` se ek
+poori conversation ek saath (kitne turn me kaam hua, drop-off, conversation-level
+training). **Koi functionality nahi tooti — sirf ek column fill; unit suite 92/92 pass.**
+Purani NULL rows NULL hi rahti hain; naye messages me id aata hai. (Column migration
+0006 me hi tha → koi nayi migration nahi.)
+
+### Verify
+- Controller + routes import OK; redaction sample test pass; **unit suite 92/92** ✅.
+- env: `AI_CHAT_RETENTION_DAYS=90` (`.env` + `server.node.js` map).
+
+### D. Frontend wiring (company repo `final-project/.../AIChatbot.jsx` — UI-local, NO push)
+- Assistant message object me `chatLogId` + `feedback` (backend response `data.chatLogId`).
+- **👍/👎 buttons** har logged AI reply ke neeche (error reply pe nahi): `rateReply()` →
+  `POST /ai/chat-feedback {logId,value}`. Same tap dobara = toggle off (value 0). UI
+  turant update, fail pe revert. Icons: `ThumbsUp`/`ThumbsDown`.
+- **Consent line + "Delete my data"** footer me: "Chats may be stored to improve the
+  assistant." + `deleteMyHistory()` → `DELETE /ai/my-chat-logs` (window.confirm ke baad).
+- Sirf `final-project` copy me. `day2` copy me mirror karna ho to same edits.
