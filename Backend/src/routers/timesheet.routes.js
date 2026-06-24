@@ -3,6 +3,7 @@
 
 import { Hono } from 'hono';
 import { addTimesheetEntry, getAllTimesheetsAdmin, deleteTimesheetEntry, aiChatHandler, getProjects, getProjectTasksController, submitAiFeedback, rateAiChatLog } from '../controllers/timesheet.controller.js';
+import { connectCloudflare, cfStatus } from '../controllers/cloudflareCreds.controller.js';
 import { authMiddleware } from '../middlewares/auth.middleware.js';
 
 const timesheetRouter = new Hono();
@@ -22,6 +23,10 @@ timesheetRouter.post('/ai/report', authMiddleware, submitAiFeedback);
 
 // Per-message 👍/👎 (data ko usable banata)
 timesheetRouter.post('/ai/chat-feedback', authMiddleware, rateAiChatLog);
+
+// PER-USER Cloudflare: apna account connect karo + status check
+timesheetRouter.post('/ai/connect-cloudflare', authMiddleware, connectCloudflare);
+timesheetRouter.get('/ai/cf-status', authMiddleware, cfStatus);
 
 timesheetRouter.get('/projects', authMiddleware, getProjects);
 

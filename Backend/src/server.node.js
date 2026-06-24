@@ -81,6 +81,16 @@ const env = {
   // CF creds bhi brain ko forward karo — AI_PROVIDER=cloudflare in dono se URL+key banata hai.
   CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID || '',
   CF_API_TOKEN: process.env.CF_API_TOKEN || '',
+  // PER-USER Cloudflare: token DB me encrypt karne ki chaabi (AES-256-GCM). Iske
+  // bina connect/use nahi hoga. Prod me: `wrangler secret put ENCRYPTION_KEY`.
+  ENCRYPTION_KEY: process.env.ENCRYPTION_KEY || '',
+  // Connect ke waqt allowed office email domain(s), comma-separated (e.g. "keyss.com").
+  // Blank → logged-in user ke apne email se EXACT match enforce hota hai.
+  COMPANY_EMAIL_DOMAIN: process.env.COMPANY_EMAIL_DOMAIN || '',
+  // '1' → har user ko apna CF account connect karna ZAROORI (warna chat block +
+  // needsCfConnect). Blank/'0' (default) → connect na ho to shared company AI se
+  // chalta hai (purana behavior, kuch nahi tootta). Rollout ready hone pe '1' karna.
+  AI_REQUIRE_USER_CF: process.env.AI_REQUIRE_USER_CF || '',
   // Workers AI ko Node par REST se chalate hai. CF key ho to asli LLM (greetings
   // + update/delete natural), warna graceful stub (app crash nahi hota; add/get
   // waise bhi deterministic hai, LLM ki zaroorat nahi).

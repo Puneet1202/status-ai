@@ -1,4 +1,20 @@
-# 🔌 AI ↔ Sir ki Website — Integration Notes
+
+## 🆕 IMPROVEMENT (2026-06-24) — per-user CF connect: Account ID ab `/memberships` se AUTO (sirf token paste)
+File: `Backend/src/controllers/cloudflareCreds.controller.js` (connectCloudflare, step 3).
+- **Problem:** Workers-AI scoped token me `GET /accounts` **empty** list deta hai (chahe token me
+  specific account "Include" kiya ho) → backend account_id auto-detect nahi kar pata tha → user ko
+  manually Account ID paste karna padta (`needAccountId`). Plan to ye tha ki user sirf token paste kare.
+- **Fix:** `GET /accounts` ke baad **`GET /memberships` fallback** add kiya — wo account return karta
+  hai (user-level endpoint). Order: `/accounts` → khaali → `/memberships` → phir bhi nahi → user-pasted id.
+- **Naya token requirement:** ab token me **3 perms** chahiye — `Account → Workers AI: Read`,
+  `User → User Details: Read`, aur **`User → Memberships: Read`** (ye 3rd se `/memberships` chalta).
+  Plus **Account Resources → Include → apna account** (Workers AI us account pe apply hone ke liye zaroori).
+- **Memberships skip kiya to:** connect phir bhi hota hai, bas account_id auto nahi aata → user ek baar
+  manually paste karta hai (graceful fallback, kuch toota nahi).
+- **Live verified (2026-06-24):** real token se `/accounts`=0, `/memberships`=`9ae36df4...`, Workers AI
+  verify OK → token-only connect SUCCESS, account-id field nahi aata.
+- **Company-side (status_app me NAHI, manual):** `AIChatbot.jsx` connect-wizard me 3rd permission line
+  (Memberships: Read) + "Include your account" note add kiya — UI-local, company repo me push NAHI.
 
 ## 🐛 FIX (2026-06-22) — Self-echo line re-send: galat "I just need the time" + "Work"/"2.0 hrs)" description
 File: `src/ai/timeParser.js`.
@@ -797,3 +813,43 @@ Purani NULL rows NULL hi rahti hain; naye messages me id aata hai. (Column migra
 - **Consent line + "Delete my data"** footer me: "Chats may be stored to improve the
   assistant." + `deleteMyHistory()` → `DELETE /ai/my-chat-logs` (window.confirm ke baad).
 - Sirf `final-project` copy me. `day2` copy me mirror karna ho to same edits.
+
+
+# 🔌 AI ↔ Sir ki Website — Integration Notes
+
+## 🌿 BRANCH NOTE (2026-06-24) — kaun si branch pe kaam ho raha hai
+- **`final`** = sab kuch SAHI/stable hai (kal tak ka pura AI kaam: leave, bulk delete, chat-logging, MCP, etc.). `final` push bhi ho chuka hai (origin/final).
+- **`main`** = local pe `final` ke barabar kar diya (fast-forward merge, koi conflict nahi). Push abhi local hi — GitHub pe purana ho sakta.
+- **`feature/per-user-cloudflare`** = 👈 **NAYI branch — abhi YAHI pe kaam karna hai.** Feature: har user apna khud ka Cloudflare account/token connect kare → apni AI quota use kare (shared limit nahi). Plan/flow memory me `per-user-cloudflare-creds` me hai. Abhi tak sirf branch bani, code shuru nahi.
+- ⚠️ Bahut branches ban gayi hain — agar confuse ho to: stable = `final`, naya feature = `feature/per-user-cloudflare`.
+
+## 📝 PER-USER CLOUDFLARE FEATURE — PENDING / MANUAL TASKS (2026-06-24)
+> Feature: har user apna khud ka Cloudflare account/token connect kare → apni AI quota. Branch: `feature/per-user-cloudflare`.
+
+### ✅ Ho chuka
+- **Step 1** — DB table `user_ai_credentials` (migration `0009`) — local company DB pe applied. Columns: user_id, employee_id, account_id, api_token(encrypted), cf_email, status, created_at, updated_at.
+- **Step 2** — encrypt/decrypt helper `Backend/src/utils/cryptoToken.js` (AES-256-GCM, Web Crypto → Node+Worker dono). Token DB me encrypted rahega.
+
+### ✅ Step 3-7 bhi HO GAYE (2026-06-24)
+- **Step 3** — `POST /ai/connect-cloudflare` (token → GET /user email verify → GET /accounts account_id AUTO → ai/models/search perm verify → encrypt → UPSERT). File: `Backend/src/controllers/cloudflareCreds.controller.js` + helper `Backend/src/ai/userCfCreds.js`.
+- **Step 4** — `GET /ai/cf-status` (connected? + email). Same controller.
+- **Step 5** — `aiChatHandler` (timesheet.controller.js): per-request `aiEnv` (user creds → env.AI + CF_ACCOUNT_ID/TOKEN override) + gate `needsCfConnect` (flag `AI_REQUIRE_USER_CF`). Brain `aiChat(aiEnv,...)` + tools `ctx.env=aiEnv`.
+- **Step 6** — frontend connect screen (company `final-project/.../AIChatbot.jsx`, UI-local NO push): cf-status check on open, connect overlay (3-step guide + token paste), needsCfConnect handling.
+- **Step 7** — END-TO-END TEST PASS (port 8788, test user 133): status=false → chat gate needsCfConnect=true → connect success (email+account_id auto+encrypt) → status=true → chat real AI reply. Test row DELETED, DB clean. Unit suite 92/92. Email enforce default = exact match to login email (`COMPANY_EMAIL_DOMAIN` blank); test ne domain-mode use kiya.
+
+### ⬜ Baaki sirf DEPLOY (jab production)
+- CF deploy: `wrangler secret put ENCRYPTION_KEY`, shared remote D1 + migration 0009 remote pe, `AI_REQUIRE_USER_CF=1` jab rollout ready.
+- Company app `AIChatbot.jsx` ka updated copy company repo me daalna (manual, NO auto-push).
+
+### 🙋 MUJHE (user) ko MANUALLY karna hai
+1. **`ENCRYPTION_KEY` — local `.env` me daalna** (Backend/.env): koi lambi random string, e.g.
+   `ENCRYPTION_KEY=koi-lambi-random-secret-string-yahan`
+   → token encrypt/decrypt ki "chaabi". Iske bina token save/use nahi hoga.
+2. **Production (CF deploy) pe:** `wrangler secret put ENCRYPTION_KEY` (same/strong value). `.env` prod me upload nahi hota.
+3. **Har employee ko (rollout):** apna **free Cloudflare account office email se** + ek **API token** banana (**3 perms**: `Workers AI: Read` + `User Details: Read` + `Memberships: Read`, aur Account Resources me **Include → apna account**) → chatbot connect screen me paste. (Account ID app khud `/memberships` se nikaal legi; Memberships skip kiya to ek baar manually paste karna padega.)
+4. **CF deploy:** company-email domain decide karna (kaunsa @domain email-verify me allow hoga).
+
+### ⚠️ Note
+- `ENCRYPTION_KEY` badla to purane saare saved token unreadable → sabko dobara connect karna padega. Ek baar set karke fix rakhna.
+
+---

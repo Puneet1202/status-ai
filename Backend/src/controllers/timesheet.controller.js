@@ -18,6 +18,7 @@ import {
 } from '../ai/tools/_helpers.js';
 import { hasWorkTime } from '../ai/timeParser.js';
 import { requireTask } from '../ai/ai-config.js';
+import { getUserCfCreds, makeUserAi } from '../ai/userCfCreds.js';
 
 // =========================================================================
 // 1. ADD STATUS ENTRY (Direct REST endpoint)
@@ -319,10 +320,24 @@ export const aiChatHandler = async (c) => {
             console.warn('[perm load failed]', e?.message || e);
         }
 
+        // ── PER-USER CLOUDFLARE creds ────────────────────────────────────────
+        // User ne apna khud ka CF account connect kiya ho to AI us ke account se
+        // chale (uski apni free quota). Iske liye is request ke liye ek env BANAO
+        // jisme `AI` (REST provider) + CF_ACCOUNT_ID/CF_API_TOKEN us user ke ho.
+        // Brain (aiChat) aur tools (ctx.env) dono yahi env lenge.
+        //   - creds hai     → per-user env.
+        //   - creds nahi +
+        //     AI_REQUIRE_USER_CF='1' → gate (neeche), AI block.
+        //   - creds nahi + flag off → shared company env (purana behavior, kuch nahi tootta).
+        const cfCreds = await getUserCfCreds(db, user.id, c.env.ENCRYPTION_KEY);
+        const aiEnv = cfCreds
+            ? { ...c.env, AI: makeUserAi(cfCreds), CF_ACCOUNT_ID: cfCreds.accountId, CF_API_TOKEN: cfCreds.token }
+            : c.env;
+
         // perms = LIVE permission set (har request pe fresh DB se). Tools isse apni
         // specific permission check karte hai → admin DB me OFF kare to AGLE message
         // pe AI khud mana kar deta, koi alag sync/config nahi. (auto-sync built-in)
-        const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: c.env, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
+        const ctx = { db, user, employeeId: user.employee_id, isOrgViewer, perms: permSet, env: aiEnv, selectedProject, selectedTasks: Array.isArray(selectedTasks) ? selectedTasks : [], today: todayISO(timezone) };
 
         // Har chat reply ko log karke bhejne wala wrapper — taaki KOI turn miss na ho
         // (confirm/overlap/nudge jaise early returns bhi save ho). intent optional.
@@ -332,6 +347,18 @@ export const aiChatHandler = async (c) => {
             if (logId && payload && typeof payload === 'object') payload.chatLogId = logId;
             return c.json(payload, 200);
         };
+
+        // ── GATE: per-user CF connect required? ───────────────────────────────
+        // AI_REQUIRE_USER_CF='1' aur user ne apna CF account connect NAHI kiya →
+        // chat block, frontend ko `needsCfConnect` bhejo (wo connect-screen dikhaye).
+        // Flag off (default) → ye skip → shared company AI se chalta (kuch nahi tootta).
+        if (!cfCreds && c.env.AI_REQUIRE_USER_CF === '1') {
+            return await sendChat({
+                success: true,
+                needsCfConnect: true,
+                reply: "To use the AI assistant, please connect your own Cloudflare account first (one-time setup). Click “Connect AI” to begin.",
+            }, 'needs_cf_connect');
+        }
 
         // ── BACKDATED ENTRY (HR "/" calendar) ─────────────────────────────────
         // Frontend "/" se picked PURANI date (YYYY-MM-DD) selectedDate me aati hai.
@@ -460,7 +487,7 @@ export const aiChatHandler = async (c) => {
             // TRACE box (route + brain/tool call counts + tokens) per message.
             traceBegin(message);
             try {
-                result = await aiChat(c.env, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs, selectedTasks);
+                result = await aiChat(aiEnv, user.id, message, history, selectedProject, timezone, isOrgViewer, viewAs, selectedTasks);
             } finally {
                 traceEnd();
             }
